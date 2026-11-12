@@ -1,7 +1,8 @@
 // Package demo runs milestone demos end to end against a real PostgreSQL 18
 // server in isolated, freshly migrated databases. The M0 demo (spec §12.2)
-// is shared by `sautictl demo m0` and tests/e2e. Development only: it
-// refuses production through bootstrap and devkeys.
+// is shared by `sautictl demo m0` and tests/e2e. Development only: RunM0
+// refuses any environment but dev and test before it connects, and passes
+// the validated environment to the bootstrap and devkeys guards.
 package demo
 
 import (
@@ -30,6 +31,7 @@ import (
 	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/platform/africastalking"
 	"sautihealth.com/sauti/internal/platform/devkeys"
+	"sautihealth.com/sauti/internal/platform/env"
 	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/auditstore"
 	"sautihealth.com/sauti/internal/platform/pg/bootstrap"
@@ -42,6 +44,7 @@ import (
 // Options configures a demo run.
 type Options struct {
 	AdminDSN string // superuser URL DSN of a development PostgreSQL 18 server
+	Env      string // SAUTI_ENV, "dev" or "test"; empty reads env.Environment()
 	// RolePassword is the server's established password for the Sauti roles
 	// (SAUTI_DEV_DB_PASSWORD on a dev server). Roles are server-global, so the
 	// demo must use it and never change it: a different value would break
@@ -75,6 +78,19 @@ const demoPhone = "+256772123456"
 
 var spokenRef = regexp.MustCompile(`[0-9]{3} [0-9]{3} [0-9]{4}`)
 
+// runTimeout bounds a whole run, whatever the caller's context (a variable
+// so tests can shorten it).
+var runTimeout = 10 * time.Minute
+
+// cleanupTimeout bounds each cleanup call.
+const cleanupTimeout = 30 * time.Second
+
+// cleanupContext is a context for one cleanup call: detached from the run's
+// cancellation, which may already have happened, with its own deadline.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+}
+
 type runner struct {
 	o        Options
 	admin    *url.URL
@@ -107,8 +123,22 @@ func (r *runner) pool(ctx context.Context, s pg.Store, role string) (*pgxpool.Po
 }
 
 // RunM0 executes the M0 demo and returns its report. Any unmet expectation
-// is returned as an error naming the step.
+// is returned as an error naming the step. The run is bounded by runTimeout
+// and each cleanup call by cleanupTimeout (CodeRabbit PR #4).
 func RunM0(ctx context.Context, o Options) (rep Report, err error) {
+	// Development only, checked before any connection: the demo provisions
+	// server-global roles and databases (CodeRabbit PR #4).
+	senv := o.Env
+	if senv == "" {
+		if senv, err = env.Environment(); err != nil {
+			return rep, err
+		}
+	}
+	if senv != "dev" && senv != "test" {
+		return rep, fmt.Errorf("demo: refusing SAUTI_ENV=%q: the demo provisions server-global roles and databases (dev and test only)", senv)
+	}
+	ctx, cancel := context.WithTimeout(ctx, runTimeout)
+	defer cancel()
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
@@ -131,10 +161,14 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if err != nil {
 		return rep, fmt.Errorf("demo: connect admin: %w", err)
 	}
-	defer func() { _ = adminConn.Close(context.WithoutCancel(ctx)) }()
+	defer func() {
+		cctx, ccancel := cleanupContext(ctx)
+		defer ccancel()
+		_ = adminConn.Close(cctx)
+	}()
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	r.dbs, err = bootstrap.Run(ctx, adminConn, bootstrap.Options{Suffix: "_demo" + hex.EncodeToString(suffix), Password: r.password, Env: "dev"})
+	r.dbs, err = bootstrap.Run(ctx, adminConn, bootstrap.Options{Suffix: "_demo" + hex.EncodeToString(suffix), Password: r.password, Env: senv})
 	if err != nil {
 		return rep, err
 	}
@@ -145,7 +179,9 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 			}
 			r.pools = nil
 			for _, name := range r.dbs {
-				_, _ = adminConn.Exec(context.WithoutCancel(ctx), "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
+				cctx, ccancel := cleanupContext(ctx)
+				_, _ = adminConn.Exec(cctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
+				ccancel()
 			}
 		}()
 	}
@@ -174,7 +210,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if err := devkeys.Generate(filepath.Join(work, "keys"), rand.Reader); err != nil {
 		return rep, err
 	}
-	keys, err := devkeys.Open(filepath.Join(work, "keys"), "dev")
+	keys, err := devkeys.Open(filepath.Join(work, "keys"), senv)
 	if err != nil {
 		return rep, err
 	}
@@ -339,7 +375,11 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if err != nil {
 		return rep, err
 	}
-	defer func() { _ = super.Close(context.WithoutCancel(ctx)) }()
+	defer func() {
+		cctx, ccancel := cleanupContext(ctx)
+		defer ccancel()
+		_ = super.Close(cctx)
+	}()
 	var leaks int
 	if err := super.QueryRow(ctx, "SELECT count(*) FROM audit.entries e WHERE e::text LIKE '%772123456%'").Scan(&leaks); err != nil {
 		return rep, err

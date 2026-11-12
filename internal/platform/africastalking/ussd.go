@@ -4,15 +4,25 @@
 // (compared in constant time; a wrong token looks like a missing route), a
 // service-code allowlist, and the source-IP allowlist enforced by HAProxy
 // and nftables in front of this handler.
+//
+// Logs never carry the provider's sessionId, which is free text (a name
+// passes every check): the "session" attribute is a keyed correlation value
+// instead (see correlation). networkCode is accepted only as MCC+MNC.
 package africastalking
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"mime"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -41,7 +51,13 @@ type handler struct {
 	codes map[string]bool
 	port  USSDPort
 	log   *slog.Logger
+	// corrKey keys the logged session correlation value. It is drawn when
+	// the handler is built and never leaves the process.
+	corrKey []byte
 }
+
+// networkCode is MCC+MNC (3 + 2 or 3 digits).
+var networkCode = regexp.MustCompile(`^[0-9]{5,6}$`)
 
 // NewUSSDHandler returns the callback handler at POST /v1/ussd/{provider}/{token}.
 func NewUSSDHandler(cfg USSDConfig, port USSDPort, log *slog.Logger) (http.Handler, error) {
@@ -57,7 +73,11 @@ func NewUSSDHandler(cfg USSDConfig, port USSDPort, log *slog.Logger) (http.Handl
 	if cfg.Budget <= 0 {
 		cfg.Budget = 800 * time.Millisecond // spec §7.5: USSD p99 under 1 s
 	}
-	h := &handler{cfg: cfg, codes: map[string]bool{}, port: port, log: log}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("africastalking: correlation key: %w", err)
+	}
+	h := &handler{cfg: cfg, codes: map[string]bool{}, port: port, log: log, corrKey: key}
 	for _, c := range cfg.ServiceCodes {
 		h.codes[c] = true
 	}
@@ -78,6 +98,21 @@ func printable(s string, max int) bool {
 	return true
 }
 
+// correlation is what the logs carry under "session" in place of sessionID:
+// HMAC-SHA-256 under the handler's random key, hex-truncated to 16
+// characters. It correlates the lines of one session within one process
+// lifetime only (a restart or another replica draws another key), and
+// without the key a candidate sessionId cannot be confirmed by hashing it
+// (CodeRabbit PR #4). An absent sessionID stays "".
+func (h *handler) correlation(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	m := hmac.New(sha256.New, h.corrKey)
+	m.Write([]byte(sessionID))
+	return hex.EncodeToString(m.Sum(nil))[:16]
+}
+
 func (h *handler) reply(w http.ResponseWriter, sc intake.Screen) {
 	prefix := "CON "
 	if sc.End {
@@ -92,7 +127,7 @@ func (h *handler) reply(w http.ResponseWriter, sc intake.Screen) {
 // still gets an END screen with the free voice line (rule 3.14; review I4).
 // The reason is logged without any input or number.
 func (h *handler) fail(w http.ResponseWriter, sessionID, reason string) {
-	h.log.Warn("ussd request answered with voice line", "provider", h.cfg.Provider, "session", sessionID, "reason", reason)
+	h.log.Warn("ussd request answered with voice line", "provider", h.cfg.Provider, "session", h.correlation(sessionID), "reason", reason)
 	h.reply(w, intake.Screen{Text: h.cfg.ErrorText, End: true})
 }
 
@@ -134,11 +169,17 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, sessionID, "invalid text")
 		return
 	}
+	session := h.correlation(sessionID)
+	// An invalid network code is dropped (treated as absent), never logged.
+	network := r.PostForm.Get("networkCode")
+	if !networkCode.MatchString(network) {
+		network = ""
+	}
 	// An unparseable or withheld number never blocks a report: the session
 	// proceeds with an unknown phone and dispatch proceeds on location.
 	phone, err := pii.ParsePhone(r.PostForm.Get("phoneNumber"))
 	if err != nil {
-		h.log.Warn("ussd caller number unparseable; proceeding as unknown", "provider", h.cfg.Provider, "session", sessionID)
+		h.log.Warn("ussd caller number unparseable; proceeding as unknown", "provider", h.cfg.Provider, "session", session)
 		phone = pii.Phone{}
 	}
 
@@ -146,15 +187,15 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	sc, err := h.port.HandleUSSD(ctx, intake.USSDRequest{
 		Provider: h.cfg.Provider, SessionID: sessionID, ServiceCode: serviceCode,
-		NetworkCode: r.PostForm.Get("networkCode"), Text: text, Phone: phone,
+		NetworkCode: network, Text: text, Phone: phone,
 	})
 	if err != nil {
 		// Fail safe to a human: the caller is always answered, and given the
 		// free voice line. The error is logged without input or number.
-		h.log.Error("ussd intake failed", "provider", h.cfg.Provider, "session", sessionID, "err", err)
+		h.log.Error("ussd intake failed", "provider", h.cfg.Provider, "session", session, "err", err)
 		sc = intake.Screen{Text: h.cfg.ErrorText, End: true}
 	}
 	h.reply(w, sc)
-	h.log.Info("ussd", "provider", h.cfg.Provider, "session", sessionID,
-		"network", r.PostForm.Get("networkCode"), "end", sc.End, "ms", time.Since(start).Milliseconds())
+	h.log.Info("ussd", "provider", h.cfg.Provider, "session", session,
+		"network", network, "end", sc.End, "ms", time.Since(start).Milliseconds())
 }
