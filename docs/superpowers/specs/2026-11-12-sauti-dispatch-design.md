@@ -31,6 +31,7 @@ The governing documents are confidential and are **not committed**; `.gitignore`
 | D7 | Architecture | Approach A: a hexagonal modular monolith, a single write path enforced by the database, and a transactional outbox | ADR-0002..0004 |
 | D8 | Migrations | An in-house, forward-only, checksummed migrator using only the standard library | ADR-0010 |
 | D9 | Incident reference | 9 random digits plus a Damm check digit, read 3-3-4 (Build Prompt §9, which supersedes the Guide's 8+1 proposal; the Guide leaves this choice to engineering) | ADR-0007 |
+| D10 | Delivery | All milestones and phases are implemented in sequence (user, 2026-11-12). Each phase has its own detailed plan, ADRs, runbooks, traceability updates and a PR gated on CI and CodeRabbit. See `docs/superpowers/plans/2026-11-12-phased-roadmap.md`. | roadmap |
 
 ## 3. Discrepancies and open items register
 
@@ -163,9 +164,10 @@ There are five PostgreSQL 18 databases. Each has an owner role used only for mig
 
 - `outbox-relay` claims rows in batches with `FOR UPDATE SKIP LOCKED` and calls `audit.append(...)`. Appends are idempotent on `entry_id`, which equals the outbox row ID, so delivery is at-least-once and safe.
 - If the audit store is down, the outbox grows and dispatch is unaffected (hard constraint 14). The metric `sauti_outbox_lag_seconds` raises an alert above 60 s.
-- Audit entries carry **only** the event type, incident ID, staff ID, logic version and hashes (hard constraint 8). Two layers enforce this:
-  - a Go mapper with a fixed field allowlist builds the entry;
-  - a `CHECK` constraint limits the payload keys to an allowed set.
+- Audit entries carry **only** the event type, incident ID, staff ID, logic version and hashes (hard constraint 8). Three layers enforce this:
+  - the SQL write function builds the outbox payload from typed columns and includes only the **SHA-256 of the event payload**, never its content;
+  - the relay decodes that payload strictly, so an unknown key stops the relay (`ErrPoisonRow`);
+  - `audit.entries` has typed columns only (`staff_id uuid`, no free-form column), so there is nowhere to put free-form data.
 - `audit.append` takes `pg_advisory_xact_lock(<chain>)` as a separate statement, assigns `seq` (`bigint`), and computes `hash = sha256(prev_hash ‖ canonical(entry))` in SQL. The canonical encoding is specified in `docs/reference/audit-canonical-encoding.md`, and an independent Go implementation in `internal/audit` re-computes it to verify.
 - **Checkpoints.** Every 5 minutes, a body modelled on C2SP tlog-checkpoint (`origin`, `seq`, `head_hash`, `time`) is signed with **ML-DSA-65** (Go 1.27 `crypto/mldsa`). The signed checkpoint is stored in `audit.checkpoints` and also written through the `Witness` port: a write-once directory in development, the backup snapshot path in production, plus a daily external witness (O10).
 - `sautictl verify-ledger` checks the chain, the sequence continuity and every checkpoint signature against the published public key.
@@ -190,10 +192,11 @@ There are five PostgreSQL 18 databases. Each has an owner role used only for mig
 
 ### 6.6 PostgreSQL 18 and sqlc
 
-sqlc v1.31.1 (the latest release) parses PostgreSQL 17 grammar only. PG18 grammar (`WITHOUT OVERLAPS`, `RETURNING OLD/NEW`) is supported only on unreleased sqlc main. **The first task of M0 is a spike** that settles this. In order of preference:
-- (a) Keep PG18-only DDL in migrations, and give sqlc an equivalent PG17-parseable schema view. `WITHOUT OVERLAPS` is not needed until M2.
-- (b) Pin sqlc to a main commit through the `tool` directive, with a dependency note.
-- (c) Hand-write the pgx queries for the affected tables.
+sqlc v1.31.1 (the latest release) parses PostgreSQL 17 grammar only. PG18 grammar (`WITHOUT OVERLAPS`, `RETURNING OLD/NEW`) is supported only on unreleased sqlc main.
+
+**Spike result (2026-11-12).** The static release binary (sha256 `497ae4fc…27354`) parses `DEFAULT uuidv7()`, partitioned tables and plpgsql `SECURITY DEFINER` functions. It fails only on `WITHOUT OVERLAPS`.
+
+**Decision.** The few PG18-only constraints are added inside `DO $$ BEGIN EXECUTE '…'; END $$` blocks, which sqlc does not parse, and each such block is commented with a pointer to ADR-0011. Because sqlc cannot be built here without cgo, the pinned release binary, checksum-verified by `scripts/tools/install-sqlc.sh`, is used both locally and in CI.
 
 ## 7. Robustness mechanisms
 
@@ -261,8 +264,8 @@ sqlc v1.31.1 (the latest release) parses PostgreSQL 17 grammar only. PG18 gramma
 - **Dependencies.** About twenty runtime dependencies. Each new one needs a PR note covering why, licence, maintainer health and fallback (`docs/reference/dependencies.md`).
 - **Test environments.**
   - Local machines without a container runtime use `embedded-postgres` v2 (PostgreSQL 18.6).
-  - CI uses Testcontainers v0.45, which supports Podman.
-  - `SAUTI_TEST_PG_DSN` overrides both.
+  - In M0, CI uses an official `postgres:18.6` service container, pinned by digest and passed in through `SAUTI_TEST_PG_DSN`.
+  - Testcontainers v0.45 (which supports Podman) arrives in M1 for Valkey and for failover tests that must kill a database mid-test (ADR-0012).
 
 ## 10. Governance and living documentation
 
@@ -333,11 +336,7 @@ Each milestone gets its own plan, demo and review stop (Build Prompt §0, §18).
     - Idempotency on `sessionId`+`text`.
 11. **`platform/logging`.** slog redaction handler with masked PII types.
 12. **`platform/egress`.** HTTP client with a host allowlist.
-13. **`tests/sim`.**
-    - Africa's Talking USSD simulator (session IDs, `text` accumulation, retries).
-    - ARI event-stream fake.
-    - SMS and USSD-push capture sinks.
-    - Test clock.
+13. **`tests/sim`.** The Africa's Talking USSD simulator (session IDs, `text` accumulation, retries). The ARI event fake and the SMS and USSD-push sinks arrive in M1 and M2, together with the ports they implement (YAGNI).
 14. **`tools/`.** `archcheck`, `amendgate`, `freshness`.
 15. **CI and governance.** `scripts/ci/*`, `ci.yml`, `.coderabbit.yaml`, CODEOWNERS, `governance/*`, `threat-model/*`.
 16. **Docs.** ADR-0001…0010, the Diátaxis skeleton, architecture explanation, `traceability.md`, `MODEL_CARD.md`, `.env.example`, the M0 demo runbook.
