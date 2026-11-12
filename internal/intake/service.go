@@ -92,6 +92,8 @@ type Incidents interface {
 	StartSession(ctx context.Context, cmd incident.StartSession) (incident.Opened, error)
 	ResumeSession(ctx context.Context, cmd incident.ResumeSession) (incident.Opened, error)
 	Append(ctx context.Context, p incident.AppendParams) (incident.Appended, error)
+	// AppendBatch appends events atomically: all of them or none.
+	AppendBatch(ctx context.Context, ps []incident.AppendParams) ([]incident.Appended, error)
 	StoreIdentifier(ctx context.Context, incidentID uuid.UUID, kind string, plaintext []byte, idemKey string) (uuid.UUID, error)
 }
 
@@ -233,11 +235,15 @@ func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error)
 			return Screen{}, err
 		}
 		incidentID = opened.IncidentID
-		p, err := s.d.Reader.Projection(ctx, incidentID)
+		// A resumed incident may lack what an earlier, failed request was
+		// to record (its classification, T2): record it before going on.
+		p, err := s.catchUp(ctx, incidentID, "")
 		if err != nil {
 			return Screen{}, err
 		}
-		pr = s.d.Machine.Next(p, sess.hasPhone)
+		if pr, err = s.next(p, sess.hasPhone); err != nil {
+			return Screen{}, err
+		}
 	} else {
 		input, err := s.newInput(ctx, r, prev)
 		if err != nil {
@@ -282,7 +288,7 @@ func (s *Service) answer(ctx context.Context, id uuid.UUID, sess session, shown 
 		return Prompt{}, err
 	}
 	if shown == KindComplete || shown == KindOutOfArea || shown == "" {
-		return s.d.Machine.Next(p, sess.hasPhone), nil
+		return s.next(p, sess.hasPhone)
 	}
 	out, err := s.d.Machine.Answer(p, shown, input, sess.hasPhone)
 	if err != nil {
@@ -297,35 +303,48 @@ func (s *Service) answer(ctx context.Context, id uuid.UUID, sess session, shown 
 	if err := s.apply(ctx, p, sess, out); err != nil {
 		return Prompt{}, err
 	}
-	if p, err = s.d.Reader.Projection(ctx, id); err != nil {
+	if p, err = s.catchUp(ctx, id, out.FreeText); err != nil {
 		return Prompt{}, err
 	}
-	return s.d.Machine.Next(p, sess.hasPhone), nil
+	return s.next(p, sess.hasPhone)
 }
 
-func (s *Service) appendEvent(ctx context.Context, id uuid.UUID, typ incident.EventType, payload any, idem, logic string) error {
+// ErrNotDispatched reports a finished Tool 1 whose T2 is not recorded. The
+// caller is never told help is coming without it: the adapter answers with
+// its error screen (the free voice line), and the caller's redial records T2
+// before anything else (catchUp).
+var ErrNotDispatched = errors.New("intake: Tool 1 is finished but T2 is not recorded")
+
+// next is the prompt to show for the incident's state p. It never closes a
+// call in the area with "help is coming" while T2 is missing.
+func (s *Service) next(p incident.Projection, hasPhone bool) (Prompt, error) {
+	pr := s.d.Machine.Next(p, hasPhone)
+	if pr.Kind == KindComplete && p.T[2] == nil {
+		return Prompt{}, ErrNotDispatched
+	}
+	return pr, nil
+}
+
+// incidentKey is the idempotency key of something the answers imply (the
+// classification and its rule-error flag and escalation, an out-of-area
+// closure, T2). It names the incident, not the session: whichever session
+// or channel records it first, every retry and redial converges on that one
+// event.
+func incidentKey(id uuid.UUID, what string) string { return "intake:" + id.String() + ":" + what }
+
+func newEvent(id uuid.UUID, typ incident.EventType, actor string, payload any, idem, logic string) (incident.AppendParams, error) {
 	b, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return incident.AppendParams{}, err
 	}
-	_, err = s.d.Incidents.Append(ctx, incident.AppendParams{IncidentID: id, Type: typ, Payload: b,
-		ActorKind: incident.ActorCaller, IdemKey: idem, LogicVersion: logic})
-	return err
+	return incident.AppendParams{IncidentID: id, Type: typ, Payload: b, ActorKind: actor, IdemKey: idem, LogicVersion: logic}, nil
 }
 
-func (s *Service) appendSystem(ctx context.Context, id uuid.UUID, typ incident.EventType, payload any, idem string) error {
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	_, err = s.d.Incidents.Append(ctx, incident.AppendParams{IncidentID: id, Type: typ, Payload: b,
-		ActorKind: incident.ActorSystem, IdemKey: idem})
-	return err
-}
-
-// apply persists an answer and everything it triggers, in order: sealed
-// identifier, the answer, classification (screen 5), out of area (screen 6),
-// dispatch readiness and T2 (trigger screen).
+// apply persists an answer and what it implies by itself, atomically: the
+// sealed identifier first (idempotent on its own key), then one batch of the
+// screen.answered event with, at screen 5, the classification (and on a
+// rule error its flag and escalation) and, for "Somewhere else", the
+// out-of-area flag and closure. T2 follows in catchUp.
 func (s *Service) apply(ctx context.Context, p incident.Projection, sess session, out Outcome) error {
 	a := *out.Answer
 	id := p.ID
@@ -347,36 +366,90 @@ func (s *Service) apply(ctx context.Context, p incident.Projection, sess session
 	if err != nil {
 		return err
 	}
-	if _, err := s.d.Incidents.Append(ctx, incident.AppendParams{IncidentID: id, Type: incident.EvScreenAnswered,
-		Payload: payload, ActorKind: incident.ActorCaller, IdemKey: sess.key(a.Screen, "")}); err != nil {
-		return err
-	}
+	batch := []incident.AppendParams{{IncidentID: id, Type: incident.EvScreenAnswered,
+		Payload: payload, ActorKind: incident.ActorCaller, IdemKey: sess.key(a.Screen, "")}}
 	if out.Classify && p.Severity == "" {
-		res := s.d.Triage.Classify(triage.Inputs{Danger: p.Danger, Category: p.Category, AgeBand: p.AgeBand, SpecificDanger: a.Value})
-		if err := s.appendEvent(ctx, id, incident.EvClassified, map[string]string{"severity": res.Severity, "rule_id": res.RuleID},
-			sess.key(a.Screen, "classify"), res.LogicVersion); err != nil {
+		cls, err := s.classification(p, a.Value)
+		if err != nil {
 			return err
 		}
-		if res.RuleError {
-			// Fail safe to a human (Build Prompt §14): red, flagged, escalated.
-			if err := s.appendSystem(ctx, id, incident.EvFlagged, map[string]string{"flag": FlagTriageRuleError}, sess.key(a.Screen, "rule_error")); err != nil {
-				return err
-			}
-			if err := s.appendSystem(ctx, id, incident.EvEscalated, map[string]string{"reason": FlagTriageRuleError}, sess.key(a.Screen, "escalate")); err != nil {
-				return err
-			}
-		}
+		batch = append(batch, cls...)
 	}
 	if out.OutOfArea {
-		if err := s.appendSystem(ctx, id, incident.EvFlagged, map[string]string{"flag": FlagOutOfArea}, sess.key(a.Screen, "out_of_area")); err != nil {
+		flag, err := newEvent(id, incident.EvFlagged, incident.ActorSystem, map[string]string{"flag": FlagOutOfArea}, incidentKey(id, FlagOutOfArea), "")
+		if err != nil {
 			return err
 		}
-		return s.appendSystem(ctx, id, incident.EvClosed, map[string]string{"reason": FlagOutOfArea}, sess.key(a.Screen, "close"))
+		closed, err := newEvent(id, incident.EvClosed, incident.ActorSystem, map[string]string{"reason": FlagOutOfArea}, incidentKey(id, "close"), "")
+		if err != nil {
+			return err
+		}
+		batch = append(batch, flag, closed)
 	}
-	if out.DispatchReady && p.T[2] == nil {
-		return s.dispatchReady(ctx, p, sess, a, out.FreeText)
+	_, err = s.d.Incidents.AppendBatch(ctx, batch)
+	return err
+}
+
+// classification is the signed table's decision as events, never recorded
+// apart: incident.classified and, on a rule error, the triage_rule_error
+// flag and the escalation (fail safe to a human: red, flagged, escalated;
+// Build Prompt §14).
+func (s *Service) classification(p incident.Projection, specificDanger string) ([]incident.AppendParams, error) {
+	res := s.d.Triage.Classify(triage.Inputs{Danger: p.Danger, Category: p.Category, AgeBand: p.AgeBand, SpecificDanger: specificDanger})
+	cls, err := newEvent(p.ID, incident.EvClassified, incident.ActorCaller, map[string]string{"severity": res.Severity, "rule_id": res.RuleID},
+		incidentKey(p.ID, "classify"), res.LogicVersion)
+	if err != nil || !res.RuleError {
+		return []incident.AppendParams{cls}, err
 	}
-	return nil
+	flag, err := newEvent(p.ID, incident.EvFlagged, incident.ActorSystem, map[string]string{"flag": FlagTriageRuleError}, incidentKey(p.ID, "rule_error"), "")
+	if err != nil {
+		return nil, err
+	}
+	esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": FlagTriageRuleError}, incidentKey(p.ID, "escalate"), "")
+	if err != nil {
+		return nil, err
+	}
+	return []incident.AppendParams{cls, flag, esc}, nil
+}
+
+// catchUp records what the stored answers imply but the log lacks: the
+// classification once screen 5 is answered, and T2 once the trigger screen
+// is (Machine.DispatchDue). It reads the projection, never the screen just
+// answered, and runs after every applied answer and whenever a session
+// starts or resumes, on either channel, so a request that failed between an
+// answer and its consequences (the 800 ms budget ending, a lost connection)
+// is repaired by the retried callback or by the caller's redial. Its keys
+// are incident-scoped, so concurrent sessions converge on one event.
+//
+// freeText is the landmark the caller has just typed, if any. On a retry
+// from a new session or a redial it is unknown (it is sealed, and intake
+// cannot read it back): a free-text landmark then resolves at ward level,
+// flagged needs_location_callback. That is the fail-safe direction: dispatch
+// goes ahead on the ward's zones and a human confirms the location.
+func (s *Service) catchUp(ctx context.Context, id uuid.UUID, freeText string) (incident.Projection, error) {
+	p, err := s.d.Reader.Projection(ctx, id)
+	if err != nil || p.State.Terminal() {
+		return p, err
+	}
+	if p.SpecificDanger != "" && p.Severity == "" {
+		batch, err := s.classification(p, p.SpecificDanger)
+		if err != nil {
+			return p, err
+		}
+		if _, err := s.d.Incidents.AppendBatch(ctx, batch); err != nil {
+			return p, err
+		}
+		if p, err = s.d.Reader.Projection(ctx, id); err != nil {
+			return p, err
+		}
+	}
+	if s.d.Machine.DispatchDue(p) {
+		if err := s.dispatchReady(ctx, p, freeText); err != nil {
+			return p, err
+		}
+		return s.d.Reader.Projection(ctx, id)
+	}
+	return p, nil
 }
 
 // Flags recorded by intake.
@@ -391,19 +464,15 @@ const (
 // the similarity threshold; otherwise the ward's centre, flagged for a
 // location call-back, and dispatch proceeds on the ward's zones (Build
 // Prompt §10.1, §12).
-func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, sess session, a incident.ScreenAnswer, freeText string) error {
-	landmark := p.Landmark
-	if a.Field == incident.FieldLandmark {
-		landmark = a.Value
-	}
+func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, freeText string) error {
 	ward, ok := s.d.Gazetteer.Ward(p.Ward)
 	if !ok {
 		return fmt.Errorf("intake: ward %q is not in gazetteer %s", p.Ward, s.d.Gazetteer.Version)
 	}
 	cell, quality := ward.Centre, incident.QualityWard
-	if l, ok := s.d.Gazetteer.Landmark(landmark); ok && l.WardID == ward.ID {
+	if l, ok := s.d.Gazetteer.Landmark(p.Landmark); ok && l.WardID == ward.ID {
 		cell, quality = l.Cell, incident.QualityLandmark
-	} else if landmark == incident.LandmarkOther && freeText != "" {
+	} else if p.Landmark == incident.LandmarkOther && freeText != "" {
 		m, err := s.d.Matcher.Match(ctx, s.d.Gazetteer.Version, ward.ID, location.Normalise(freeText))
 		if err != nil {
 			return err
@@ -413,15 +482,24 @@ func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, sess
 		}
 	}
 	if quality == incident.QualityWard {
-		if err := s.appendSystem(ctx, p.ID, incident.EvFlagged, map[string]string{"flag": FlagNeedsLocationCallback},
-			sess.key(a.Screen, "needs_location_callback")); err != nil {
+		flag, err := newEvent(p.ID, incident.EvFlagged, incident.ActorSystem, map[string]string{"flag": FlagNeedsLocationCallback},
+			incidentKey(p.ID, FlagNeedsLocationCallback), "")
+		if err != nil {
+			return err
+		}
+		if _, err := s.d.Incidents.Append(ctx, flag); err != nil {
 			return err
 		}
 	}
-	return s.appendSystem(ctx, p.ID, incident.EvDispatchReady, map[string]any{
-		"trigger_screen": a.Screen, "zone": map[string]int{"col": cell.Col, "row": cell.Row},
+	ready, err := newEvent(p.ID, incident.EvDispatchReady, incident.ActorSystem, map[string]any{
+		"trigger_screen": s.d.Machine.TriggerScreen(), "zone": map[string]int{"col": cell.Col, "row": cell.Row},
 		"location_quality": quality, "gazetteer_version": s.d.Gazetteer.Version,
-	}, sess.key(a.Screen, "dispatch_ready"))
+	}, incidentKey(p.ID, "dispatch_ready"), "")
+	if err != nil {
+		return err
+	}
+	_, err = s.d.Incidents.Append(ctx, ready)
+	return err
 }
 
 func sameMAC(a, b crypto.MAC) bool { return a.KeyID == b.KeyID && bytes.Equal(a.Sum, b.Sum) }

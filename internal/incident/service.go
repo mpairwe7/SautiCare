@@ -19,6 +19,11 @@ import (
 type Store interface {
 	OpenIncident(ctx context.Context, p OpenParams) (Opened, error)
 	Append(ctx context.Context, p AppendParams) (Appended, error)
+	// AppendBatch appends events in one transaction: all of them or none.
+	// Each is idempotent on its key as in Append, and later events see the
+	// state earlier ones left. The result has one Appended per event, in
+	// order.
+	AppendBatch(ctx context.Context, ps []AppendParams) ([]Appended, error)
 	Events(ctx context.Context, id uuid.UUID) ([]Event, error)
 	// StoreIdentifier stores a sealed identifier once per (incident,
 	// IdemKey) and returns the stored row's ID (the existing one on a retry).
@@ -161,18 +166,46 @@ func (s *Service) StartSession(ctx context.Context, cmd StartSession) (Opened, e
 	return Opened{}, fmt.Errorf("incident: %d reference collisions: %w", maxReferenceAttempts, lastErr)
 }
 
-// Append validates the event type and appends through the store.
-func (s *Service) Append(ctx context.Context, p AppendParams) (Appended, error) {
+// checkAppend validates one event to append and defaults its payload.
+func checkAppend(p AppendParams) (AppendParams, error) {
 	if !p.Type.Known() || p.Type == EvSessionStarted {
-		return Appended{}, fmt.Errorf("%w: event type %q", ErrIllegalTransition, p.Type)
+		return p, fmt.Errorf("%w: event type %q", ErrIllegalTransition, p.Type)
 	}
 	if p.IdemKey == "" {
-		return Appended{}, errors.New("incident: append requires an idempotency key")
+		return p, errors.New("incident: append requires an idempotency key")
 	}
 	if len(p.Payload) == 0 {
 		p.Payload = json.RawMessage("{}")
 	}
+	return p, nil
+}
+
+// Append validates the event type and appends through the store.
+func (s *Service) Append(ctx context.Context, p AppendParams) (Appended, error) {
+	p, err := checkAppend(p)
+	if err != nil {
+		return Appended{}, err
+	}
 	return s.store.Append(ctx, p)
+}
+
+// AppendBatch validates every event as Append does and appends them
+// atomically: an answer and what it implies (a classification, its rule
+// error flag and escalation, an out-of-area closure) are recorded together
+// or not at all, so a failure between them cannot leave half a decision.
+func (s *Service) AppendBatch(ctx context.Context, ps []AppendParams) ([]Appended, error) {
+	if len(ps) == 0 {
+		return nil, errors.New("incident: empty batch")
+	}
+	checked := make([]AppendParams, len(ps))
+	for i, p := range ps {
+		c, err := checkAppend(p)
+		if err != nil {
+			return nil, err
+		}
+		checked[i] = c
+	}
+	return s.store.AppendBatch(ctx, checked)
 }
 
 // StoreIdentifier seals a screen-answer identifier (a callback number or a

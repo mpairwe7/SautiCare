@@ -82,14 +82,14 @@ FROM op.resume_session(
 -- name: FindResumable :many
 SELECT i.id FROM op.sessions s JOIN op.incidents i ON i.id = s.incident_id
 WHERE s.phone_mac = ANY (sqlc.arg(macs)::bytea[])
-  AND i.state NOT IN ('closed', 'merged') AND i.last_screen < 8
+  AND i.state NOT IN ('closed', 'merged') AND (i.last_screen < 8 OR i.t2 IS NULL)
   AND i.updated_at >= clock_timestamp() - sqlc.arg(window_seconds)::int * interval '1 second'
 ORDER BY i.updated_at DESC
 LIMIT 1;
 
 -- name: ListIdle :many
 SELECT id, danger, category, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
-WHERE state NOT IN ('closed', 'merged') AND last_screen < 8
+WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - sqlc.arg(idle_seconds)::int * interval '1 second'
   AND NOT ('abandoned' = ANY (flags))
 ORDER BY updated_at

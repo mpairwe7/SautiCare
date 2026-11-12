@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"sync"
 	"testing"
@@ -107,6 +108,27 @@ func (m *memIncidents) Append(_ context.Context, a incident.AppendParams) (incid
 	return incident.Appended{Event: e}, err
 }
 
+// AppendBatch applies every event or none, like the store's transaction.
+func (m *memIncidents) AppendBatch(_ context.Context, ps []incident.AppendParams) ([]incident.Appended, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	events, keys, activity := maps.Clone(m.events), maps.Clone(m.keys), maps.Clone(m.activity)
+	out := make([]incident.Appended, 0, len(ps))
+	for _, a := range ps {
+		var e incident.Event
+		err := errors.New("no idempotency key")
+		if a.IdemKey != "" {
+			e, err = m.appendLocked(a.IncidentID, a.Type, a.Payload, a.IdemKey, a.LogicVersion)
+		}
+		if err != nil {
+			m.events, m.keys, m.activity = events, keys, activity
+			return nil, err
+		}
+		out = append(out, incident.Appended{Event: e})
+	}
+	return out, nil
+}
+
 func (m *memIncidents) StoreIdentifier(_ context.Context, inc uuid.UUID, kind string, plaintext []byte, idem string) (uuid.UUID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -137,7 +159,7 @@ func (m *memIncidents) FindResumable(_ context.Context, macs []crypto.MAC, windo
 			match = match || string(mac.Sum) == k
 		}
 		p, _ := incident.Fold(m.events[id])
-		if !match || p.State.Terminal() || p.LastScreen >= 8 || m.now.Sub(m.activity[id]) > window {
+		if !match || p.State.Terminal() || (p.LastScreen >= 8 && p.T[2] != nil) || m.now.Sub(m.activity[id]) > window {
 			continue
 		}
 		if !found || m.activity[id].After(m.activity[best]) {
