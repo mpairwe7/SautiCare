@@ -47,6 +47,7 @@ The governing documents are confidential and are **not committed**; `.gitignore`
 | O8 | Gateway timestamp offset at T1 | Guide §10 | Measured during field testing (M7) and documented before data collection |
 | O9 | Alert recipients for red incidents | The Tools say "top 3", the Protocol says "top 3 of each role" | Build to the Protocol: the top 3 of each role |
 | O10 | The audit trail's "external daily witness" | Guide §15 adds it; Build Prompt §4 does not mention it | Added: checkpoints are also written through a `Witness` port |
+| O11 | Is snake bite its own Tool 1 category? | Guide §5 lists five categories (trauma, obstetric, acute medical, poisoning, other); the triage rule names "poisoning or snake bite" | Placeholder category `poisoning`, labelled "Poisoning or snake bite", is the one time-critical category until Tool 1 is received (ADR-0019) |
 
 ## 4. Architecture
 
