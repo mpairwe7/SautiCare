@@ -33,7 +33,106 @@ func triaged(t *testing.T, s *opstore.Store, category string) incident.Opened {
 func dispatch(s *opstore.Store, o incident.Opened, category string, col int) (intake.DispatchOutcome, error) {
 	payload, _ := json.Marshal(map[string]any{"zone": map[string]int{"col": col, "row": 84}, "location_quality": "landmark"})
 	return s.DispatchOrMerge(context.Background(), intake.DispatchRequest{IncidentID: o.IncidentID, Payload: payload,
-		IdemKey: "dr:" + o.IncidentID.String(), Category: category, Zone: incident.Zone{Col: col, Row: 84}, T1: o.T1, Rule: dedupRule})
+		IdemKey: "dr:" + o.IncidentID.String(), Category: category, Severity: incident.SevRed, LocationQuality: incident.QualityLandmark,
+		Zone: incident.Zone{Col: col, Row: 84}, T1: o.T1, Rule: dedupRule})
+}
+
+// classifiedAs opens an incident with a category and the given severity,
+// escalated if asked, ready for T2.
+func classifiedAs(t *testing.T, s *opstore.Store, category string, sev incident.Severity, escalated bool) incident.Opened {
+	t.Helper()
+	o, err := s.OpenIncident(context.Background(), openParams(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":3,"field":"category","value":"`+category+`"}`, "")
+	appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"`+string(sev)+`"}`, "tool1-test+sha256:000000000000")
+	if escalated {
+		appendEv(t, s, o.IncidentID, incident.EvEscalated, `{"reason":"triage_rule_error"}`, "")
+	}
+	return o
+}
+
+func dispatchAs(s *opstore.Store, o incident.Opened, category string, sev incident.Severity, escalated bool, quality string, col int) (intake.DispatchOutcome, error) {
+	payload, _ := json.Marshal(map[string]any{"zone": map[string]int{"col": col, "row": 84}, "location_quality": quality})
+	return s.DispatchOrMerge(context.Background(), intake.DispatchRequest{IncidentID: o.IncidentID, Payload: payload,
+		IdemKey: "dr:" + o.IncidentID.String(), Category: category, Severity: sev, Escalated: escalated, LocationQuality: quality,
+		Zone: incident.Zone{Col: col, Row: 84}, T1: o.T1, Rule: dedupRule})
+}
+
+// C2: a merged call more urgent than its survivor raises the survivor's
+// severity (incident.severity_raised, from the merged call) and, if the
+// call was escalated, escalates it (merged_call_escalated), in the merge's
+// transaction. A less urgent call changes nothing; a retry adds nothing; the
+// projections match the events.
+func TestMergeCarriesSeverityAndEscalation(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	survivor := classifiedAs(t, s, "trauma", incident.SevGreen, false)
+	if out, err := dispatchAs(s, survivor, "trauma", incident.SevGreen, false, incident.QualityLandmark, 902); err != nil || out.Merged {
+		t.Fatalf("survivor dispatch: %+v %v", out, err)
+	}
+	yellow := classifiedAs(t, s, "trauma", incident.SevYellow, false)
+	if out, err := dispatchAs(s, yellow, "trauma", incident.SevYellow, false, incident.QualityLandmark, 902); err != nil || !out.Merged {
+		t.Fatalf("yellow merge: %+v %v", out, err)
+	}
+	if p, _ := s.Projection(ctx, survivor.IncidentID); p.Severity != incident.SevYellow || p.Escalated {
+		t.Fatalf("after the yellow call: %+v", p)
+	}
+	red := classifiedAs(t, s, "trauma", incident.SevRed, true)
+	for range 2 {
+		if out, err := dispatchAs(s, red, "trauma", incident.SevRed, true, incident.QualityFuzzy, 903); err != nil || !out.Merged ||
+			out.Survivor != survivor.IncidentID {
+			t.Fatalf("red merge: %+v %v", out, err)
+		}
+	}
+	green := classifiedAs(t, s, "trauma", incident.SevGreen, false)
+	if out, err := dispatchAs(s, green, "trauma", incident.SevGreen, false, incident.QualityLandmark, 902); err != nil || !out.Merged {
+		t.Fatalf("green merge: %+v %v", out, err)
+	}
+	p, _ := s.Projection(ctx, survivor.IncidentID)
+	if p.Severity != incident.SevRed || !p.Escalated || p.State != incident.StateDispatching || len(p.Absorbed) != 3 {
+		t.Fatalf("survivor: %+v", p)
+	}
+	evs, _ := s.Events(ctx, survivor.IncidentID)
+	var raised []string
+	escalations := 0
+	for _, e := range evs {
+		switch e.Type {
+		case incident.EvSeverityRaised:
+			raised = append(raised, string(e.Payload))
+		case incident.EvEscalated:
+			escalations++
+			var pl map[string]string
+			if json.Unmarshal(e.Payload, &pl) != nil || len(pl) != 1 || pl["reason"] != "merged_call_escalated" {
+				t.Errorf("escalation payload %s", e.Payload)
+			}
+		}
+	}
+	if len(raised) != 2 || escalations != 1 {
+		t.Fatalf("severity_raised %v, escalations %d", raised, escalations)
+	}
+	if _, drift, err := opstore.VerifyProjections(ctx, storeAs(t, c, "op_readonly")); err != nil || len(drift) != 0 {
+		t.Fatalf("drift %v %v", drift, err)
+	}
+}
+
+// I1 at store level: two calls located only to their ward, same category,
+// same zone, minutes apart, are both dispatched; neither is merged.
+func TestWardLevelCallsAreNotMerged(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	a, b := classifiedAs(t, s, "trauma", incident.SevRed, false), classifiedAs(t, s, "trauma", incident.SevRed, false)
+	for _, o := range []incident.Opened{a, b} {
+		if out, err := dispatchAs(s, o, "trauma", incident.SevRed, false, incident.QualityWard, 902); err != nil || out.Merged {
+			t.Fatalf("ward-level dispatch: %+v %v", out, err)
+		}
+	}
+	listed := classifiedAs(t, s, "trauma", incident.SevRed, false)
+	if out, err := dispatchAs(s, listed, "trauma", incident.SevRed, false, incident.QualityLandmark, 902); err != nil || out.Merged {
+		t.Fatalf("a located call merged into a ward-level one: %+v %v", out, err)
+	}
 }
 
 // Scenario 4 at store level: the later-dispatched call merges into the

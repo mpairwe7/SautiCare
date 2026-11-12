@@ -120,6 +120,18 @@ func Apply(p Projection, e Event) (Projection, error) {
 		next.Absorbed = maps.Clone(p.Absorbed)
 		delete(next.Absorbed, from)
 		next.T[1] = earliestT1(next.OwnT1, next.Absorbed)
+	case EvSeverityRaised:
+		sev, from, err := parseSeverityRaised(e.Payload)
+		if err != nil {
+			return p, err
+		}
+		if from == p.ID {
+			return p, fmt.Errorf("%w: severity_raised: an incident cannot raise itself", ErrIllegalTransition)
+		}
+		if sev.Rank() <= p.Severity.Rank() {
+			return p, fmt.Errorf("%w: severity_raised must raise the severity (%s -> %s)", ErrIllegalTransition, p.Severity, sev)
+		}
+		next.Severity = sev
 	case EvUnmerged:
 		from, err := parseFrom(e.Payload)
 		if err != nil {

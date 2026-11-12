@@ -96,7 +96,7 @@ ORDER BY updated_at
 LIMIT 500;
 
 -- name: DedupCandidates :many
-SELECT id, category, zone_col, zone_row, t1, t2 FROM op.incidents
+SELECT id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2 FROM op.incidents
 WHERE category = sqlc.arg(category)::text AND t2 IS NOT NULL AND state NOT IN ('closed', 'merged')
   AND zone_col BETWEEN sqlc.arg(col)::int - sqlc.arg(dist)::int AND sqlc.arg(col)::int + sqlc.arg(dist)::int
   AND zone_row BETWEEN sqlc.arg(row_index)::int - sqlc.arg(dist)::int AND sqlc.arg(row_index)::int + sqlc.arg(dist)::int

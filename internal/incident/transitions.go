@@ -36,6 +36,7 @@ func Transitions() []Transition {
 		{Any, EvClosed, StateClosed},
 		{Any, EvMergeAbsorbed, ""},
 		{Any, EvSplit, ""},
+		{Any, EvSeverityRaised, ""},
 		{StateMerged, EvUnmerged, StateDispatching},
 		{StateMerged, EvScreenAnswered, ""},
 		{StateIntake, EvMerged, StateMerged},

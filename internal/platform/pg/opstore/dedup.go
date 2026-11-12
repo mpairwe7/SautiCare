@@ -33,7 +33,8 @@ func i32(v int) (int32, error) {
 
 // DispatchOrMerge implements intake.Dispatcher. In one transaction, under an
 // advisory lock: append dispatch_ready (T2); if the rule finds a survivor,
-// append merged on this incident and merge_absorbed on the survivor. A
+// append merged on this incident and merge_absorbed on the survivor, plus
+// the call's higher severity or escalation on the survivor (merge). A
 // retried request whose dispatch_ready already exists reports the stored
 // outcome and decides nothing again.
 func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (out intake.DispatchOutcome, err error) {
@@ -79,7 +80,8 @@ func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (
 			continue
 		}
 		cands = append(cands, intake.Candidate{ID: uuid.UUID(c.ID.Bytes), Category: deref(c.Category),
-			Zone: incident.Zone{Col: int(*c.ZoneCol), Row: int(*c.ZoneRow)}, T1: c.T1.Time, T2: c.T2.Time})
+			Zone: incident.Zone{Col: int(*c.ZoneCol), Row: int(*c.ZoneRow)}, LocationQuality: deref(c.LocationQuality),
+			Severity: incident.Severity(deref(c.Severity)), Escalated: c.Escalated, T1: c.T1.Time, T2: c.T2.Time})
 	}
 	a, err := ts.Append(ctx, incident.AppendParams{IncidentID: r.IncidentID, Type: incident.EvDispatchReady, Payload: r.Payload,
 		ActorKind: incident.ActorSystem, IdemKey: r.IdemKey})
@@ -96,24 +98,57 @@ func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (
 		}
 		return out, tx.Commit(ctx)
 	}
-	survivor, ok := r.Rule.Survivor(r.IncidentID, r.Category, r.Zone, r.T1, cands)
+	survivor, ok := r.Rule.Survivor(r.Call(), cands)
 	if ok {
-		into, _ := json.Marshal(map[string]string{"into": survivor.String()})
-		if _, err = ts.Append(ctx, incident.AppendParams{IncidentID: r.IncidentID, Type: incident.EvMerged, Payload: into,
-			ActorKind: incident.ActorSystem, IdemKey: r.IdemKey + ":merge"}); err != nil {
+		if err = ts.merge(ctx, r, survivor); err != nil {
 			return out, err
 		}
-		absorbed, _ := json.Marshal(map[string]string{"from": r.IncidentID.String(), "t1": r.T1.UTC().Format(t1Layout)})
-		if _, err = ts.Append(ctx, incident.AppendParams{IncidentID: survivor, Type: incident.EvMergeAbsorbed, Payload: absorbed,
-			ActorKind: incident.ActorSystem, IdemKey: "dedup:absorb:" + r.IncidentID.String()}); err != nil {
-			return out, err
-		}
-		out = intake.DispatchOutcome{Merged: true, Survivor: survivor}
+		out = intake.DispatchOutcome{Merged: true, Survivor: survivor.ID}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return intake.DispatchOutcome{}, err
 	}
 	return out, nil
+}
+
+// merge records, in the caller's transaction, the call's merge into
+// survivor: merged on the call, merge_absorbed on the survivor, and what the
+// call carries to it (intake.Consequences): severity_raised if the call is
+// more urgent, an escalation if the call was escalated and the survivor is
+// not. A merge never leaves the dispatch less urgent than a call it absorbed.
+func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor intake.Candidate) error {
+	into, err := json.Marshal(map[string]string{"into": survivor.ID.String()})
+	if err != nil {
+		return err
+	}
+	absorbed, err := json.Marshal(map[string]string{"from": r.IncidentID.String(), "t1": r.T1.UTC().Format(t1Layout)})
+	if err != nil {
+		return err
+	}
+	cons, err := intake.Consequences(r.Call(), survivor)
+	if err != nil {
+		return err
+	}
+	from := r.IncidentID.String()
+	events := []incident.AppendParams{
+		{IncidentID: r.IncidentID, Type: incident.EvMerged, Payload: into, IdemKey: r.IdemKey + ":merge"},
+		{IncidentID: survivor.ID, Type: incident.EvMergeAbsorbed, Payload: absorbed, IdemKey: "dedup:absorb:" + from},
+	}
+	if cons.Raise != nil {
+		events = append(events, incident.AppendParams{IncidentID: survivor.ID, Type: incident.EvSeverityRaised, Payload: cons.Raise,
+			IdemKey: "dedup:raise:" + from})
+	}
+	if cons.Escalate != nil {
+		events = append(events, incident.AppendParams{IncidentID: survivor.ID, Type: incident.EvEscalated, Payload: cons.Escalate,
+			IdemKey: "dedup:escalate:" + from})
+	}
+	for _, e := range events {
+		e.ActorKind = incident.ActorSystem
+		if _, err := s.Append(ctx, e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SplitIncident splits a wrongly merged call off its survivor (coordinator

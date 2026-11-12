@@ -503,9 +503,11 @@ func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, free
 	}
 	// T2, and the merge of a duplicate call into the incident already
 	// dispatching (same category, within one zone, 15 minutes), atomically.
+	// The call's severity and escalation go with it to the survivor; a call
+	// located only to its ward is never merged.
 	_, err = s.d.Dispatcher.DispatchOrMerge(ctx, DispatchRequest{IncidentID: p.ID, Payload: payload,
-		IdemKey: incidentKey(p.ID, "dispatch_ready"), Category: p.Category,
-		Zone: incident.Zone{Col: cell.Col, Row: cell.Row}, T1: *p.T[1], Rule: s.d.Dedup})
+		IdemKey: incidentKey(p.ID, "dispatch_ready"), Category: p.Category, Severity: p.Severity, Escalated: p.Escalated,
+		LocationQuality: quality, Zone: incident.Zone{Col: cell.Col, Row: cell.Row}, T1: *p.T[1], Rule: s.d.Dedup})
 	return err
 }
 

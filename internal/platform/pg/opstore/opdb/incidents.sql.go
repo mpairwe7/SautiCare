@@ -97,7 +97,7 @@ func (q *Queries) ClaimOutbox(ctx context.Context, arg ClaimOutboxParams) ([]Cla
 }
 
 const dedupCandidates = `-- name: DedupCandidates :many
-SELECT id, category, zone_col, zone_row, t1, t2 FROM op.incidents
+SELECT id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2 FROM op.incidents
 WHERE category = $1::text AND t2 IS NOT NULL AND state NOT IN ('closed', 'merged')
   AND zone_col BETWEEN $2::int - $3::int AND $2::int + $3::int
   AND zone_row BETWEEN $4::int - $3::int AND $4::int + $3::int
@@ -117,12 +117,15 @@ type DedupCandidatesParams struct {
 }
 
 type DedupCandidatesRow struct {
-	ID       pgtype.UUID
-	Category *string
-	ZoneCol  *int32
-	ZoneRow  *int32
-	T1       pgtype.Timestamptz
-	T2       pgtype.Timestamptz
+	ID              pgtype.UUID
+	Category        *string
+	ZoneCol         *int32
+	ZoneRow         *int32
+	LocationQuality *string
+	Severity        *string
+	Escalated       bool
+	T1              pgtype.Timestamptz
+	T2              pgtype.Timestamptz
 }
 
 func (q *Queries) DedupCandidates(ctx context.Context, arg DedupCandidatesParams) ([]DedupCandidatesRow, error) {
@@ -147,6 +150,9 @@ func (q *Queries) DedupCandidates(ctx context.Context, arg DedupCandidatesParams
 			&i.Category,
 			&i.ZoneCol,
 			&i.ZoneRow,
+			&i.LocationQuality,
+			&i.Severity,
+			&i.Escalated,
 			&i.T1,
 			&i.T2,
 		); err != nil {
