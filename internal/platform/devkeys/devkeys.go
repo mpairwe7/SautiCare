@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	// ErrProductionForbidden is returned when dev keys are opened in production.
+	// ErrProductionForbidden is returned when dev keys are opened outside dev/test.
 	ErrProductionForbidden = errors.New("devkeys: development keys are forbidden in production")
 	// ErrInsecurePermissions is returned when the key file is group/world accessible.
 	ErrInsecurePermissions = errors.New("devkeys: keys.json must not be readable by group or others")
@@ -96,7 +96,9 @@ type Store struct {
 
 // Open loads keys.json from dir. env is the value of SAUTI_ENV.
 func Open(dir, env string) (*Store, error) {
-	if env == "production" {
+	// Allowlist, not denylist: only an explicit dev or test environment may
+	// use development keys (review finding M7).
+	if env != "dev" && env != "test" {
 		return nil, ErrProductionForbidden
 	}
 	path := filepath.Join(dir, fileName)

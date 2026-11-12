@@ -90,3 +90,17 @@ func TestWitnessIsWriteOnce(t *testing.T) {
 		t.Fatal("path traversal accepted")
 	}
 }
+
+// Development keys open only in an explicit dev or test environment; any
+// other value (including a mis-cased "Production") is refused (M7).
+func TestDevkeysRefuseNonDevEnvironments(t *testing.T) {
+	dir := generated(t)
+	for _, env := range []string{"Production", "prod", "", "staging"} {
+		if _, err := Open(dir, env); !errors.Is(err, ErrProductionForbidden) {
+			t.Errorf("Open(%q) = %v, want ErrProductionForbidden", env, err)
+		}
+	}
+	if _, err := Open(dir, "test"); err != nil {
+		t.Errorf("Open(test) = %v", err)
+	}
+}

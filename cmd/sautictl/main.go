@@ -113,7 +113,11 @@ func cmdBootstrap(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer func() { _ = conn.Close(ctx) }()
-	dbs, err := bootstrap.Run(ctx, conn, bootstrap.Options{Suffix: *suffix, Password: password, Env: env.Default("SAUTI_ENV", "dev")})
+	senv, err := env.Environment()
+	if err != nil {
+		return err
+	}
+	dbs, err := bootstrap.Run(ctx, conn, bootstrap.Options{Suffix: *suffix, Password: password, Env: senv})
 	if err != nil {
 		return err
 	}
@@ -148,7 +152,9 @@ func cmdKeygen(_ context.Context, args []string, out io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if env.Default("SAUTI_ENV", "dev") == "production" {
+	if senv, err := env.Environment(); err != nil {
+		return err
+	} else if senv != "dev" && senv != "test" {
 		return devkeys.ErrProductionForbidden
 	}
 	if err := devkeys.Generate(*dir, rand.Reader); err != nil {
@@ -167,7 +173,11 @@ func publicKey(devDir, file string) ([]byte, error) {
 		}
 		return base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
 	case devDir != "":
-		st, err := devkeys.Open(devDir, env.Default("SAUTI_ENV", "dev"))
+		senv, err := env.Environment()
+		if err != nil {
+			return nil, err
+		}
+		st, err := devkeys.Open(devDir, senv)
 		if err != nil {
 			return nil, err
 		}
@@ -240,7 +250,11 @@ func cmdCheckpoint(ctx context.Context, args []string, out io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	keys, err := devkeys.Open(*devDir, env.Default("SAUTI_ENV", "dev"))
+	senv, err := env.Environment()
+	if err != nil {
+		return err
+	}
+	keys, err := devkeys.Open(*devDir, senv)
 	if err != nil {
 		return err
 	}

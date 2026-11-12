@@ -64,7 +64,10 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	senv := env.Default("SAUTI_ENV", "dev")
+	senv, err := env.Environment()
+	if err != nil {
+		return err
+	}
 	cfg, err := config.Load(os.DirFS(env.Default("SAUTI_CONFIG_DIR", "config")))
 	if err != nil {
 		return err

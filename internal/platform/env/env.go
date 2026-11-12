@@ -35,3 +35,15 @@ func List(key string) []string {
 	}
 	return out
 }
+
+// Environment returns SAUTI_ENV, which must be exactly "dev", "test" or
+// "production". Anything else — unset, misspelt, differently cased — is an
+// error, so a live host can never fall back to development behaviour.
+func Environment() (string, error) {
+	v := os.Getenv("SAUTI_ENV")
+	switch v {
+	case "dev", "test", "production":
+		return v, nil
+	}
+	return "", fmt.Errorf("env: SAUTI_ENV must be dev, test or production (got %q)", v)
+}

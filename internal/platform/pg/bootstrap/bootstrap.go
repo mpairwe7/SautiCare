@@ -22,7 +22,7 @@ var ErrProductionForbidden = errors.New("bootstrap: dev bootstrap is forbidden i
 type Options struct {
 	Suffix   string // appended to database names (tests use a random suffix)
 	Password string // login password for every role (dev/test only)
-	Env      string // value of SAUTI_ENV
+	Env      string // value of SAUTI_ENV; only "dev" or "test" may bootstrap
 }
 
 // roleLock serialises role creation across concurrent bootstraps on one server.
@@ -37,7 +37,7 @@ func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''
 // CONNECT on each database to that store's roles. admin must be a superuser
 // connection to a maintenance database. It returns store → database name.
 func Run(ctx context.Context, admin *pgx.Conn, o Options) (map[pg.Store]string, error) {
-	if o.Env == "production" {
+	if o.Env != "dev" && o.Env != "test" {
 		return nil, ErrProductionForbidden
 	}
 	if o.Password == "" {
