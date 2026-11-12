@@ -422,3 +422,42 @@ func TestStepMessageIsUnambiguous(t *testing.T) {
 		t.Fatal("step messages collide")
 	}
 }
+
+// racySteps misses the first lookup, as when a concurrent duplicate callback
+// saves its step between this callback's Lookup and Latest.
+type racySteps struct {
+	*memSteps
+	missed bool
+}
+
+func (r *racySteps) Lookup(ctx context.Context, p, s string, macs []crypto.MAC) (Step, bool, error) {
+	if !r.missed {
+		r.missed = true
+		return Step{}, false, nil
+	}
+	return r.memSteps.Lookup(ctx, p, s, macs)
+}
+
+// Review focus 1: a duplicate callback whose twin stored the step after this
+// one's lookup must replay that step, not be refused as a rewritten history.
+func TestDuplicateCallbackSavedMidwayReplays(t *testing.T) {
+	r := newRig(t, nil, nil)
+	c := r.dial(t, "S1", "0772123456")
+	first := c.send("")
+	racy := &racySteps{memSteps: r.steps}
+	svc, err := New(Deps{Incidents: r.inc, Reader: r.inc, Steps: racy, Keys: fakeKeys{}, Machine: newMachine(t),
+		Triage: repoTriage(t), Gazetteer: repoGazetteer(t), Matcher: fakeMatcher{}, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := svc.HandleUSSD(context.Background(), c.req)
+	if err != nil || again != first {
+		t.Fatalf("duplicate first callback: %+v, %v (want the stored screen)", again, err)
+	}
+	second := c.send("1")
+	racy.missed = false
+	dup, err := svc.HandleUSSD(context.Background(), c.req)
+	if err != nil || dup != second {
+		t.Fatalf("duplicate later callback: %+v, %v (want the stored screen)", dup, err)
+	}
+}
