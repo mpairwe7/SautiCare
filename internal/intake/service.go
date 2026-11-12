@@ -220,6 +220,11 @@ func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error)
 	if err != nil {
 		return Screen{}, err
 	}
+	// A concurrent duplicate may have stored this very input's step after our
+	// lookup: replay it rather than mistake it for the previous input.
+	if hasPrev && slices.ContainsFunc(macs, func(m crypto.MAC) bool { return sameMAC(m, prev.MAC) }) {
+		return prev.Screen, nil
+	}
 	var incidentID uuid.UUID
 	var pr Prompt
 	if !hasPrev {
@@ -259,7 +264,7 @@ func (s *Service) newInput(ctx context.Context, r USSDRequest, prev Step) (strin
 	if err != nil {
 		return "", err
 	}
-	if !slices.ContainsFunc(prefix, func(m crypto.MAC) bool { return m.KeyID == prev.MAC.KeyID && bytes.Equal(m.Sum, prev.MAC.Sum) }) {
+	if !slices.ContainsFunc(prefix, func(m crypto.MAC) bool { return sameMAC(m, prev.MAC) }) {
 		return "", ErrInputHistory
 	}
 	if l == 0 {
@@ -418,3 +423,5 @@ func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, sess
 		"location_quality": quality, "gazetteer_version": s.d.Gazetteer.Version,
 	}, sess.key(a.Screen, "dispatch_ready"))
 }
+
+func sameMAC(a, b crypto.MAC) bool { return a.KeyID == b.KeyID && bytes.Equal(a.Sum, b.Sum) }
