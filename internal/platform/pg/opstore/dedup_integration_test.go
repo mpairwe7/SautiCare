@@ -5,13 +5,19 @@ package opstore_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 	"uuid"
 
+	"github.com/jackc/pgx/v5"
+
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/intake"
+	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/pg/pgtest"
 )
@@ -228,5 +234,58 @@ func TestSplitIncident(t *testing.T) {
 	}
 	if err := console.SplitIncident(ctx, survivor.IncidentID, triaged(t, s, "trauma").IncidentID, staff); err == nil {
 		t.Fatal("split of a call that was never merged succeeded")
+	}
+}
+
+// dedupCandidatesSQL is the DedupCandidates query as sqlc compiles it, read
+// from db/operational/queries/incidents.sql, with each sqlc.arg replaced by
+// the given literal.
+func dedupCandidatesSQL(t *testing.T, args map[string]string) string {
+	t.Helper()
+	b, err := os.ReadFile("../../../../db/operational/queries/incidents.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, q, ok := strings.Cut(string(b), "-- name: DedupCandidates :many\n")
+	if !ok {
+		t.Fatal("DedupCandidates not found in incidents.sql")
+	}
+	q, _, _ = strings.Cut(q, ";")
+	return regexp.MustCompile(`sqlc\.arg\((\w+)\)`).ReplaceAllStringFunc(q, func(m string) string {
+		v, ok := args[m[len("sqlc.arg("):len(m)-1]]
+		if !ok {
+			t.Fatalf("no literal for %s", m)
+		}
+		return v
+	})
+}
+
+// Every dispatch decision reads the candidates under the dedup lock, so the
+// read must not scan every retained incident: the planner can answer it from
+// the partial index of incidents already dispatching (incidents_dedup).
+func TestDedupCandidatesUseAnIndex(t *testing.T) {
+	c := pgtest.Cluster(t)
+	conn := c.Owner(t, pg.StoreOperational)
+	ctx := context.Background()
+	q := dedupCandidatesSQL(t, map[string]string{"category": "'trauma'", "col": "902", "dist": "1", "row_index": "84",
+		"t1": "now()", "window_seconds": "900", "id": "'" + uuid.NewV7().String() + "'"})
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SET LOCAL enable_seqscan = off"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query(ctx, "EXPLAIN "+q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := strings.Join(plan, "\n"); !strings.Contains(text, "incidents_dedup") {
+		t.Fatalf("DedupCandidates does not use incidents_dedup:\n%s", text)
 	}
 }

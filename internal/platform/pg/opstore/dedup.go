@@ -31,6 +31,18 @@ func i32(v int) (int32, error) {
 	return int32(v), nil //nolint:gosec // G115: range checked above
 }
 
+// prefilterSeconds is the dedup window in whole seconds for the SQL
+// candidate prefilter, rounded up: the prefilter only narrows the
+// candidates and DedupRule.Survivor applies the exact window, so it must
+// never drop a call a fractional window (15m500ms) would accept.
+func prefilterSeconds(w time.Duration) (int32, error) {
+	s := w / time.Second
+	if w%time.Second > 0 {
+		s++
+	}
+	return i32(int(s))
+}
+
 // DispatchOrMerge implements intake.Dispatcher. In one transaction, under an
 // advisory lock: append dispatch_ready (T2); if the rule finds a survivor,
 // append merged on this incident and merge_absorbed on the survivor, plus
@@ -50,7 +62,7 @@ func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (
 	if err != nil {
 		return out, err
 	}
-	window, err := i32(int(r.Rule.Window / time.Second))
+	window, err := prefilterSeconds(r.Rule.Window)
 	if err != nil {
 		return out, err
 	}

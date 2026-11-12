@@ -115,6 +115,13 @@ BEGIN
 END
 $$;
 
+-- Every dispatch decision reads its merge candidates (DedupCandidates) under
+-- the dedup advisory lock: incidents already dispatching, of one category,
+-- with T1 in a window. A partial index over exactly those incidents keeps
+-- that read small however many closed or merged incidents are retained.
+CREATE INDEX incidents_dedup ON op.incidents (category, t1)
+    WHERE t2 IS NOT NULL AND state NOT IN ('closed', 'merged');
+
 -- The replaced functions keep their existing grants: the helpers none to
 -- runtime roles (only op.append_incident_event, SECURITY DEFINER, calls
 -- them), op.split_incident EXECUTE to op_console only.
