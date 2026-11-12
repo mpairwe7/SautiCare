@@ -25,7 +25,7 @@ Rule 3.8 requires a hash-chained audit ledger with signed checkpoints recording 
 
 ## Decision Outcome
 
-Chosen option: **SHA-256 chain in PostgreSQL with ML-DSA-65 checkpoints**. `audit.append` serialises appends with an advisory lock, assigns a dense `bigint` sequence and computes `hash = sha256(prev_hash ‖ canonical(entry))` in SQL; Go re-computes it independently (`docs/reference/audit-canonical-encoding.md`). Entries have typed columns only. Every 5 minutes the head is signed with ML-DSA-65 (Go 1.27 `crypto/mldsa`, context `sauti-audit-checkpoint/v1`), stored, and written through the `Witness` port. Append-only triggers block UPDATE/DELETE/TRUNCATE even for the owner.
+Chosen option: **SHA-256 chain in PostgreSQL with ML-DSA-65 checkpoints**. `audit.append` serialises appends with an advisory lock, assigns a dense `bigint` sequence and computes `hash = sha256(prev_hash ‖ canonical(entry))` in SQL; Go re-computes it independently (`docs/reference/audit-canonical-encoding.md`). Entries have typed columns only, and the payload is represented by `sha256(payload_salt ‖ payload)`, where the random per-event salt stays in the operational store, so the hash cannot be reversed by enumerating phone numbers. Every 5 minutes the head is signed with ML-DSA-65 (Go 1.27 `crypto/mldsa`, context `sauti-audit-checkpoint/v1`), stored, and written through the `Witness` port. Append-only triggers block UPDATE/DELETE/TRUNCATE even for the owner.
 
 ## Consequences
 

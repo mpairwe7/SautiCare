@@ -31,7 +31,10 @@ Rules:
 
 - **Absent values.** An absent incident ID, staff ID or logic version is encoded as a zero-length field. A present UUID is always 16 bytes, so absent and present values can never collide. The ledger's `CHECK (logic_version <> '')` keeps an empty logic version distinct from "no logic version".
 - **Timestamp precision.** Timestamps are encoded as microseconds since the Unix epoch, because PostgreSQL stores `timestamptz` at microsecond resolution. Any finer precision from Go is discarded.
-- **Payload hash.** `payload_sha256` is `sha256` of the operational event payload's `jsonb::text`, computed by `op.append_incident_event`. The ledger stores this hash and never the payload, so no caller identifier can enter the audit store (hard constraint 8).
+- **Payload hash.** `payload_sha256` is `sha256(payload_salt ‖ payload::text)`, computed by `op.enqueue_audit` (migration `db/operational/migrations/0005_salted_payload_hash.sql`).
+  - `payload_salt` is a 16-byte random value stored with the event in the operational store, never in the ledger.
+  - The ledger stores the hash and never the payload, so no caller identifier can enter the audit store (hard constraint 8).
+  - The salt keeps the hash irreversible even for a payload holding a phone number. It is destroyed with the operational store's retention period, while the five-year ledger survives (review finding I3).
 
 ## Checkpoint body
 

@@ -5,6 +5,8 @@ package opstore_test
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -482,5 +484,49 @@ func TestClaimOutboxSkipsLockedAndCompletes(t *testing.T) {
 	defer b3.Abort(ctx)
 	if len(b3.Rows()) != 1 {
 		t.Fatalf("after completing 2 and aborting 1, pending = %d, want 1", len(b3.Rows()))
+	}
+}
+
+// Review finding I3: an unsalted SHA-256 of a payload holding a phone number
+// is reversible by enumerating ~10^9 candidates, and the five-year ledger
+// cannot be shredded. Each event carries a random salt kept in the
+// (shreddable) operational store; the audit hash is sha256(salt ‖ payload).
+func TestAuditPayloadHashIsSalted(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	o, _ := s.OpenIncident(ctx, openParams(t))
+	appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":8,"callback":"0772123456"}`, "")
+	appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":8,"callback":"0772123456","again":1}`, "")
+	owner := c.Owner(t, pg.StoreOperational)
+	rows, err := owner.Query(ctx, `
+		SELECT e.payload::text, e.payload_salt, o.payload->>'payload_sha256'
+		FROM op.incident_events e JOIN op.outbox o ON (o.payload->>'event_id')::uuid = e.id
+		WHERE e.type = 'screen.answered' ORDER BY e.seq`)
+	if err != nil {
+		t.Fatalf("query salted events: %v", err)
+	}
+	var salts [][]byte
+	for rows.Next() {
+		var text, hashHex string
+		var salt []byte
+		if err := rows.Scan(&text, &salt, &hashHex); err != nil {
+			t.Fatal(err)
+		}
+		if len(salt) != 16 {
+			t.Fatalf("salt has %d bytes, want 16", len(salt))
+		}
+		plain := sha256.Sum256([]byte(text))
+		salted := sha256.Sum256(append(append([]byte{}, salt...), text...))
+		if hashHex == hex.EncodeToString(plain[:]) {
+			t.Fatal("audit payload hash is the unsalted, reversible sha256(payload)")
+		}
+		if hashHex != hex.EncodeToString(salted[:]) {
+			t.Fatalf("audit payload hash %s != sha256(salt ‖ payload)", hashHex)
+		}
+		salts = append(salts, salt)
+	}
+	if len(salts) != 2 || string(salts[0]) == string(salts[1]) {
+		t.Fatalf("salts = %x, want two distinct per-event salts", salts)
 	}
 }

@@ -112,10 +112,12 @@ threats:
     hard_constraints: [8]
     mitigations:
       - Outbox carries only typed fields and the payload hash; strict decoding stops on unknown keys
+      - The payload hash is salted with a per-event random value kept in the operational store, so it cannot be reversed by enumerating numbers
     verified_by:
       - internal/platform/pg/relay_integration_test.go::TestAuditEntryNeverCarriesPayloadContent
       - internal/audit/relay_test.go::TestRelayAbortsOnPoisonRow
       - internal/platform/pg/opstore/opstore_integration_test.go::TestOutboxPayloadHasOnlyAllowedKeys
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestAuditPayloadHashIsSalted
 
   - id: T-009
     title: Re-identification by joining operational and research data

@@ -58,6 +58,7 @@ type OpIncidentEvent struct {
 	Payload      []byte
 	IdemKey      string
 	LogicVersion *string
+	PayloadSalt  []byte
 }
 
 type OpIncidentEventsDefault struct {

@@ -166,15 +166,28 @@ WHERE incident_id = $1::uuid
 ORDER BY seq
 `
 
-func (q *Queries) ListEvents(ctx context.Context, incidentID pgtype.UUID) ([]OpIncidentEvent, error) {
+type ListEventsRow struct {
+	ID           pgtype.UUID
+	IncidentID   pgtype.UUID
+	Seq          int64
+	Type         string
+	RecordedAt   pgtype.Timestamptz
+	ActorKind    string
+	StaffID      pgtype.UUID
+	Payload      []byte
+	IdemKey      string
+	LogicVersion *string
+}
+
+func (q *Queries) ListEvents(ctx context.Context, incidentID pgtype.UUID) ([]ListEventsRow, error) {
 	rows, err := q.db.Query(ctx, listEvents, incidentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []OpIncidentEvent
+	var items []ListEventsRow
 	for rows.Next() {
-		var i OpIncidentEvent
+		var i ListEventsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.IncidentID,
