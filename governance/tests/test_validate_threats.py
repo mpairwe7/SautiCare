@@ -39,6 +39,27 @@ class ValidateThreatsTest(unittest.TestCase):
         errs = vt.check(self.tree(threats().replace("TestReal", "TestNope")).root)
         self.assertTrue(any("TestNope" in e for e in errs), errs)
 
+    # A repeated `verified_by` would otherwise hide the pointers it replaces
+    # (CodeRabbit PR #5).
+    def test_duplicate_mapping_key_fails(self):
+        text = threats() + '    verified_by: ["planned:M2 something"]\n'
+        errs = vt.check(self.tree(text).root)
+        self.assertTrue(any("duplicate key 'verified_by'" in e for e in errs), errs)
+
+    # Another threat covering every constraint must not hide one that maps
+    # to none (CodeRabbit PR #5).
+    def test_threat_without_hard_constraints_fails(self):
+        second = """
+  - id: T-002
+    title: Unmapped threat
+    stride: Spoofing
+    asset: intake
+    mitigations: [allowlist]
+    verified_by: ["internal/x/x_test.go::TestReal"]
+"""
+        errs = vt.check(self.tree(threats() + second).root)
+        self.assertTrue(any("T-002: missing hard_constraints" in e for e in errs), errs)
+
 
 if __name__ == "__main__":
     unittest.main()
