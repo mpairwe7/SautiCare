@@ -31,12 +31,26 @@ func i32(v int) (int32, error) {
 	return int32(v), nil //nolint:gosec // G115: range checked above
 }
 
+// prefilterSeconds is the dedup window in whole seconds for the SQL
+// candidate prefilter, rounded up: the prefilter only narrows the
+// candidates and DedupRule.Survivor applies the exact window, so it must
+// never drop a call a fractional window (15m500ms) would accept.
+func prefilterSeconds(w time.Duration) (int32, error) {
+	s := w / time.Second
+	if w%time.Second > 0 {
+		s++
+	}
+	return i32(int(s))
+}
+
 // DispatchOrMerge implements intake.Dispatcher. In one transaction, under an
-// advisory lock: append dispatch_ready (T2); if the rule finds a survivor,
-// append merged on this incident and merge_absorbed on the survivor, plus
-// the call's higher severity or escalation on the survivor (merge). A
-// retried request whose dispatch_ready already exists reports the stored
-// outcome and decides nothing again.
+// advisory lock: read the candidates FOR SHARE (op.dedup_candidates), so a
+// concurrent closure, merge or split of a candidate is waited for and seen,
+// and none can happen before this commits; append dispatch_ready (T2); if the
+// rule finds a survivor, append merged on this incident and merge_absorbed on
+// the survivor, plus the call's higher severity or escalation on the survivor
+// (merge). A retried request whose dispatch_ready already exists reports the
+// stored outcome and decides nothing again.
 func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (out intake.DispatchOutcome, err error) {
 	col, err := i32(r.Zone.Col)
 	if err != nil {
@@ -50,7 +64,7 @@ func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (
 	if err != nil {
 		return out, err
 	}
-	window, err := i32(int(r.Rule.Window / time.Second))
+	window, err := prefilterSeconds(r.Rule.Window)
 	if err != nil {
 		return out, err
 	}
@@ -76,12 +90,9 @@ func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (
 	}
 	cands := make([]intake.Candidate, 0, len(rows))
 	for _, c := range rows {
-		if c.ZoneCol == nil || c.ZoneRow == nil {
-			continue
-		}
-		cands = append(cands, intake.Candidate{ID: uuid.UUID(c.ID.Bytes), Category: deref(c.Category),
-			Zone: incident.Zone{Col: int(*c.ZoneCol), Row: int(*c.ZoneRow)}, LocationQuality: deref(c.LocationQuality),
-			Severity: incident.Severity(deref(c.Severity)), Escalated: c.Escalated, T1: c.T1.Time, T2: c.T2.Time})
+		cands = append(cands, intake.Candidate{ID: uuid.UUID(c.ID.Bytes), Category: c.Category,
+			Zone: incident.Zone{Col: int(c.ZoneCol), Row: int(c.ZoneRow)}, LocationQuality: c.LocationQuality,
+			Severity: incident.Severity(c.Severity), Escalated: c.Escalated, T1: c.T1.Time, T2: c.T2.Time})
 	}
 	a, err := ts.Append(ctx, incident.AppendParams{IncidentID: r.IncidentID, Type: incident.EvDispatchReady, Payload: r.Payload,
 		ActorKind: incident.ActorSystem, IdemKey: r.IdemKey})

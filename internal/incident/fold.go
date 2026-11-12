@@ -128,6 +128,13 @@ func Apply(p Projection, e Event) (Projection, error) {
 		if from == p.ID {
 			return p, fmt.Errorf("%w: severity_raised: an incident cannot raise itself", ErrIllegalTransition)
 		}
+		// Only a call merged into this incident raises it. The fold sees the
+		// absorbed set; the database also checks the call's own row (merged
+		// into this incident, with exactly this severity), which Apply,
+		// seeing one incident, cannot.
+		if _, ok := p.Absorbed[from]; !ok {
+			return p, fmt.Errorf("%w: severity_raised: %s was not merged into this incident", ErrIllegalTransition, from)
+		}
 		if sev.Rank() <= p.Severity.Rank() {
 			return p, fmt.Errorf("%w: severity_raised must raise the severity (%s -> %s)", ErrIllegalTransition, p.Severity, sev)
 		}

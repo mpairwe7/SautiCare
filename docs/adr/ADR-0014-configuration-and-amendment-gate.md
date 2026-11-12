@@ -28,6 +28,7 @@ Chosen option: **versioned YAML in Git** (`config/`), decoded strictly (unknown 
 - **The change under review cannot shrink its own gate.** The effective gate is the union of a built-in minimum (`config/gated/**`, `config/study.yaml`, `triage-rules/**`, `governance/gated-paths.txt`), the gate list at the base ref and the gate list in the change. Editing the list is itself gated.
 - **Hashes cover the tracked content.** They cover the blob at HEAD, not whatever a working-tree path resolves to.
 - **Gated paths must be regular files.** A symbolic link on a gated path is always a violation.
+- **Push runs compare with the pre-push commit** (CodeRabbit PR #5). A pull request is compared with its target branch. A push to `main` is compared with `github.event.before`, the commit `main` held before the push; `origin/main` already equals the pushed commit, so a diff against it is empty. A push that creates the branch has no previous commit (an all-zero SHA), and `scripts/ci/governance.sh` then fails instead of checking nothing.
 
 `config/platform.yaml` (checkpoint interval, batch sizes) is deliberately ungated operational tuning. Rule 3.11 freezes protocol parameters, not platform tuning. `ProductionReady()` refuses `protocol_status: pending` and placeholder copy (`XXX`, `PENDING-TRANSLATION`). Deployment settings stay in environment variables.
 
@@ -35,6 +36,9 @@ Chosen option: **versioned YAML in Git** (`config/`), decoded strictly (unknown 
 
 * Good: reviewable, signed history of every parameter.
 * Bad: changing a parameter is a pull request, not a console edit (intended).
+* Bad: CI runs the gate from the tree under review, so the gate cannot protect its own code. A change to `tools/amendgate/`, `scripts/ci/` or `.github/workflows/` could weaken the check that judges it. Adding those paths to the built-in minimum would not stop this, because the minimum is itself defined in `tools/amendgate/check.go`. It would also make every CI fix during the study window wait for an ethics amendment. These paths are protected outside the tree instead (CodeRabbit PR #5):
+  * `.github/CODEOWNERS` names their owner: the PI, and in the interim the repository owner.
+  * Branch protection on `main` must require code-owner review and a passing `governance and living docs` check, so removing the job blocks the merge rather than skipping it.
 
 ## Confirmation
 

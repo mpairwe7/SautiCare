@@ -45,10 +45,16 @@ sauti-audit-checkpoint/v1\n
 <origin>\n
 <seq, decimal>\n
 <base64 standard encoding of the 32-byte chain head>\n
-<signed_at, RFC 3339 with nanoseconds, UTC>\n
+<signed_at, RFC 3339 in UTC; see below>\n
 ```
 
-`signed_at` is truncated to whole microseconds before signing, so the body re-derived from the stored row matches what was signed.
+`signed_at` is written exactly as Go's `time.RFC3339Nano` layout writes a UTC time, after truncation to whole microseconds:
+
+- The time is in UTC, and the zone is always the letter `Z`, never `+00:00`.
+- It is truncated to whole microseconds before signing, so the body re-derived from the stored row matches what was signed.
+- The fraction has one to six digits with trailing zeros removed, and is omitted entirely for a whole second: `2026-11-12T08:30:00Z`, `2026-11-12T08:30:00.12Z`, `2026-11-12T08:30:00.123456Z`. The same instant written as `.120000Z` or `.123456000Z` is a different body, and its signature does not verify.
+
+The test `internal/audit/checkpoint_test.go::TestCheckpointBodySignedAtFormat` pins these forms.
 
 ## Changing the encoding
 

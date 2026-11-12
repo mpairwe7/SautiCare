@@ -154,4 +154,9 @@ jobs:
       - run: scripts/ci/governance.sh
         env:
           PYTHON: python
-          AMENDGATE_BASE: origin/${{ github.base_ref || 'main' }}
+          # A pull request is compared with its target branch. A push to main is
+          # compared with the commit main held before the push: origin/main is
+          # already the pushed commit, so it would compare nothing. A push that
+          # creates the branch has an all-zero "before"; governance.sh then fails
+          # rather than check nothing (ADR-0014).
+          AMENDGATE_BASE: ${{ github.event_name == 'push' && github.event.before || format('origin/{0}', github.base_ref || 'main') }}
