@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"sautihealth.com/sauti/internal/platform/egress"
 )
 
 // Screen is a parsed USSD reply.
@@ -29,12 +31,18 @@ type USSD struct {
 	client                         *http.Client
 }
 
-// NewUSSD targets baseURL + "/v1/ussd/at/" + token.
+// NewUSSD targets baseURL + "/v1/ussd/at/" + token. Its HTTP client goes
+// through platform/egress and allows only baseURL's host (an unparseable
+// baseURL allows none), so a redirect elsewhere is refused.
 func NewUSSD(baseURL, token, serviceCode, network string) *USSD {
+	var allow []string
+	if u, err := url.Parse(baseURL); err == nil && u.Hostname() != "" {
+		allow = []string{u.Hostname()}
+	}
 	return &USSD{
 		endpoint:    strings.TrimRight(baseURL, "/") + "/v1/ussd/at/" + token,
 		serviceCode: serviceCode, network: network,
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: egress.NewClient(allow, 10*time.Second),
 	}
 }
 
