@@ -39,11 +39,11 @@ func code(err error) string {
 func TestAllStoresMigrateFromZero(t *testing.T) {
 	c := pgtest.Cluster(t)
 	want := map[pg.Store][]string{
-		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants"},
-		pg.StoreAudit:       {"0000_schema", "0001_ledger"},
-		pg.StoreAnalytic:    {"0000_schema", "0001_meds"},
-		pg.StoreLinkage:     {"0000_schema", "0001_vault"},
-		pg.StoreMedia:       {"0000_schema", "0001_media"},
+		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants", "0004_default_privileges"},
+		pg.StoreAudit:       {"0000_schema", "0001_ledger", "0002_default_privileges"},
+		pg.StoreAnalytic:    {"0000_schema", "0001_meds", "0002_default_privileges"},
+		pg.StoreLinkage:     {"0000_schema", "0001_vault", "0002_default_privileges"},
+		pg.StoreMedia:       {"0000_schema", "0001_media", "0002_default_privileges"},
 	}
 	for s, versions := range want {
 		rows, err := c.Owner(t, s).Query(context.Background(), "SELECT version FROM public.schema_migrations ORDER BY version")
@@ -186,5 +186,57 @@ func TestMediaRecordingsRequireDestroyByAndKey(t *testing.T) {
 	}
 	if _, err := w.Exec(ctx, "INSERT INTO media.recordings (key_id, consent_ref, destroy_by) VALUES ('k1', 'C-1', current_date + 400)"); code(err) != "23514" {
 		t.Errorf("destroy_by beyond 12 months: %v, want 23514", err)
+	}
+}
+
+var schemaOf = map[pg.Store]string{
+	pg.StoreOperational: "op", pg.StoreAudit: "audit", pg.StoreAnalytic: "analytic",
+	pg.StoreLinkage: "linkage", pg.StoreMedia: "media",
+}
+
+// Review finding I2: a function a future migration adds must not be callable
+// by any runtime role unless granted. PostgreSQL gives functions EXECUTE to
+// PUBLIC by default; the owner's default privileges must revoke it.
+func TestNewFunctionsAreNotExecutableByRuntimeRoles(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	for _, s := range pg.Stores() {
+		owner := c.Owner(t, s)
+		fn := schemaOf[s] + ".probe_new_function()"
+		if _, err := owner.Exec(ctx, "CREATE FUNCTION "+fn+" RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+		for _, role := range s.RuntimeRoles() {
+			var can bool
+			if err := owner.QueryRow(ctx, "SELECT has_function_privilege($1, $2, 'EXECUTE')", role, fn).Scan(&can); err != nil {
+				t.Fatal(err)
+			}
+			if can {
+				t.Errorf("%s: runtime role %s can execute a newly created function", s, role)
+			}
+		}
+	}
+}
+
+// Every function shipped by the migrations carries an explicit ACL with no
+// PUBLIC grant.
+func TestEveryStoreFunctionHasExplicitACL(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	for _, s := range pg.Stores() {
+		rows, err := c.Owner(t, s).Query(ctx, `
+			SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+			WHERE n.nspname = $1
+			  AND (p.proacl IS NULL OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 0))`, schemaOf[s])
+		if err != nil {
+			t.Fatal(err)
+		}
+		open, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(open) > 0 {
+			t.Errorf("%s: functions executable by PUBLIC: %v", s, open)
+		}
 	}
 }
