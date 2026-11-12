@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -16,6 +17,25 @@ type FSWitness struct{ dir string }
 
 // NewFSWitness returns a witness rooted at dir.
 func NewFSWitness(dir string) *FSWitness { return &FSWitness{dir: dir} }
+
+// ReadAll returns every witnessed note (checkpoint-*.txt), oldest name first.
+// An absent directory means no witness yet.
+func (w *FSWitness) ReadAll() ([][]byte, error) {
+	matches, err := filepath.Glob(filepath.Join(w.dir, "checkpoint-*.txt"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(matches)
+	out := make([][]byte, 0, len(matches))
+	for _, m := range matches {
+		b, err := os.ReadFile(m)
+		if err != nil {
+			return nil, fmt.Errorf("witness: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, nil
+}
 
 // Put stores data under name, failing if name already exists.
 func (w *FSWitness) Put(_ context.Context, name string, data []byte) error {

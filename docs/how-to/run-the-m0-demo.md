@@ -27,4 +27,5 @@ Add `--keep` to keep the databases for inspection.
 | 5 | An ML-DSA-65 checkpoint is signed and written to the write-once witness |
 | 6 | `verify-ledger` and `verify-projections` pass |
 | 7 | Flipping one byte of entry 3 as a superuser makes verification fail at sequence 3 |
+| 7b | Rewriting entry 3, recomputing the chain with the ledger's own canonical function and deleting the database checkpoints fools chain-only verification. The write-once witness still fails it, and the anchored checkpointer refuses to sign. |
 | 8 | Retrying the first callback returns the identical screen and creates nothing |

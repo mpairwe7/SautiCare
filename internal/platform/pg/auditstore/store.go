@@ -126,6 +126,19 @@ func (s *Store) Head(ctx context.Context) (int64, [32]byte, error) {
 	return rows[0].Seq, h, err
 }
 
+// HashAt implements audit.Ledger: the chain hash at seq, false if absent.
+func (s *Store) HashAt(ctx context.Context, seq int64) ([32]byte, bool, error) {
+	b, err := s.q.HashAt(ctx, seq)
+	if err != nil {
+		return [32]byte{}, false, fmt.Errorf("auditstore: hash at %d: %w", seq, err)
+	}
+	if b == nil {
+		return [32]byte{}, false, nil
+	}
+	h, err := hash32(b, "hash_at")
+	return h, err == nil, err
+}
+
 // SaveCheckpoint implements audit.Ledger; the signed body is stored verbatim.
 func (s *Store) SaveCheckpoint(ctx context.Context, c audit.Checkpoint) error {
 	if c.Signature == nil {

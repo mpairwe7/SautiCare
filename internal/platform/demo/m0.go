@@ -60,6 +60,8 @@ type Report struct {
 	ProjectionsChecked int
 	ProjectionDrift    int
 	TamperDetectedAt   int64
+	WitnessCaught      bool // step 7b: rewrite + recomputed chain + deleted checkpoints
+	CheckpointRefused  bool // step 7b: the anchored checkpointer refuses to sign
 	RetryIdentical     bool
 }
 
@@ -310,9 +312,25 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 
 	// Step 5: checkpoint.
 	witnessDir := filepath.Join(work, "witness")
-	cp, err := audit.NewCheckpointer(ledger, keys.Signer(), devkeys.NewFSWitness(witnessDir), "sauti-demo", time.Now).Checkpoint(ctx)
+	witness := devkeys.NewFSWitness(witnessDir)
+	cp, err := audit.NewCheckpointer(ledger, keys.Signer(), witness, "sauti-demo", time.Now).Checkpoint(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("step 5: %w", err)
+	}
+	witnessed := func() ([]audit.Checkpoint, error) {
+		notes, err := witness.ReadAll()
+		if err != nil {
+			return nil, err
+		}
+		var out []audit.Checkpoint
+		for _, n := range notes {
+			c, err := audit.ParseWitnessNote(n)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, c)
+		}
+		return out, nil
 	}
 	rep.CheckpointSeq = cp.Seq
 	files, _ := os.ReadDir(witnessDir)
@@ -320,7 +338,11 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	r.say("✓ step 5: checkpoint at seq %d signed with ML-DSA-65 (%d-byte signature) and witnessed", cp.Seq, len(cp.Signature))
 
 	// Step 6: verification.
-	vr, err := audit.Verify(ctx, reader, keys.Signer().PublicKey())
+	ws, err := witnessed()
+	if err != nil {
+		return rep, err
+	}
+	vr, err := audit.Verify(ctx, reader, keys.Signer().PublicKey(), ws)
 	if err != nil {
 		return rep, err
 	}
@@ -333,7 +355,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if !rep.LedgerVerified || len(drift) > 0 {
 		return rep, fmt.Errorf("step 6: ledger ok=%v (%s), projection drift %v", vr.OK(), vr.Problem, drift)
 	}
-	r.say("✓ step 6: verify-ledger OK (%d entries, %d checkpoint); verify-projections OK (%d incident)", vr.Entries, vr.CheckpointsOK, checked)
+	r.say("✓ step 6: verify-ledger OK (%d entries, %d checkpoint, %d witness); verify-projections OK (%d incident)", vr.Entries, vr.CheckpointsOK, vr.WitnessesOK, checked)
 
 	// Step 7: tamper as a malicious administrator.
 	if _, err := super.Exec(ctx, `ALTER TABLE audit.entries DISABLE TRIGGER entries_append_only;
@@ -341,7 +363,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 		ALTER TABLE audit.entries ENABLE TRIGGER entries_append_only;`); err != nil {
 		return rep, fmt.Errorf("step 7: tamper: %w", err)
 	}
-	tv, err := audit.Verify(ctx, reader, keys.Signer().PublicKey())
+	tv, err := audit.Verify(ctx, reader, keys.Signer().PublicKey(), ws)
 	if err != nil {
 		return rep, err
 	}
@@ -350,6 +372,29 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 		return rep, errors.New("step 7: tampering was not detected")
 	}
 	r.say("✓ step 7: one byte of entry 3 altered as superuser → verify-ledger fails at seq %d (%s)", tv.FirstBadSeq, tv.Problem)
+
+	// Step 7b: the competent attacker (review finding C1) rewrites entry 3,
+	// recomputes every later hash with the ledger's own canonical function and
+	// deletes the database checkpoints. The chain alone now looks intact; the
+	// write-once witness and the anchored checkpointer must still catch it.
+	if _, err := super.Exec(ctx, RewriteAndRecomputeSQL); err != nil {
+		return rep, fmt.Errorf("step 7b: attack: %w", err)
+	}
+	dbOnly, err := audit.Verify(ctx, reader, keys.Signer().PublicKey(), nil)
+	if err != nil {
+		return rep, err
+	}
+	wv, err := audit.Verify(ctx, reader, keys.Signer().PublicKey(), ws)
+	if err != nil {
+		return rep, err
+	}
+	rep.WitnessCaught = dbOnly.OK() && !wv.OK() && wv.WitnessesBad > 0
+	_, cerr := audit.NewCheckpointer(ledger, keys.Signer(), witness, "sauti-demo", time.Now).WithAnchor(cp).Checkpoint(ctx)
+	rep.CheckpointRefused = errors.Is(cerr, audit.ErrChainDiverged)
+	if !rep.WitnessCaught || !rep.CheckpointRefused {
+		return rep, fmt.Errorf("step 7b: rewrite not caught (db-only ok=%v, witness ok=%v, checkpoint err=%v)", dbOnly.OK(), wv.OK(), cerr)
+	}
+	r.say("✓ step 7b: entry 3 rewritten, chain recomputed, checkpoints deleted → chain-only check is fooled, but the witness fails it (%s) and the checkpointer refuses to sign", wv.Problem)
 
 	// Step 8: aggregator retry.
 	again, err := session.Retry()
@@ -368,3 +413,28 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	r.say("✓ step 8: retried callback returned the identical screen; no new incident or event")
 	return rep, nil
 }
+
+// RewriteAndRecomputeSQL is the competent-attacker scenario of review
+// finding C1, run as a superuser on the audit store: rewrite entry 3,
+// recompute every later hash with the ledger's own canonical function, and
+// delete every database checkpoint. Shared with the integration test.
+const RewriteAndRecomputeSQL = `
+ALTER TABLE audit.entries DISABLE TRIGGER entries_append_only;
+ALTER TABLE audit.checkpoints DISABLE TRIGGER checkpoints_append_only;
+UPDATE audit.entries SET event_type = 'incident.closed' WHERE seq = 3;
+DO $$
+DECLARE r record; prev bytea;
+BEGIN
+  SELECT hash INTO prev FROM audit.entries WHERE seq = 2;
+  FOR r IN SELECT * FROM audit.entries WHERE seq >= 3 ORDER BY seq LOOP
+    UPDATE audit.entries
+       SET prev_hash = prev,
+           hash = sha256(prev || audit.canonical(r.seq, r.entry_id, r.occurred_at, r.event_type,
+                                                 r.incident_id, r.staff_id, r.logic_version, r.payload_sha256))
+     WHERE seq = r.seq
+    RETURNING hash INTO prev;
+  END LOOP;
+END $$;
+DELETE FROM audit.checkpoints;
+ALTER TABLE audit.entries ENABLE TRIGGER entries_append_only;
+ALTER TABLE audit.checkpoints ENABLE TRIGGER checkpoints_append_only;`

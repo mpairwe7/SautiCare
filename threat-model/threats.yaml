@@ -96,7 +96,8 @@ threats:
     mitigations:
       - SHA-256 hash chain computed in SQL and re-verified in Go
       - Append-only triggers even for the owner; EXECUTE-only appender role
-      - ML-DSA-65 signed checkpoints written to a write-once witness
+      - ML-DSA-65 signed checkpoints written to a write-once witness; verification requires the witness
+      - The checkpointer is anchored on the last witnessed checkpoint and refuses to sign over diverged history
     verified_by:
       - internal/platform/pg/auditstore/auditstore_integration_test.go::TestSQLHashMatchesGoCanonical
       - internal/platform/pg/auditstore/auditstore_integration_test.go::TestOwnerUpdateBlockedByTrigger
@@ -104,6 +105,9 @@ threats:
       - internal/audit/verify_test.go::TestVerifyDetectsTruncationBeyondCheckpoint
       - internal/audit/verify_test.go::TestVerifyDetectsForgedCheckpoint
       - tests/e2e/m0_fixture_test.go::TestM0FixtureIncident
+      - internal/platform/pg/tamper_integration_test.go::TestOwnerRewriteWithRecomputedChainIsCaughtByWitness
+      - internal/audit/witness_test.go::TestCheckpointerRefusesDivergedChain
+      - cmd/sautictl/main_test.go::TestVerifyLedgerRequiresWitnessOrExplicitOptOut
 
   - id: T-008
     title: Caller identifiers enter the audit ledger

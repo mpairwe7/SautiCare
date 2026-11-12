@@ -4,7 +4,7 @@
 //	sautictl migrate --store <store> --dsn <owner DSN>
 //	sautictl dev-bootstrap --admin-dsn <superuser DSN> [--suffix S] [--migrate]   (dev/CI only)
 //	sautictl dev-keygen --dir <dir>                                                 (dev/CI only)
-//	sautictl verify-ledger --dsn <audit_reader DSN> (--devkeys-dir D | --pubkey-file F)
+//	sautictl verify-ledger --dsn <audit_reader DSN> (--devkeys-dir D | --pubkey-file F) (--witness-dir W | --no-witness)
 //	sautictl verify-projections --dsn <op_readonly DSN>
 //	sautictl checkpoint --dsn <audit_appender DSN> --devkeys-dir D --witness-dir W [--origin O]
 //	sautictl demo m0 --admin-dsn <superuser DSN> [--config-dir config] [--keep]
@@ -45,7 +45,7 @@ var commands = map[string]command{
 	"migrate":            {"--store <store> --dsn <owner DSN>", cmdMigrate},
 	"dev-bootstrap":      {"--admin-dsn <DSN> [--suffix S] [--migrate]", cmdBootstrap},
 	"dev-keygen":         {"--dir <dir>", cmdKeygen},
-	"verify-ledger":      {"--dsn <audit_reader DSN> (--devkeys-dir D | --pubkey-file F)", cmdVerifyLedger},
+	"verify-ledger":      {"--dsn <audit_reader DSN> (--devkeys-dir D | --pubkey-file F) (--witness-dir W | --no-witness)", cmdVerifyLedger},
 	"verify-projections": {"--dsn <op_readonly DSN>", cmdVerifyProjections},
 	"checkpoint":         {"--dsn <audit_appender DSN> --devkeys-dir D --witness-dir W [--origin O]", cmdCheckpoint},
 	"demo":               {"m0 --admin-dsn <DSN> [--config-dir config] [--keep]", cmdDemo},
@@ -191,6 +191,8 @@ func cmdVerifyLedger(ctx context.Context, args []string, out io.Writer) error {
 	dsn := fs.String("dsn", "", "audit_reader DSN")
 	devDir := fs.String("devkeys-dir", "", "development key directory")
 	pubFile := fs.String("pubkey-file", "", "base64 ML-DSA-65 public key")
+	witnessDir := fs.String("witness-dir", "", "write-once checkpoint witness directory")
+	noWitness := fs.Bool("no-witness", false, "verify the chain only (a database owner's rewrite is then undetectable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -198,17 +200,36 @@ func cmdVerifyLedger(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var witnesses []audit.Checkpoint
+	switch {
+	case *witnessDir != "":
+		notes, err := devkeys.NewFSWitness(*witnessDir).ReadAll()
+		if err != nil {
+			return err
+		}
+		for i, n := range notes {
+			cp, err := audit.ParseWitnessNote(n)
+			if err != nil {
+				return fmt.Errorf("witness note %d: %w", i, err)
+			}
+			witnesses = append(witnesses, cp)
+		}
+	case *noWitness:
+		fmt.Fprintln(out, "WARNING: --no-witness: rewritten-and-recomputed history or deleted checkpoints cannot be detected")
+	default:
+		return errors.New("--witness-dir is required (the write-once witness is what detects a database owner's rewrite); pass --no-witness to verify the chain only")
+	}
 	pool, err := pg.Connect(ctx, *dsn, "sautictl", 2)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
-	rep, err := audit.Verify(ctx, auditstore.New(pool), pub)
+	rep, err := audit.Verify(ctx, auditstore.New(pool), pub, witnesses)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "entries=%d head_seq=%d checkpoints_ok=%d checkpoints_bad=%d first_bad_seq=%d\n",
-		rep.Entries, rep.HeadSeq, rep.CheckpointsOK, rep.CheckpointsBad, rep.FirstBadSeq)
+	fmt.Fprintf(out, "entries=%d head_seq=%d checkpoints_ok=%d checkpoints_bad=%d witnesses_ok=%d witnesses_bad=%d first_bad_seq=%d\n",
+		rep.Entries, rep.HeadSeq, rep.CheckpointsOK, rep.CheckpointsBad, rep.WitnessesOK, rep.WitnessesBad, rep.FirstBadSeq)
 	if !rep.OK() {
 		return fmt.Errorf("LEDGER VERIFICATION FAILED: %s (runbook: docs/runbooks/audit-ledger-verification-failure.md)", rep.Problem)
 	}

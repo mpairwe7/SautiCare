@@ -14,7 +14,8 @@ The hash-chained audit ledger (ADR-0005) no longer verifies: an entry's hash doe
 
 ## Triggers and detection
 
-* Nightly `sautictl verify-ledger --dsn <audit_reader> --pubkey-file <published key>` (P0 schedule).
+* Nightly `sautictl verify-ledger --dsn <audit_reader> --pubkey-file <published key> --witness-dir <witness copy>` (P0 schedule).
+* `sauti_audit_chain_diverged` = 1 on outbox-relay: the checkpointer refused to sign.
 * Every restore drill and every analytic restore.
 * Output names `first_bad_seq` and the first problem.
 
@@ -25,10 +26,11 @@ The hash-chained audit ledger (ADR-0005) no longer verifies: an entry's hash doe
 
 ## Diagnosis
 
-1. Run `sautictl verify-ledger` again with the role `audit_reader`, and record the full output.
-2. Compare against the witnessed checkpoints, which live in the backup snapshot path, not in the database: each file `checkpoint-<seq>-<time>.txt` carries the signed head at that sequence. The last checkpoint at or before `first_bad_seq` proves the ledger was intact up to that point.
-3. Check `pg_stat_activity` and the PostgreSQL logs for superuser sessions, `ALTER TABLE … DISABLE TRIGGER`, `UPDATE`/`DELETE` on `audit.entries`.
-4. Cross-check: for the incidents involved, `op.incident_events` payload hashes must match `audit.entries.payload_sha256`.
+1. Run `sautictl verify-ledger --dsn <audit_reader> --pubkey-file <published key> --witness-dir <witness copy>` and record the full output. **Always pass the witness.** A database owner who rewrites an entry, recomputes the chain and deletes the database checkpoints fools chain-only verification; only `witnesses_bad > 0` reveals it.
+2. Each witness file `checkpoint-<seq>-<time>.txt` carries the signed head at that sequence. The last witness that still verifies proves the ledger was intact up to that sequence.
+3. `sauti_audit_chain_diverged = 1`, or the outbox-relay log `AUDIT LEDGER DIVERGED`, means the relay refused to sign a new checkpoint because history before its witnessed anchor changed. Treat it exactly like a verification failure.
+4. Check `pg_stat_activity` and the PostgreSQL logs for superuser sessions, `ALTER TABLE … DISABLE TRIGGER`, and `UPDATE`/`DELETE` on `audit.entries` or `audit.checkpoints`.
+5. Cross-check: for the incidents involved, `op.incident_events` payload hashes must match `audit.entries.payload_sha256`.
 
 ## Mitigation
 

@@ -100,6 +100,15 @@ func (l *fakeLedger) Head(context.Context) (int64, [32]byte, error) {
 	return e.Seq, e.Hash, nil
 }
 
+func (l *fakeLedger) HashAt(_ context.Context, seq int64) ([32]byte, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if seq < 1 || seq > int64(len(l.entries)) {
+		return [32]byte{}, false, nil
+	}
+	return l.entries[seq-1].Hash, true, nil
+}
+
 func (l *fakeLedger) SaveCheckpoint(_ context.Context, c Checkpoint) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

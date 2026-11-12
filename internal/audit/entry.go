@@ -67,6 +67,8 @@ func (c Checkpoint) Body() []byte {
 type Ledger interface {
 	Append(ctx context.Context, r AppendRequest) (Entry, error)
 	Head(ctx context.Context) (int64, [32]byte, error)
+	// HashAt returns the chain hash stored at seq, and false if there is none.
+	HashAt(ctx context.Context, seq int64) ([32]byte, bool, error)
 	SaveCheckpoint(ctx context.Context, c Checkpoint) error
 }
 

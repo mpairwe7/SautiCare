@@ -29,9 +29,14 @@ Chosen option: **SHA-256 chain in PostgreSQL with ML-DSA-65 checkpoints**. `audi
 
 ## Consequences
 
-* Good: rewriting, deleting or truncating history is detected; signatures are quantum-resistant.
-* Bad: a superuser can still disable triggers — detection, not prevention, is the guarantee; witnesses must live outside the database host.
+* Good: rewriting, deleting or truncating history is detected **when verification includes the write-once witness**; signatures are quantum-resistant.
+* Bad: a superuser can still disable triggers, rewrite an entry, recompute every later hash with `audit.canonical()` and delete the database checkpoints. Database-only verification is then fooled (review finding C1). Detection, not prevention, is the guarantee, and it rests on the witness living outside the database host's control.
+
+**Witness anchoring (amendment after review C1).**
+- `sautictl verify-ledger` requires `--witness-dir`, unless `--no-witness` explicitly accepts the weaker check. Every witnessed checkpoint must carry a valid signature, lie within the chain, match the chain hash at its sequence, and still be present among the database checkpoints.
+- outbox-relay anchors its checkpointer on the last witnessed checkpoint, verified at start-up. A tampered witness store makes it refuse to start.
+- It refuses to sign a new head if the ledger no longer holds the anchor's hash at the anchor's sequence. It reads that hash through `audit.hash_at`, which is EXECUTE-only for `audit_appender`. A refusal raises `sauti_audit_chain_diverged`.
 
 ## Confirmation
 
-`internal/platform/pg/auditstore/auditstore_integration_test.go::TestSQLHashMatchesGoCanonical`, `::TestConcurrentAppendsKeepValidChain`, `::TestOwnerUpdateBlockedByTrigger`; `internal/audit/verify_test.go::TestVerifyDetectsTruncationBeyondCheckpoint`; `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident` (one-byte tamper detected at its sequence).
+`internal/platform/pg/auditstore/auditstore_integration_test.go::TestSQLHashMatchesGoCanonical`, `::TestConcurrentAppendsKeepValidChain`, `::TestOwnerUpdateBlockedByTrigger`; `internal/audit/verify_test.go::TestVerifyDetectsTruncationBeyondCheckpoint`; `internal/audit/witness_test.go::TestVerifyWithWitnessDetectsRewrittenChain`, `::TestCheckpointerRefusesDivergedChain`; `internal/platform/pg/tamper_integration_test.go::TestOwnerRewriteWithRecomputedChainIsCaughtByWitness`; `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident` (steps 7 and 7b).

@@ -24,3 +24,6 @@ LIMIT sqlc.arg(page_size)::int;
 SELECT origin, seq, head, signed_at, key_id, signature
 FROM audit.checkpoints
 ORDER BY id;
+
+-- name: HashAt :one
+SELECT audit.hash_at(sqlc.arg(seq)::bigint)::bytea AS hash;

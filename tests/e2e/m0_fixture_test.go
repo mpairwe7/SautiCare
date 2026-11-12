@@ -55,6 +55,9 @@ func TestM0FixtureIncident(t *testing.T) {
 	if rep.TamperDetectedAt != 3 {
 		t.Errorf("step 7: tamper detected at seq %d, want 3", rep.TamperDetectedAt)
 	}
+	if !rep.WitnessCaught || !rep.CheckpointRefused {
+		t.Errorf("step 7b: rewrite with recomputed chain: witness caught=%v, checkpoint refused=%v", rep.WitnessCaught, rep.CheckpointRefused)
+	}
 	if !rep.RetryIdentical {
 		t.Error("step 8: retried callback did not return the identical screen without a new event")
 	}

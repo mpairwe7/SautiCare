@@ -5,8 +5,8 @@ package pg_test
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -116,7 +116,7 @@ func TestRelayEndToEndAgainstPostgres(t *testing.T) {
 	if _, err := cp.Checkpoint(ctx); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := audit.Verify(ctx, e.reader, e.keys.Signer().PublicKey())
+	rep, err := audit.Verify(ctx, e.reader, e.keys.Signer().PublicKey(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

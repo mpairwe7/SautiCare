@@ -9,7 +9,7 @@ Every subcommand uses the least-privileged credentials it needs and exits non-ze
 | `migrate --store <s> --dsn <owner DSN>` | store owner | apply pending forward-only migrations ([ADR-0010](../adr/ADR-0010-forward-only-migrator.md)) |
 | `dev-bootstrap --admin-dsn <superuser URL> [--suffix S] [--migrate]` | superuser (dev/CI only) | create the five databases and every role; password from `SAUTI_DEV_DB_PASSWORD` |
 | `dev-keygen --dir <dir>` | — (dev/CI only) | write development data keys and the ML-DSA-65 seed (0600) |
-| `verify-ledger --dsn <audit_reader> (--devkeys-dir D \| --pubkey-file F)` | `audit_reader` | recompute every hash and check every checkpoint; non-zero on any problem ([runbook](../runbooks/audit-ledger-verification-failure.md)) |
+| `verify-ledger --dsn <audit_reader> (--devkeys-dir D \| --pubkey-file F) (--witness-dir W \| --no-witness)` | `audit_reader` | recompute every hash and check every checkpoint and **witness**; non-zero on any problem. The witness is required unless `--no-witness` explicitly accepts the weaker check ([ADR-0005](../adr/ADR-0005-audit-ledger-checkpoints.md), [runbook](../runbooks/audit-ledger-verification-failure.md)) |
 | `verify-projections --dsn <op_readonly>` | `op_readonly` | prove every projection equals the fold of its events ([runbook](../runbooks/projection-drift.md)) |
 | `checkpoint --dsn <audit_appender> --devkeys-dir D --witness-dir W [--origin O]` | `audit_appender` | sign and witness the current chain head now |
 | `demo m0 --admin-dsn <superuser URL> [--config-dir config] [--keep]` | superuser (dev only) | run the M0 milestone demo in isolated databases ([how-to](../how-to/run-the-m0-demo.md)) |

@@ -46,6 +46,7 @@ type relayMetrics struct {
 	lag      *metrics.Gauge
 	poison   *metrics.Counter
 	checkpts *metrics.Counter
+	diverged *metrics.Gauge
 }
 
 func (m relayMetrics) Relayed(n int)       { m.relayed.Add(float64(n)) }
@@ -107,11 +108,26 @@ func run(log *slog.Logger) error {
 		lag:      reg.Gauge("sauti_outbox_lag_seconds", "Age of the oldest undelivered audit outbox row."),
 		poison:   reg.Counter("sauti_outbox_poison_total", "Outbox rows that violated the audit payload contract."),
 		checkpts: reg.Counter("sauti_audit_checkpoints_total", "Signed audit checkpoints written."),
+		diverged: reg.Gauge("sauti_audit_chain_diverged", "1 when the ledger no longer matches the last witnessed checkpoint."),
 	}
 	ledger := auditstore.New(auditPool)
 	relay := audit.NewRelay(opstore.New(opPool), ledger, log, m, cfg.Platform.OutboxBatchSize)
-	cp := audit.NewCheckpointer(ledger, keys.Signer(), devkeys.NewFSWitness(env.Default("SAUTI_WITNESS_DIR", "var/witness")),
-		env.Default("SAUTI_ORIGIN", "sauti-dispatch"), time.Now)
+	witness := devkeys.NewFSWitness(env.Default("SAUTI_WITNESS_DIR", "var/witness"))
+	cp := audit.NewCheckpointer(ledger, keys.Signer(), witness, env.Default("SAUTI_ORIGIN", "sauti-dispatch"), time.Now)
+	// Anchor on the last witnessed checkpoint so the relay never signs a
+	// head whose history was rewritten or truncated (review finding C1).
+	notes, err := witness.ReadAll()
+	if err != nil {
+		return err
+	}
+	anchor, err := audit.LatestWitnessed(notes, keys.Signer().PublicKey())
+	if err != nil {
+		return fmt.Errorf("outbox-relay: witness store failed verification; refusing to start (runbook: docs/runbooks/audit-ledger-verification-failure.md): %w", err)
+	}
+	if anchor != nil {
+		cp.WithAnchor(*anchor)
+		log.Info("checkpointer anchored on witness", "seq", anchor.Seq)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/livez", health.Handler(map[string]health.Check{}, nil))
@@ -143,7 +159,10 @@ func run(log *slog.Logger) error {
 				case <-lctx.Done():
 					return
 				case <-t.C:
-					if c, err := cp.Checkpoint(lctx); err != nil {
+					if c, err := cp.Checkpoint(lctx); errors.Is(err, audit.ErrChainDiverged) {
+						m.diverged.Set(1)
+						log.Error("AUDIT LEDGER DIVERGED from the witnessed checkpoint; refusing to sign (runbook: docs/runbooks/audit-ledger-verification-failure.md)", "err", err)
+					} else if err != nil {
 						log.Error("audit checkpoint failed", "err", err)
 					} else {
 						m.checkpts.Add(1)

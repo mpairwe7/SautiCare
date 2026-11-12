@@ -68,6 +68,17 @@ func (q *Queries) AppendEntry(ctx context.Context, arg AppendEntryParams) (Appen
 	return i, err
 }
 
+const hashAt = `-- name: HashAt :one
+SELECT audit.hash_at($1::bigint)::bytea AS hash
+`
+
+func (q *Queries) HashAt(ctx context.Context, seq int64) ([]byte, error) {
+	row := q.db.QueryRow(ctx, hashAt, seq)
+	var hash []byte
+	err := row.Scan(&hash)
+	return hash, err
+}
+
 const head = `-- name: Head :many
 SELECT h.seq::bigint AS seq, h.hash::bytea AS hash FROM audit.head() AS h(seq, hash)
 `
