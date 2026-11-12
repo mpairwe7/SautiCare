@@ -36,3 +36,31 @@ func TestVerifyProjectionsDetectsDrift(t *testing.T) {
 		t.Fatalf("after tamper: drift=%v err=%v, want 1 drift", drift, err)
 	}
 }
+
+// Review finding M3: on a live system an append can land between reading an
+// incident's events and its projection. The verifier must read both from one
+// snapshot, or the nightly job raises false drift alarms.
+func TestVerifyProjectionsUsesConsistentSnapshot(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	o, _ := s.OpenIncident(ctx, openParams(t))
+	raced := false
+	restore := opstore.SetVerifyHook(func() {
+		if !raced {
+			raced = true
+			appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":2}`, "")
+		}
+	})
+	defer restore()
+	checked, drift, err := opstore.VerifyProjections(ctx, storeAs(t, c, "op_readonly"))
+	if err != nil || checked != 1 {
+		t.Fatalf("checked=%d err=%v", checked, err)
+	}
+	if !raced {
+		t.Fatal("hook did not run")
+	}
+	if len(drift) != 0 {
+		t.Fatalf("concurrent append reported as drift: %v", drift)
+	}
+}
