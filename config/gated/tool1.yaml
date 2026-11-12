@@ -1,0 +1,76 @@
+# Tool 1 caller screens (Build Prompt §10.1; Engineering Guide §4-5).
+#
+# PLACEHOLDER. The wording, the category list, the age bands, the
+# category-specific danger questions and the first-aid lines are protocol
+# content from Data Collection Tool 1, which has not been received. They are
+# marked PENDING-TOOL1 (English) and PENDING-TRANSLATION (Luganda: forward and
+# back translation, clinical sign-off, Community Advisory Board review).
+# status: placeholder and every marker block SAUTI_ENV=production.
+#
+# The eight screens and their order are fixed: language, danger check,
+# category, age band, category danger question, ward, landmark, callback.
+# Option values are the codes recorded in screen.answered and read by the
+# signed triage bundle (triage-rules/tool1.yaml): keep them in step.
+# Text must use GSM 03.38 basic characters; every rendered screen must fit
+# the operator limit (intake.yaml), checked in CI and at start-up.
+status: placeholder
+languages: [en, lg]
+language:
+  prompt: "Sauti emergency help\nObuyambi bwa Sauti"
+  options:
+    - {value: en, label: {en: "English", lg: "English"}}
+    - {value: lg, label: {en: "Luganda", lg: "Luganda"}}
+danger:
+  prompt: {en: "PENDING-TOOL1 Bleeding a lot, unconscious or not breathing well?", lg: "PENDING-TRANSLATION"}
+  options:
+    - {value: "yes", label: {en: "Yes", lg: "PENDING-TRANSLATION"}}
+    - {value: "no", label: {en: "No", lg: "PENDING-TRANSLATION"}}
+    - {value: "unknown", label: {en: "I do not know", lg: "PENDING-TRANSLATION"}}
+category:
+  prompt: {en: "PENDING-TOOL1 What happened?", lg: "PENDING-TRANSLATION"}
+  options:
+    - {value: trauma, label: {en: "Injury or accident", lg: "PENDING-TRANSLATION"}}
+    - {value: obstetric, label: {en: "Pregnancy or birth", lg: "PENDING-TRANSLATION"}}
+    - {value: acute_medical, label: {en: "Sudden illness", lg: "PENDING-TRANSLATION"}}
+    - {value: poisoning, label: {en: "Poisoning or snake bite", lg: "PENDING-TRANSLATION"}}
+    - {value: other, label: {en: "Other", lg: "PENDING-TRANSLATION"}}
+age_band:
+  prompt: {en: "PENDING-TOOL1 Age of the person?", lg: "PENDING-TRANSLATION"}
+  options:
+    - {value: under_5, label: {en: "Under 5", lg: "PENDING-TRANSLATION"}, child: true}
+    - {value: age_5_17, label: {en: "5 to 17", lg: "PENDING-TRANSLATION"}, child: true}
+    - {value: age_18_59, label: {en: "18 to 59", lg: "PENDING-TRANSLATION"}}
+    - {value: age_60_plus, label: {en: "60 or older", lg: "PENDING-TRANSLATION"}}
+    - {value: unknown, label: {en: "Not sure", lg: "PENDING-TRANSLATION"}}
+specific_danger:
+  prompts:
+    trauma: {en: "PENDING-TOOL1 Trauma danger question", lg: "PENDING-TRANSLATION"}
+    obstetric: {en: "PENDING-TOOL1 Obstetric danger question", lg: "PENDING-TRANSLATION"}
+    acute_medical: {en: "PENDING-TOOL1 Illness danger question", lg: "PENDING-TRANSLATION"}
+    acute_medical_child: {en: "PENDING-TOOL1 Child danger signs question", lg: "PENDING-TRANSLATION"}
+    poisoning: {en: "PENDING-TOOL1 Poisoning danger question", lg: "PENDING-TRANSLATION"}
+    other: {en: "PENDING-TOOL1 Other danger question", lg: "PENDING-TRANSLATION"}
+  options:
+    - {value: "yes", label: {en: "Yes", lg: "PENDING-TRANSLATION"}}
+    - {value: "no", label: {en: "No", lg: "PENDING-TRANSLATION"}}
+ward:
+  prompt: {en: "PENDING-TOOL1 Which ward?", lg: "PENDING-TRANSLATION"}
+  elsewhere_label: {en: "Somewhere else", lg: "PENDING-TRANSLATION"}
+landmark:
+  prompt: {en: "PENDING-TOOL1 Nearest place?", lg: "PENDING-TRANSLATION"}
+  other_label: {en: "Other place", lg: "PENDING-TRANSLATION"}
+  other_prompt: {en: "PENDING-TOOL1 Type the place name (20 letters)", lg: "PENDING-TRANSLATION"}
+callback:
+  prompt: {en: "PENDING-TOOL1 Number to call you back on? Or type a number", lg: "PENDING-TRANSLATION"}
+  prompt_withheld: {en: "PENDING-TOOL1 Type a number to call you back on", lg: "PENDING-TRANSLATION"}
+  same_number_label: {en: "This number", lg: "PENDING-TRANSLATION"}
+messages:
+  out_of_area: {en: "Sauti does not cover that area. For an emergency call 999 or 112.", lg: "PENDING-TRANSLATION 999 112"}
+  help_coming: {en: "HELP IS COMING\nIncident {ref}\n{first_aid}", lg: "PENDING-TRANSLATION {ref} {first_aid}"}
+  invalid: {en: "Please choose a number from the list.", lg: "PENDING-TRANSLATION"}
+  first_aid:
+    trauma: {en: "PENDING-TOOL1 first aid line", lg: "PENDING-TRANSLATION"}
+    obstetric: {en: "PENDING-TOOL1 first aid line", lg: "PENDING-TRANSLATION"}
+    acute_medical: {en: "PENDING-TOOL1 first aid line", lg: "PENDING-TRANSLATION"}
+    poisoning: {en: "PENDING-TOOL1 first aid line", lg: "PENDING-TRANSLATION"}
+    other: {en: "PENDING-TOOL1 first aid line", lg: "PENDING-TRANSLATION"}

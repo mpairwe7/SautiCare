@@ -40,6 +40,7 @@ type Bundle struct {
 	Flags           Flags
 	Screens         Screens
 	Triage          Triage
+	Tool1           Tool1
 	Platform        Platform
 	// Fingerprint is "sha256:<hex>" over every gated file (path and content).
 	Fingerprint string
@@ -118,7 +119,7 @@ type Platform struct {
 }
 
 // placeholderMarkers appear in copy that has not been signed off.
-var placeholderMarkers = []string{"PENDING-TRANSLATION", "XXX"}
+var placeholderMarkers = []string{"PENDING-TRANSLATION", "PENDING-TOOL1", "XXX"}
 
 // ProductionReady reports whether the bundle may run with SAUTI_ENV=production:
 // the protocol content must be approved and no placeholder copy may remain.
@@ -132,7 +133,10 @@ func (b Bundle) ProductionReady() error {
 	if strings.TrimSpace(b.Screens.StartedTestMode["en"]) == "" {
 		problems = append(problems, "screen started_test_mode/en is missing")
 	}
-	for _, e := range b.Screens.All() {
+	if b.Tool1.Status != "approved" {
+		problems = append(problems, "tool1 status is "+b.Tool1.Status)
+	}
+	for _, e := range append(b.Screens.All(), b.Tool1.Texts()...) {
 		for _, m := range placeholderMarkers {
 			if strings.Contains(e[2], m) {
 				problems = append(problems, fmt.Sprintf("screen %s/%s contains placeholder %q", e[0], e[1], m))

@@ -63,6 +63,7 @@ func minimalFS() fstest.MapFS {
 		"gated/flags.yaml":    {Data: []byte("android_app: false\ncaller_link: false\nspeech_assist: false\napp_api: false\n")},
 		"gated/screens.yaml":  {Data: []byte("started_test_mode: {en: \"Incident {ref}\", lg: \"Ekikolwa {ref}\"}\ninternal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")},
 		"gated/triage.yaml":   {Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {clinical-1: \"AAAA\"}\n")},
+		"gated/tool1.yaml":    {Data: []byte(approvedTool1)},
 	}
 }
 
