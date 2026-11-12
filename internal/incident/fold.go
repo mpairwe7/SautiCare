@@ -3,7 +3,9 @@ package incident
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
+	"time"
 	"uuid"
 )
 
@@ -90,6 +92,43 @@ func Apply(p Projection, e Event) (Projection, error) {
 			return p, fmt.Errorf("%w: an incident cannot merge into itself", ErrIllegalTransition)
 		}
 		next.MergedInto = &into
+	case EvMergeAbsorbed:
+		from, t1, err := parseAbsorbed(e.Payload)
+		if err != nil {
+			return p, err
+		}
+		if _, dup := p.Absorbed[from]; dup || from == p.ID {
+			return p, fmt.Errorf("%w: merge_absorbed: %s already absorbed or is this incident", ErrIllegalTransition, from)
+		}
+		next.Absorbed = maps.Clone(p.Absorbed)
+		if next.Absorbed == nil {
+			next.Absorbed = map[uuid.UUID]time.Time{}
+		}
+		next.Absorbed[from] = t1
+		next.T[1] = earliestT1(next.OwnT1, next.Absorbed)
+	case EvSplit:
+		if e.ActorKind != ActorStaff {
+			return p, fmt.Errorf("%w: only a coordinator splits a merge", ErrIllegalTransition)
+		}
+		from, err := parseFrom(e.Payload)
+		if err != nil {
+			return p, err
+		}
+		if _, ok := p.Absorbed[from]; !ok {
+			return p, fmt.Errorf("%w: split: %s was not merged into this incident", ErrIllegalTransition, from)
+		}
+		next.Absorbed = maps.Clone(p.Absorbed)
+		delete(next.Absorbed, from)
+		next.T[1] = earliestT1(next.OwnT1, next.Absorbed)
+	case EvUnmerged:
+		from, err := parseFrom(e.Payload)
+		if err != nil {
+			return p, err
+		}
+		if p.MergedInto == nil || *p.MergedInto != from || p.T[2] == nil {
+			return p, fmt.Errorf("%w: unmerged needs its survivor and a T2 (merged at dispatch)", ErrIllegalTransition)
+		}
+		next.MergedInto = nil
 	}
 	if i, ok := tIndex[e.Type]; ok && next.T[i] == nil {
 		at := e.RecordedAt
@@ -118,7 +157,7 @@ func applyStart(e Event) (Projection, error) {
 		return Projection{}, fmt.Errorf("%w: session.started reference: %w", ErrIllegalTransition, err)
 	}
 	at := e.RecordedAt
-	p := Projection{ID: e.IncidentID, Reference: ref, State: StateIntake, Version: 1, Channel: pl.Channel}
+	p := Projection{ID: e.IncidentID, Reference: ref, State: StateIntake, Version: 1, Channel: pl.Channel, OwnT1: at}
 	p.T[1] = &at
 	return p, nil
 }

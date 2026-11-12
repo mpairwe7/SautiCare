@@ -156,7 +156,7 @@ const getIncident = `-- name: GetIncident :one
 SELECT id, reference, channel, state, version, severity, logic_version,
        t1, t2, t3, t4, t5, t6, t7, escalated, flags, merged_into,
        language, danger, category, age_band, specific_danger, ward, landmark,
-       last_screen, zone_col, zone_row, location_quality
+       last_screen, zone_col, zone_row, location_quality, created_at, absorbed
 FROM op.incidents
 WHERE id = $1::uuid
 `
@@ -190,6 +190,8 @@ type GetIncidentRow struct {
 	ZoneCol         *int32
 	ZoneRow         *int32
 	LocationQuality *string
+	CreatedAt       pgtype.Timestamptz
+	Absorbed        []byte
 }
 
 func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentRow, error) {
@@ -224,6 +226,8 @@ func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentR
 		&i.ZoneCol,
 		&i.ZoneRow,
 		&i.LocationQuality,
+		&i.CreatedAt,
+		&i.Absorbed,
 	)
 	return i, err
 }

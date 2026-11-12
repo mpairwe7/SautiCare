@@ -63,6 +63,7 @@ type OpIncident struct {
 	ZoneCol         *int32
 	ZoneRow         *int32
 	LocationQuality *string
+	Absorbed        []byte
 }
 
 type OpIncidentEvent struct {

@@ -77,4 +77,11 @@ type Projection struct {
 	// Zone and LocationQuality are set by dispatch_ready.
 	Zone            *Zone
 	LocationQuality string
+
+	// OwnT1 is this incident's own first call (session.started). T[1] is the
+	// earliest of OwnT1 and the T1 of every call merged into it (Absorbed,
+	// keyed by the merged incident's ID): the earliest call gives T1 (Build
+	// Prompt §10.3).
+	OwnT1    time.Time
+	Absorbed map[uuid.UUID]time.Time
 }

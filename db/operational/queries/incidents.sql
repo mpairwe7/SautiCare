@@ -27,7 +27,7 @@ ORDER BY seq;
 SELECT id, reference, channel, state, version, severity, logic_version,
        t1, t2, t3, t4, t5, t6, t7, escalated, flags, merged_into,
        language, danger, category, age_band, specific_danger, ward, landmark,
-       last_screen, zone_col, zone_row, location_quality
+       last_screen, zone_col, zone_row, location_quality, created_at, absorbed
 FROM op.incidents
 WHERE id = sqlc.arg(id)::uuid;
 
