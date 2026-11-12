@@ -49,6 +49,9 @@ func Transitions() []Transition {
 		{Any, EvForwardTimedOut, ""},
 		{Any, EvCallerNotified, ""},
 		{StateMerged, EvUnmerged, StateDispatching},
+		// A wrongly merged call can be split off a survivor that has since
+		// closed (PR #8 review); the survivor stays closed.
+		{StateClosed, EvSplit, ""},
 		{StateMerged, EvScreenAnswered, ""},
 		{StateIntake, EvMerged, StateMerged},
 		{StateTriaged, EvMerged, StateMerged},
@@ -57,13 +60,10 @@ func Transitions() []Transition {
 }
 
 // lookup finds the transition for event in state, preferring an exact match
-// over a wildcard. A closed incident accepts nothing; a merged one accepts
-// only its exact transitions (its unmerge, and its own caller's answers),
-// never a wildcard event.
+// over a wildcard. A closed or merged incident accepts only its exact
+// transitions (a closed survivor: a coordinator's split; a merged call: its
+// unmerge and its own caller's answers), never a wildcard event.
 func lookup(state State, event EventType) (Transition, bool) {
-	if state == StateClosed {
-		return Transition{}, false
-	}
 	var wildcard *Transition
 	for _, tr := range Transitions() {
 		if tr.Event != event {
@@ -72,7 +72,7 @@ func lookup(state State, event EventType) (Transition, bool) {
 		if tr.From == state {
 			return tr, true
 		}
-		if tr.From == Any && state != StateMerged {
+		if tr.From == Any && state != StateMerged && state != StateClosed {
 			w := tr
 			wildcard = &w
 		}

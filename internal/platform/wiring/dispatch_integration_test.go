@@ -402,7 +402,7 @@ func TestEngineSuspendedMidCascade(t *testing.T) {
 	r.age(t, id, 90*time.Second)
 	r.mustProcess(t, id)
 	snap := r.mustProcess(t, id) // a second pass while suspended escalates nothing more
-	if len(alertsOf(snap, responder.RoleVHT)) != 1 || !slices.Equal(snap.Escalations, []string{dispatch.ReasonSuspended}) {
+	if len(alertsOf(snap, responder.RoleVHT)) != 1 || !slices.Equal(snap.Escalations, []string{incident.EscalationKey(dispatch.ReasonSuspended, "")}) {
 		t.Fatalf("suspended: alerts %+v escalations %v", snap.Alerts, snap.Escalations)
 	}
 	r.suspension.v.Store(false)
@@ -418,7 +418,7 @@ func TestEngineNoEligibleEscalatesAtOnce(t *testing.T) {
 	r := newEngineRig(t, nil)
 	id := r.incident(t, incident.SevRed)
 	snap := r.mustProcess(t, id)
-	if !slices.Contains(snap.Escalations, dispatch.ReasonExhausted) {
+	if !dispatch.HasEscalation(snap.Escalations, dispatch.ReasonExhausted) {
 		t.Fatalf("escalations %v", snap.Escalations)
 	}
 	var due time.Time
@@ -448,7 +448,7 @@ func TestEngineRunOnceEscalatesAnUnprocessableIncident(t *testing.T) {
 	}
 	r.store.afterIssue = nil
 	snap, _ := r.store.DispatchSnapshot(context.Background(), id)
-	if !slices.Contains(snap.Escalations, dispatch.ReasonDispatchError) {
+	if !dispatch.HasEscalation(snap.Escalations, dispatch.ReasonDispatchError) {
 		t.Fatalf("escalations %v", snap.Escalations)
 	}
 }
@@ -508,5 +508,54 @@ func TestEngineSettlesAttempts(t *testing.T) {
 	}
 	if n != 3 {
 		t.Fatalf("%d attempts, want 3", n)
+	}
+}
+
+// Review I1: a suspension committed between recording an alert and
+// delivering it stops the delivery (the alert lapses), even though the
+// worker read "active" at the start of its pass.
+func TestEngineDoesNotDeliverAfterADatabaseSuspension(t *testing.T) {
+	r := newEngineRig(t, nil)
+	r.responder(t, responder.RoleVHT)
+	id := r.incident(t, incident.SevGreen)
+	r.store.afterIssue = func() error {
+		r.store.afterIssue = nil
+		_, err := r.console.SuspendDispatch(context.Background(), "coordinator_decision", uuid.NewV7())
+		return err
+	}
+	snap := r.mustProcess(t, id)
+	vht := alertsOf(snap, responder.RoleVHT)
+	if len(vht) != 1 || r.deliveries.count(vht[0].ID, dispatch.PurposeAlert) != 0 {
+		t.Fatalf("alerts %+v delivered %d times during the suspension", vht, r.deliveries.count(vht[0].ID, dispatch.PurposeAlert))
+	}
+}
+
+// Review I7: an incident closed with a responder stood down still gets the
+// stand-down delivered (the closure wakes dispatch), once; then dispatch
+// parks it.
+func TestEngineDeliversStandDownsAfterClosure(t *testing.T) {
+	r := newEngineRig(t, nil)
+	r.responder(t, responder.RoleVHT)
+	id := r.incident(t, incident.SevGreen)
+	vht := alertsOf(r.mustProcess(t, id), responder.RoleVHT)
+	if len(vht) != 1 {
+		t.Fatalf("alerts %+v", vht)
+	}
+	if _, err := r.store.CloseAlert(context.Background(), vht[0].ID, dispatch.OutcomeStoodDown); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.intake.Append(context.Background(), incident.AppendParams{IncidentID: id, Type: incident.EvClosed,
+		Payload: []byte(`{"reason":"completed"}`), ActorKind: incident.ActorSystem, IdemKey: "close"}); err != nil {
+		t.Fatal(err)
+	}
+	r.mustProcess(t, id)
+	r.mustProcess(t, id)
+	if n := r.deliveries.count(vht[0].ID, dispatch.PurposeStandDown); n != 1 {
+		t.Fatalf("stand-down delivered %d times", n)
+	}
+	var parked bool
+	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(context.Background(),
+		"SELECT due_at = 'infinity' FROM op.dispatch_timers WHERE incident_id = $1", id).Scan(&parked); err != nil || !parked {
+		t.Fatalf("not parked after closure: %v %v", parked, err)
 	}
 }

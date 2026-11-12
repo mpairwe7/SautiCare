@@ -138,7 +138,7 @@ func (s *Store) DispatchSnapshot(ctx context.Context, incidentID uuid.UUID) (dis
 		return dispatch.Snapshot{}, fmt.Errorf("opstore: dispatch snapshot: %w", notFound(err))
 	}
 	snap := dispatch.Snapshot{IncidentID: incidentID, State: incident.State(inc.State), Severity: incident.Severity(deref(inc.Severity)),
-		DispatchedAt: tsOpt(inc.T2), Ward: deref(inc.Ward), Assigned: map[responder.Role]uuid.UUID{}}
+		DispatchedAt: tsOpt(inc.T2), Ward: deref(inc.Ward), LocationQuality: deref(inc.LocationQuality), Assigned: map[responder.Role]uuid.UUID{}}
 	if inc.ZoneCol != nil && inc.ZoneRow != nil {
 		snap.Zone = &incident.Zone{Col: int(*inc.ZoneCol), Row: int(*inc.ZoneRow)}
 	}
@@ -171,6 +171,11 @@ func (s *Store) DispatchSnapshot(ctx context.Context, incidentID uuid.UUID) (dis
 	if snap.Escalations, err = q.DispatchEscalations(ctx, id); err != nil {
 		return dispatch.Snapshot{}, err
 	}
+	red, err := q.DispatchRedSince(ctx, id)
+	if err != nil {
+		return dispatch.Snapshot{}, err
+	}
+	snap.RedSince = tsOpt(red)
 	return snap, tx.Commit(ctx)
 }
 
@@ -250,9 +255,13 @@ func (s *Store) AutoSuspendDispatch(ctx context.Context, failures, window int) (
 }
 
 // RedDispatchOutcomes returns up to window settled red incidents' outcomes,
-// newest first (true = accepted in time), for the stopping rule.
-func (s *Store) RedDispatchOutcomes(ctx context.Context, window int) ([]bool, error) {
-	out, err := s.q.RedDispatchOutcomes(ctx, int32(min(window, 10000))) //nolint:gosec // bounded above
+// newest first (true = accepted within redWindow of T2), for the stopping
+// rule; only incidents dispatched since the latest resumption count.
+func (s *Store) RedDispatchOutcomes(ctx context.Context, window int, redWindow time.Duration) ([]bool, error) {
+	out, err := s.q.RedDispatchOutcomes(ctx, opdb.RedDispatchOutcomesParams{
+		RedWindow:  pgtype.Interval{Microseconds: redWindow.Microseconds(), Valid: true},
+		WindowSize: int32(min(window, 10000)), //nolint:gosec // bounded above
+	})
 	if err != nil {
 		return nil, fmt.Errorf("opstore: red outcomes: %w", err)
 	}
@@ -286,4 +295,14 @@ func staffArg(id uuid.UUID) pgtype.UUID {
 		return pgtype.UUID{}
 	}
 	return pgID(id)
+}
+
+// OldestOverdueDispatch is how late the most overdue dispatch wake is (0:
+// none due), for dispatch-worker's metrics.
+func (s *Store) OldestOverdueDispatch(ctx context.Context) (time.Duration, error) {
+	secs, err := s.q.OldestOverdueDispatch(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("opstore: overdue dispatch: %w", err)
+	}
+	return time.Duration(secs * float64(time.Second)), nil
 }

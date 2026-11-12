@@ -37,7 +37,9 @@ Chosen option: **one function per command** (migration 0015).
   - `op.dispatch_escalate`: once per reason.
 - The shared core `op.append_event_core` (no grants) keeps every check and the projection. The generic `op.append_incident_event` refuses the dispatch event types. Payloads are identifiers and codes only, checked identically in Go and SQL.
 - `op.alert_attempts` records each delivery before the provider is called: one attempt per alert, purpose and channel. An attempt is claimed once and settled `sent`, `failed` or `unknown`. A claimed attempt is never sent again: the cascade's next rung covers an unknown result.
-- An incident cannot close while an alert is pending; whoever closes it stands the responders down first.
+- An incident cannot close while an alert is pending; whoever closes it stands the responders down first. Closure (and a merge) wakes dispatch, so the stand-downs are delivered, and the planner then parks the wake. A merge is refused while an alert is pending.
+- While dispatch is suspended the database issues no alert and claims no alert attempt (`op.issue_alert` and `op.begin_attempt` share-lock `op.dispatch_control`, which a suspension locks exclusively); an alert attempt is claimed only for a pending alert. An alert recorded just before a suspension therefore lapses undelivered (PR #10 review I1).
+- `op.dispatch_escalate` keys its event `escalate:<reason>:<role or ->` (`incident.EscalationKey`): once per reason and role. Intake uses the same key for `dispatch_suspended`, so the coordinator is alerted once (review I5, M7).
 
 ### Consequences
 
@@ -47,4 +49,4 @@ Chosen option: **one function per command** (migration 0015).
 
 ### Confirmation
 
-`internal/platform/pg/opstore/dispatch_integration_test.go` (`TestConcurrentAcceptsOneAssignment`, `TestIssueAlertGuards`, `TestDispatchFactsOnlyThroughTheirFunctions`, `TestDispatchLifecycleIsRecordedAndConsistent`, `TestAttemptsAreClaimedOnce`); `internal/platform/pg/opstore/opstore_integration_test.go::TestProjectionMatchesFold`, `::TestTransitionsTableMatchesGo`; `internal/incident/dispatch_test.go::TestDispatchEventPayloads`, `::TestAlertsContinueOnScene`; `internal/platform/wiring/dispatch_integration_test.go::TestEngineCrashBetweenRecordAndDelivery`, `::TestEngineFailoverMidCascade`, `::TestEngineSettlesAttempts`.
+`internal/platform/pg/opstore/dispatch_integration_test.go` (`TestConcurrentAcceptsOneAssignment`, `TestIssueAlertGuards`, `TestDispatchFactsOnlyThroughTheirFunctions`, `TestDispatchLifecycleIsRecordedAndConsistent`, `TestAttemptsAreClaimedOnce`); `internal/platform/pg/opstore/opstore_integration_test.go::TestProjectionMatchesFold`, `::TestTransitionsTableMatchesGo`; `internal/incident/dispatch_test.go::TestDispatchEventPayloads`, `::TestAlertsContinueOnScene`; `internal/platform/wiring/dispatch_integration_test.go::TestEngineCrashBetweenRecordAndDelivery`, `::TestEngineFailoverMidCascade`, `::TestEngineSettlesAttempts`, `::TestEngineDoesNotDeliverAfterADatabaseSuspension`, `::TestEngineDeliversStandDownsAfterClosure`; `internal/platform/pg/opstore/review10_integration_test.go::TestEscalationsKeyedByReasonAndRole`, `::TestNoAlertOrAttemptWhileSuspended`, `::TestCloseAndMergeWakeDispatch`.

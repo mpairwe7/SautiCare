@@ -63,17 +63,19 @@ type Due struct {
 // Snapshot is one incident's dispatch facts as stored, before the worker
 // adds the pool, facilities, suspension and parameters to make a State.
 type Snapshot struct {
-	IncidentID     uuid.UUID
-	State          incident.State
-	Severity       incident.Severity
-	DispatchedAt   *time.Time
-	Zone           *incident.Zone // nil for a ward-level location
-	Ward           string
-	Alerts         []Alert
-	Assigned       map[responder.Role]uuid.UUID
-	Forwards       []ForwardState
-	Escalations    []string
-	CallerNotified []string
+	IncidentID      uuid.UUID
+	State           incident.State
+	Severity        incident.Severity
+	DispatchedAt    *time.Time
+	RedSince        *time.Time     // when the incident became red, if it is
+	Zone            *incident.Zone // for a ward-level location, the ward's centre
+	LocationQuality string         // landmark, fuzzy or ward (incident.Quality*)
+	Ward            string
+	Alerts          []Alert
+	Assigned        map[responder.Role]uuid.UUID
+	Forwards        []ForwardState
+	Escalations     []string
+	CallerNotified  []string
 }
 
 // ControlEntry is one row of the dispatch control log: the dated register

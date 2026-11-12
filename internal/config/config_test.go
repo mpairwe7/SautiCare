@@ -244,9 +244,9 @@ func TestLoadReadsTriageTrustAnchors(t *testing.T) {
 // (and escalated after a danger yes); zero would flag every live session.
 func TestLoadRequiresPositiveAbandonAfter(t *testing.T) {
 	fs := minimalFS()
-	fs["gated/intake.yaml"] = &fstest.MapFile{Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 0s\n")}
-	if _, err := Load(fs); err == nil {
-		t.Fatal("abandon_after 0 accepted")
+	fs["gated/intake.yaml"] = &fstest.MapFile{Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 0s\ndedup_window: 15m\ndedup_max_zone_distance: 1\n")}
+	if _, err := Load(fs); err == nil || !strings.Contains(err.Error(), "abandon_after") {
+		t.Fatalf("abandon_after 0: err = %v, want the abandon_after error", err)
 	}
 	b, err := Load(minimalFS())
 	if err != nil || b.Intake.AbandonAfter.Duration != 2*time.Minute {

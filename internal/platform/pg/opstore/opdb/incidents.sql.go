@@ -97,20 +97,20 @@ func (q *Queries) ClaimOutbox(ctx context.Context, arg ClaimOutboxParams) ([]Cla
 }
 
 const dedupCandidates = `-- name: DedupCandidates :many
-SELECT id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2 FROM op.incidents
-WHERE category = $1::text AND t2 IS NOT NULL AND state NOT IN ('closed', 'merged')
-  AND zone_col BETWEEN $2::int - $3::int AND $2::int + $3::int
-  AND zone_row BETWEEN $4::int - $3::int AND $4::int + $3::int
-  AND t1 BETWEEN $5::timestamptz - $6::int * interval '1 second'
-             AND $5::timestamptz + $6::int * interval '1 second'
-  AND id <> $7::uuid
+SELECT c.id::uuid AS id, c.category::text AS category, c.zone_col::int AS zone_col, c.zone_row::int AS zone_row,
+       coalesce(c.location_quality, '')::text AS location_quality, coalesce(c.severity, '')::text AS severity,
+       c.escalated::boolean AS escalated, c.t1::timestamptz AS t1, c.t2::timestamptz AS t2
+FROM op.dedup_candidates(
+    $1::text, $2::int, $3::int, $4::int,
+    $5::timestamptz, $6::int, $7::uuid
+) AS c(id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2)
 `
 
 type DedupCandidatesParams struct {
 	Category      string
 	Col           int32
-	Dist          int32
 	RowIndex      int32
+	Dist          int32
 	T1            pgtype.Timestamptz
 	WindowSeconds int32
 	ID            pgtype.UUID
@@ -118,22 +118,24 @@ type DedupCandidatesParams struct {
 
 type DedupCandidatesRow struct {
 	ID              pgtype.UUID
-	Category        *string
-	ZoneCol         *int32
-	ZoneRow         *int32
-	LocationQuality *string
-	Severity        *string
+	Category        string
+	ZoneCol         int32
+	ZoneRow         int32
+	LocationQuality string
+	Severity        string
 	Escalated       bool
 	T1              pgtype.Timestamptz
 	T2              pgtype.Timestamptz
 }
 
+// Read and locked FOR SHARE (op.dedup_candidates, migration 0017): the rule
+// decides on current rows, which cannot change before the merge commits.
 func (q *Queries) DedupCandidates(ctx context.Context, arg DedupCandidatesParams) ([]DedupCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, dedupCandidates,
 		arg.Category,
 		arg.Col,
-		arg.Dist,
 		arg.RowIndex,
+		arg.Dist,
 		arg.T1,
 		arg.WindowSeconds,
 		arg.ID,
@@ -517,6 +519,42 @@ func (q *Queries) ListResponders(ctx context.Context) ([]ListRespondersRow, erro
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStalledDispatch = `-- name: ListStalledDispatch :many
+SELECT i.id FROM op.incidents i
+WHERE i.state = 'dispatching' AND i.t3 IS NULL AND i.t2 < clock_timestamp() - $1::interval
+  AND NOT EXISTS (
+      SELECT 1 FROM op.incident_events e
+       WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+         AND e.payload ->> 'reason' IN ('no_eligible_responder', 'no_responder_nearby', 'red_no_acceptance',
+                                        'forwarded_to_facility', 'no_facility_acknowledged', 'dispatch_suspended',
+                                        'dispatch_error', 'dispatch_stalled'))
+ORDER BY i.t2
+LIMIT 500
+`
+
+// Dispatch watchdog (review I8): dispatched incidents with no alert (T3) and
+// no dispatch escalation of any kind, T2 older than after — dispatch-worker
+// has not acted on them. Read by intake-gw's leader, a separate process.
+func (q *Queries) ListStalledDispatch(ctx context.Context, after pgtype.Interval) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listStalledDispatch, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

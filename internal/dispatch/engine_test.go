@@ -8,6 +8,10 @@ import (
 	"testing/synctest"
 	"time"
 	"uuid"
+
+	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/location"
+	"sautihealth.com/sauti/internal/responder"
 )
 
 // claimOnly is a Store that only claims: every claim returns full batches
@@ -58,7 +62,7 @@ type ruleStore struct {
 }
 
 func (s *ruleStore) DispatchSuspended(context.Context) (bool, error) { return s.suspended, nil }
-func (s *ruleStore) RedDispatchOutcomes(_ context.Context, n int) ([]bool, error) {
+func (s *ruleStore) RedDispatchOutcomes(_ context.Context, n int, _ time.Duration) ([]bool, error) {
 	return s.outcomes[:min(n, len(s.outcomes))], nil
 }
 func (s *ruleStore) AutoSuspendDispatch(_ context.Context, failures, window int) (bool, error) {
@@ -91,4 +95,78 @@ func TestCheckStoppingRule(t *testing.T) {
 			t.Errorf("%d failures (suspended %v): breached=%v suspends=%v err=%v", tc.failures, tc.suspended, breached, s.suspends, err)
 		}
 	}
+}
+
+// Review I3: intake records a ward-level location with the ward's centre as
+// its zone, so the engine must look at the location quality: a ward-level
+// incident searches from every zone of the ward, a landmark from its zone.
+func TestCentresForAWardLevelLocation(t *testing.T) {
+	ward := location.Ward{ID: "w9", Centre: location.Cell{Col: 10, Row: 10},
+		Zones: []location.Cell{{Col: 10, Row: 10}, {Col: 13, Row: 10}}}
+	e := &Engine{gazetteer: location.File{Wards: []location.Ward{ward}}}
+	zone := &incident.Zone{Col: 10, Row: 10}
+	got, cell := e.centres(Snapshot{Zone: zone, Ward: "w9", LocationQuality: incident.QualityWard})
+	if len(got) != 2 || cell != ward.Centre {
+		t.Fatalf("ward-level centres %v (%v), want every zone of the ward", got, cell)
+	}
+	far := location.Cell{Col: 14, Row: 10} // 4 cells from the centre, 1 from the ward's other zone
+	if d := min(got[0].Chebyshev(far), got[1].Chebyshev(far)); d != 1 {
+		t.Fatalf("distance %d", d)
+	}
+	if got, _ := e.centres(Snapshot{Zone: zone, Ward: "w9", LocationQuality: incident.QualityLandmark}); len(got) != 1 || got[0] != (location.Cell{Col: 10, Row: 10}) {
+		t.Fatalf("landmark centres %v", got)
+	}
+}
+
+// hangStore claims one incident whose snapshot never comes back until the
+// pass is cancelled (a provider or a lock that hangs), and records the
+// escalation that follows.
+type hangStore struct {
+	Store
+	claimed   bool
+	escalated []string
+}
+
+func (h *hangStore) DispatchSuspended(context.Context) (bool, error) { return true, nil }
+func (h *hangStore) ClaimDueDispatch(context.Context, int, time.Duration) ([]Due, error) {
+	if h.claimed {
+		return nil, nil
+	}
+	h.claimed = true
+	return []Due{{IncidentID: uuid.NewV7(), Gen: 1}}, nil
+}
+func (h *hangStore) DispatchSnapshot(ctx context.Context, _ uuid.UUID) (Snapshot, error) {
+	<-ctx.Done()
+	return Snapshot{}, ctx.Err()
+}
+func (h *hangStore) DispatchEscalate(_ context.Context, _ uuid.UUID, reason string, _ responder.Role, _ string) (bool, error) {
+	h.escalated = append(h.escalated, reason)
+	return true, nil
+}
+
+// Review I8: every pass has a deadline below the lease, so a hang cannot
+// stall the leader; the hung incident is escalated, and only a successful
+// pass counts as the worker being alive.
+func TestPassDeadlineAndLastPass(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := &hangStore{}
+		e := &Engine{store: h, suspension: h, passTimeout: 20 * time.Second}
+		start := time.Now()
+		var failed int
+		if _, err := e.RunOnce(t.Context(), 10, time.Minute, func(uuid.UUID, error) { failed++ }); err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(start); took != 20*time.Second || failed != 1 || len(h.escalated) != 1 || h.escalated[0] != ReasonDispatchError {
+			t.Fatalf("pass took %v, failures %d, escalations %v", took, failed, h.escalated)
+		}
+		if !e.LastPass().IsZero() {
+			t.Fatal("a failed pass counted as alive")
+		}
+		if _, err := e.RunOnce(t.Context(), 10, time.Minute, func(uuid.UUID, error) {}); err != nil {
+			t.Fatal(err)
+		}
+		if !e.LastPass().Equal(time.Now()) {
+			t.Fatalf("last pass %v, want now", e.LastPass())
+		}
+	})
 }

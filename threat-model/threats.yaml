@@ -107,7 +107,7 @@ threats:
     mitigations:
       - SHA-256 hash chain computed in SQL and re-verified in Go
       - Append-only triggers even for the owner; EXECUTE-only appender role
-      - ML-DSA-65 signed checkpoints written to a write-once witness; verification requires the witness
+      - ML-DSA-65 signed checkpoints written to a write-once witness; verification requires the witness, and an empty or missing witness fails it unless --no-witness is explicit
       - The checkpointer is anchored on the last witnessed checkpoint and refuses to sign over diverged history
     verified_by:
       - internal/platform/pg/auditstore/auditstore_integration_test.go::TestSQLHashMatchesGoCanonical
@@ -119,6 +119,7 @@ threats:
       - internal/platform/pg/tamper_integration_test.go::TestOwnerRewriteWithRecomputedChainIsCaughtByWitness
       - internal/audit/witness_test.go::TestCheckpointerRefusesDivergedChain
       - cmd/sautictl/main_test.go::TestVerifyLedgerRequiresWitnessOrExplicitOptOut
+      - cmd/sautictl/ledger_test.go::TestVerifyLedgerFailsWhenTheWitnessDirHoldsNoNotes
 
   - id: T-008
     title: Caller identifiers enter the audit ledger
@@ -183,9 +184,16 @@ threats:
     mitigations:
       - No call or consent audio exists; the media store accepts consented interview audio only, with a destruction deadline
       - Strict config decoding; analytic schema changes need the PI (CODEOWNERS)
+      - >-
+        OPEN GAP: no gate yet requires DPO approval of a new record category; the tests
+        below cover the media and configuration controls only. Planned (M5): a
+        DPO-owned register of record categories under governance/, the DPO as its
+        code owner, and a CI check that fails when a migration creates a table or
+        column the register does not list.
     verified_by:
       - internal/platform/pg/schemas_integration_test.go::TestMediaRecordingsRequireDestroyByAndKey
       - internal/config/config_test.go::TestLoadRejectsUnknownField
+      - "planned:M5 DPO record-category gate: CI fails a migration that adds a table or column absent from the DPO-owned register"
 
   - id: T-013
     title: Production reached from outside Uganda (vendor or remote staff)
@@ -309,6 +317,8 @@ threats:
       - A merge carries the call's higher severity (incident.severity_raised) and its escalation to the survivor, so a red or escalated call is never hidden in a green incident
       - Calls located only to their ward are never merged (both are dispatched)
       - The database refuses staff actions, splits and unmerges from every role but the console
+      - The database accepts merge_absorbed and severity_raised only for a call merged into the survivor, with that call's stored T1 and its own severity (no forged T1, no unrelated call)
+      - Merge candidates are read and locked FOR SHARE, so a survivor closing or split concurrently is seen before the decision (no failed dispatch, no merge outside the window)
     verified_by:
       - internal/intake/dedup_test.go::TestNoMergeAcrossCategories
       - internal/intake/dedup_test.go::TestNoMergeBeyondOneZone
@@ -318,8 +328,12 @@ threats:
       - internal/platform/pg/opstore/dedup_integration_test.go::TestWardLevelCallsAreNotMerged
       - internal/platform/pg/opstore/merge_integration_test.go::TestOnlyTheConsoleRecordsStaffActions
       - internal/platform/pg/opstore/merge_integration_test.go::TestSeverityRaisedParity
+      - internal/platform/pg/opstore/merge_integration_test.go::TestMergeAbsorbedMatchesTheMergedCall
+      - internal/platform/pg/opstore/merge_integration_test.go::TestSplitAfterARemerge
       - internal/platform/pg/opstore/dedup_integration_test.go::TestConcurrentCompletionsOneSurvivor
       - internal/platform/pg/opstore/dedup_integration_test.go::TestSplitIncident
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestDispatchOrMergeWhileTheSurvivorCloses
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestDispatchOrMergeWhileASplitMovesT1
       - tests/e2e/m1_dedup_test.go::TestScenario4ThreeBystandersOneIncident
 
   - id: T-022
@@ -360,6 +374,8 @@ threats:
       - internal/platform/pg/opstore/dispatch_integration_test.go::TestDispatchTimers
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineCrashBetweenRecordAndDelivery
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineFailoverMidCascade
+      - internal/platform/wiring/dispatch_integration_test.go::TestEngineDoesNotDeliverAfterADatabaseSuspension
+      - internal/platform/pg/opstore/review10_integration_test.go::TestCloseAndMergeWakeDispatch
 
   - id: T-024
     title: Dispatch facts forged or bypassed (direct table writes, generic appends, another responder's alert)
@@ -394,4 +410,8 @@ threats:
       - internal/intake/suspension_test.go::TestSuspendedDispatchChangesTheClosingMessageAndEscalates
       - cmd/sautictl/main_test.go::TestDispatchCommandsGateAndValidate
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineRunOnceEscalatesAnUnprocessableIncident
+      - internal/platform/pg/opstore/control_integration_test.go::TestRedDispatchOutcomes
+      - internal/platform/pg/opstore/review10_integration_test.go::TestNoAlertOrAttemptWhileSuspended
+      - internal/intake/watchdog_test.go::TestWatchdogEscalatesStalledDispatch
+      - cmd/dispatch-worker/main_test.go::TestReadinessFailsWhenTheLeaderStalls
 

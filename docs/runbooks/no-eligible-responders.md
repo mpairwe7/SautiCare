@@ -4,7 +4,7 @@
 |---|---|
 | Owner | coordinator on duty |
 | Severity | SEV-2 per incident; SEV-1 if it repeats in one area within an hour |
-| Alert / trigger | `incident.escalated` with reason `no_eligible_responder`, `red_no_acceptance`, `forwarded_to_facility` or `no_facility_acknowledged` |
+| Alert / trigger | `incident.escalated` with reason `no_eligible_responder`, `no_responder_nearby`, `red_no_acceptance`, `forwarded_to_facility`, `no_facility_acknowledged` or `dispatch_stalled` |
 | Last reviewed: | 2026-11-13 |
 | Last drilled | not yet drilled |
 
@@ -16,12 +16,14 @@ The escalation appears on the coordinator's incident list with its reason and, w
 
 | Reason | Meaning |
 |---|---|
-| `no_eligible_responder` | nobody left to try for a role within the search limit (ring 1 in protocol mode, 2.5 km amended) and nobody on the way |
-| `red_no_acceptance` | a red incident with a role still unaccepted at 3 minutes (decision 2, both modes) |
+| `no_eligible_responder` | nobody left to try for a role within the search limit (ring 1 in protocol mode, 2.5 km amended) and nobody on the way; once per role |
+| `no_responder_nearby` | amended mode: nobody in ring 1 for a role at T2; the search is widening, so help may still come from further away |
+| `red_no_acceptance` | a red incident with a role still unaccepted at 3 minutes (decision 2, both modes); once per open role |
 | `forwarded_to_facility` | amended mode: 2.5 km reached with a role unaccepted; the nearest health centre is being called |
 | `no_facility_acknowledged` | every forwarding health centre was tried and none acknowledged |
 | `dispatch_suspended` | dispatch is suspended: see [suspension-and-resumption.md](suspension-and-resumption.md) |
 | `dispatch_error` | the worker could not process the incident: see [dispatch-worker-down.md](dispatch-worker-down.md) |
+| `dispatch_stalled` | intake-gw's watchdog: two minutes after T2 dispatch has neither alerted anyone nor escalated — dispatch-worker is down or stuck: see [dispatch-worker-down.md](dispatch-worker-down.md) |
 
 ## Impact
 The incident is recorded and the search goes on: a responder who switches availability on is alerted at the next ring step (60 s). Until someone accepts, the coordinator is the safety net.

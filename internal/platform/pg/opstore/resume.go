@@ -7,6 +7,8 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/intake"
@@ -87,6 +89,21 @@ func (s *Store) ListIdle(ctx context.Context, idleFor time.Duration) ([]intake.I
 	for i, r := range rows {
 		out[i] = intake.Idle{ID: uuid.UUID(r.ID.Bytes), Danger: deref(r.Danger), Category: deref(r.Category),
 			Severity: incident.Severity(deref(r.Severity)), Dispatched: r.Dispatched}
+	}
+	return out, nil
+}
+
+// ListStalledDispatch lists dispatched incidents dispatch has not acted on
+// (no alert, no dispatch escalation) for longer than after (intake-gw's
+// watchdog, review I8).
+func (s *Store) ListStalledDispatch(ctx context.Context, after time.Duration) ([]uuid.UUID, error) {
+	rows, err := s.q.ListStalledDispatch(ctx, pgtype.Interval{Microseconds: after.Microseconds(), Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("opstore: stalled dispatch: %w", err)
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, id := range rows {
+		out = append(out, uuid.UUID(id.Bytes))
 	}
 	return out, nil
 }

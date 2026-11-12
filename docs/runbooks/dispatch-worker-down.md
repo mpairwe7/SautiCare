@@ -14,7 +14,9 @@ dispatch-worker decides who is alerted and records it ([ADR-0024](../adr/ADR-002
 ## Triggers and detection
 - `/readyz` returns 503 on every instance, or no instance logs `dispatch-worker starting`.
 - Incidents stay due for longer than the poll interval: run `SELECT count(*) FROM op.dispatch_timers WHERE due_at < now() - interval '30 seconds' AND (lease_until IS NULL OR lease_until < now());` as `op_readonly`.
-- `incident.escalated` events with reason `dispatch_error`. The worker escalates any incident it cannot process.
+- `incident.escalated` events with reason `dispatch_error`. The worker escalates any incident it cannot process (each pass has a 20-second deadline).
+- `incident.escalated` with reason `dispatch_stalled`: intake-gw's watchdog, a separate process, found an incident with no alert and no dispatch escalation two minutes after T2.
+- `/readyz` check `dispatch_loop` failing on the leader (no successful pass for two minutes); metrics `sauti_dispatch_last_pass_age_seconds` and `sauti_dispatch_oldest_overdue_seconds` growing, `sauti_dispatch_pass_failures_total` rising.
 
 ## Impact
 **The dispatch path is affected.** Callers still get their incident number (intake is separate), but no VHT or transporter is alerted, no health centre is called, and the caller is not told help is on the way. Escalations already raised stay visible to coordinators.

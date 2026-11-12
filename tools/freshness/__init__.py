@@ -6,7 +6,9 @@ from the code:
   * an ADR is not indexed in docs/adr/README.md or lacks a mandatory MADR
     section;
   * a runbook lacks a template section or its "Last reviewed:" line;
-  * a `path::Test` pointer in docs/traceability.md does not resolve.
+  * docs/traceability.md is missing, or a backticked `path::name` pointer in
+    it is malformed or does not resolve to a test function. `::name` is
+    shorthand for the path of the previous pointer on the same line.
 docs/superpowers/ (design history: specs and plans) is exempt from the path
 check because it describes code that later milestones will create.
 """
@@ -18,7 +20,9 @@ from tools.freshness.pointers import resolve
 TOP_DIRS = ("internal", "cmd", "db", "docs", "config", "governance", "threat-model",
             "tools", "scripts", "tests", "build", ".github")
 PATH_TOKEN = re.compile(r"`((?:" + "|".join(re.escape(d) for d in TOP_DIRS) + r")/[^`\s]+)`")
-POINTER_TOKEN = re.compile(r"`([\w./-]+::\w+)`")
+# Any backticked token containing "::" is a pointer candidate; resolve()
+# validates its full syntax, so a malformed one is reported, not skipped.
+POINTER_TOKEN = re.compile(r"`([^`\s]*::[^`\s]*)`")
 ADR_SECTIONS = ("## Context and Problem Statement", "## Decision Outcome", "## Consequences", "## Confirmation")
 RUNBOOK_SECTIONS = ("## Summary", "## Triggers and detection", "## Impact", "## Diagnosis",
                     "## Mitigation", "## Escalation", "## Verification")
@@ -68,8 +72,15 @@ def check(root: Path) -> list[str]:
                 errors.append(f"docs/runbooks/{rb.name}: missing 'Last reviewed:'")
 
     trace = root / "docs" / "traceability.md"
-    if trace.is_file():
-        for ptr in POINTER_TOKEN.findall(trace.read_text(encoding="utf-8")):
-            if problem := resolve(root, ptr):
-                errors.append(f"docs/traceability.md: {problem}")
+    if not trace.is_file():
+        errors.append("docs/traceability.md: missing (the traceability matrix is required)")
+    else:
+        for line in trace.read_text(encoding="utf-8").splitlines():
+            path = ""
+            for ptr in POINTER_TOKEN.findall(line):
+                if ptr.startswith("::") and path:
+                    ptr = path + ptr
+                path = ptr.split("::")[0]
+                if problem := resolve(root, ptr):
+                    errors.append(f"docs/traceability.md: {problem}")
     return errors

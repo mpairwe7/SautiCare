@@ -96,13 +96,15 @@ ORDER BY updated_at
 LIMIT 500;
 
 -- name: DedupCandidates :many
-SELECT id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2 FROM op.incidents
-WHERE category = sqlc.arg(category)::text AND t2 IS NOT NULL AND state NOT IN ('closed', 'merged')
-  AND zone_col BETWEEN sqlc.arg(col)::int - sqlc.arg(dist)::int AND sqlc.arg(col)::int + sqlc.arg(dist)::int
-  AND zone_row BETWEEN sqlc.arg(row_index)::int - sqlc.arg(dist)::int AND sqlc.arg(row_index)::int + sqlc.arg(dist)::int
-  AND t1 BETWEEN sqlc.arg(t1)::timestamptz - sqlc.arg(window_seconds)::int * interval '1 second'
-             AND sqlc.arg(t1)::timestamptz + sqlc.arg(window_seconds)::int * interval '1 second'
-  AND id <> sqlc.arg(id)::uuid;
+-- Read and locked FOR SHARE (op.dedup_candidates, migration 0017): the rule
+-- decides on current rows, which cannot change before the merge commits.
+SELECT c.id::uuid AS id, c.category::text AS category, c.zone_col::int AS zone_col, c.zone_row::int AS zone_row,
+       coalesce(c.location_quality, '')::text AS location_quality, coalesce(c.severity, '')::text AS severity,
+       c.escalated::boolean AS escalated, c.t1::timestamptz AS t1, c.t2::timestamptz AS t2
+FROM op.dedup_candidates(
+    sqlc.arg(category)::text, sqlc.arg(col)::int, sqlc.arg(row_index)::int, sqlc.arg(dist)::int,
+    sqlc.arg(t1)::timestamptz, sqlc.arg(window_seconds)::int, sqlc.arg(id)::uuid
+) AS c(id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2);
 
 -- name: SplitIncident :exec
 SELECT op.split_incident(sqlc.arg(survivor)::uuid, sqlc.arg(member)::uuid, sqlc.arg(staff)::uuid);
@@ -130,3 +132,18 @@ ORDER BY r.id;
 
 -- name: ResponderByPhone :many
 SELECT id FROM op.responders WHERE phone_mac = ANY (sqlc.arg(macs)::bytea[]) AND status <> 'retired' LIMIT 2;
+
+-- Dispatch watchdog (review I8): dispatched incidents with no alert (T3) and
+-- no dispatch escalation of any kind, T2 older than after — dispatch-worker
+-- has not acted on them. Read by intake-gw's leader, a separate process.
+-- name: ListStalledDispatch :many
+SELECT i.id FROM op.incidents i
+WHERE i.state = 'dispatching' AND i.t3 IS NULL AND i.t2 < clock_timestamp() - sqlc.arg(after)::interval
+  AND NOT EXISTS (
+      SELECT 1 FROM op.incident_events e
+       WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+         AND e.payload ->> 'reason' IN ('no_eligible_responder', 'no_responder_nearby', 'red_no_acceptance',
+                                        'forwarded_to_facility', 'no_facility_acknowledged', 'dispatch_suspended',
+                                        'dispatch_error', 'dispatch_stalled'))
+ORDER BY i.t2
+LIMIT 500;

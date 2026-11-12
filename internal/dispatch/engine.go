@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"time"
 	"uuid"
 
@@ -33,7 +34,7 @@ type Store interface {
 	BeginAttempt(ctx context.Context, alert uuid.UUID, purpose, channel string) (uuid.UUID, bool, error)
 	FinishAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
 
-	RedDispatchOutcomes(ctx context.Context, window int) ([]bool, error)
+	RedDispatchOutcomes(ctx context.Context, window int, redWindow time.Duration) ([]bool, error)
 	AutoSuspendDispatch(ctx context.Context, failures, window int) (bool, error)
 }
 
@@ -75,6 +76,22 @@ type Engine struct {
 	gazetteer  location.File
 	stageCells map[string]location.Cell
 	rule       StoppingRule
+	// passTimeout bounds each incident's pass (below the lease), so a
+	// provider or lock that hangs cannot stall the leader (review I8).
+	passTimeout time.Duration
+	lastPass    atomic.Int64 // unix nanoseconds of the last successful RunOnce
+}
+
+// DefaultPassTimeout bounds one incident's pass; it is below the 30 s lease.
+const DefaultPassTimeout = 20 * time.Second
+
+// LastPass is when the last RunOnce completed without a store error (zero:
+// never). dispatch-worker's readiness and metrics use it.
+func (e *Engine) LastPass() time.Time {
+	if n := e.lastPass.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
 }
 
 // EngineConfig wires an Engine.
@@ -87,6 +104,7 @@ type EngineConfig struct {
 	LogicVersion string        // stamped on every dispatch fact
 	Gazetteer    location.File // stages, wards and facilities in force
 	StoppingRule StoppingRule  // Guide §14 (O6)
+	PassTimeout  time.Duration // default DefaultPassTimeout
 }
 
 // NewEngine validates the configuration.
@@ -107,8 +125,12 @@ func NewEngine(c EngineConfig) (*Engine, error) {
 	for _, s := range c.Gazetteer.Stages {
 		cells[s.ID] = s.Cell
 	}
+	timeout := c.PassTimeout
+	if timeout <= 0 {
+		timeout = DefaultPassTimeout
+	}
 	return &Engine{store: c.Store, deliverer: c.Deliverer, suspension: c.Suspension, params: c.Params, ranker: c.Ranker,
-		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells, rule: c.StoppingRule}, nil
+		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells, rule: c.StoppingRule, passTimeout: timeout}, nil
 }
 
 // maxRounds bounds re-planning within one wake; each round records facts,
@@ -164,6 +186,9 @@ func (e *Engine) state(ctx context.Context, snap Snapshot, suspended bool, now t
 	if snap.DispatchedAt != nil {
 		st.DispatchedAt = *snap.DispatchedAt
 	}
+	if snap.RedSince != nil {
+		st.RedSince = *snap.RedSince
+	}
 	switch snap.State {
 	case incident.StateDispatching, incident.StateAssigned, incident.StateOnScene:
 	default: // closed, merged, or past the point of dispatch: stand everyone down
@@ -197,8 +222,16 @@ func (e *Engine) state(ctx context.Context, snap Snapshot, suspended bool, now t
 }
 
 // centres are the incident's zone, or every zone of its ward when only the
-// ward is known; cell orders facilities by distance.
+// ward is known (intake then records the ward's centre as the zone, so the
+// location quality decides); cell orders facilities by distance.
 func (e *Engine) centres(snap Snapshot) ([]location.Cell, location.Cell) {
+	if snap.LocationQuality == incident.QualityWard {
+		for _, w := range e.gazetteer.Wards {
+			if w.ID == snap.Ward && len(w.Zones) > 0 {
+				return w.Zones, w.Centre
+			}
+		}
+	}
 	if snap.Zone != nil {
 		c := location.Cell{Col: snap.Zone.Col, Row: snap.Zone.Row}
 		return []location.Cell{c}, c
@@ -301,8 +334,13 @@ func (e *Engine) RunOnce(ctx context.Context, batch int, lease time.Duration, on
 	if err != nil {
 		return 0, err
 	}
+	failed := false
 	for _, d := range due {
-		if err := e.Process(ctx, d); err != nil {
+		pctx, cancel := context.WithTimeout(ctx, e.passTimeout)
+		err := e.Process(pctx, d)
+		cancel()
+		if err != nil {
+			failed = true
 			if ctx.Err() != nil {
 				return len(due), ctx.Err()
 			}
@@ -312,6 +350,9 @@ func (e *Engine) RunOnce(ctx context.Context, batch int, lease time.Duration, on
 				onErr(d.IncidentID, eerr)
 			}
 		}
+	}
+	if !failed {
+		e.lastPass.Store(time.Now().UnixNano())
 	}
 	return len(due), nil
 }
@@ -330,7 +371,7 @@ func (e *Engine) CheckStoppingRule(ctx context.Context) (bool, error) {
 	if on, err := e.suspension.DispatchSuspended(ctx); err != nil || on {
 		return false, err
 	}
-	outcomes, err := e.store.RedDispatchOutcomes(ctx, e.rule.Window)
+	outcomes, err := e.store.RedDispatchOutcomes(ctx, e.rule.Window, e.params.RedEscalationAfter)
 	if err != nil {
 		return false, err
 	}

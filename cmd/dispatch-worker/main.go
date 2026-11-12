@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"uuid"
@@ -91,11 +92,46 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	// Review I8: a stalled leader is not ready, and the metrics show how late
+	// dispatch is, so an alert reaches a person; intake-gw's watchdog
+	// escalates untouched incidents independently of this process.
+	var leading atomic.Bool
 	reg := metrics.NewRegistry()
+	passFailures := reg.Counter("sauti_dispatch_pass_failures_total", "Dispatch passes that failed and were escalated.")
+	lastPassAge := reg.Gauge("sauti_dispatch_last_pass_age_seconds", "Seconds since the leader's last successful pass (0 on a standby).")
+	overdue := reg.Gauge("sauti_dispatch_oldest_overdue_seconds", "How late the most overdue dispatch wake is.")
+	suspendedGauge := reg.Gauge("sauti_dispatch_suspended", "1 while dispatch is suspended (O6).")
 	admin := http.NewServeMux()
 	admin.Handle("/livez", health.Handler(map[string]health.Check{}, nil))
-	admin.Handle("/readyz", health.Handler(nil, map[string]health.Check{"operational_db": pool.Ping}))
+	admin.Handle("/readyz", health.Handler(nil, map[string]health.Check{
+		"operational_db": pool.Ping,
+		"dispatch_loop": func(context.Context) error {
+			return dispatchLoopReady(leading.Load(), built.Engine.LastPass(), time.Now())
+		},
+	}))
 	admin.Handle("/metrics", reg.Handler())
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			if d, err := store.OldestOverdueDispatch(ctx); err == nil {
+				overdue.Set(d.Seconds())
+			}
+			if on, err := store.DispatchSuspended(ctx); err == nil {
+				suspendedGauge.Set(map[bool]float64{true: 1}[on])
+			}
+			if last := built.Engine.LastPass(); leading.Load() && !last.IsZero() {
+				lastPassAge.Set(time.Since(last).Seconds())
+			} else {
+				lastPassAge.Set(0)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+	}()
 	adminSrv := &http.Server{Addr: env.Default("SAUTI_ADMIN_ADDR", "127.0.0.1:9102"), Handler: admin, ReadHeaderTimeout: 2 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- adminSrv.ListenAndServe() }()
@@ -109,10 +145,13 @@ func run(log *slog.Logger) error {
 			log.Error("DISPATCH SUSPENDED by the stopping rule; responders are not being alerted", "err", err)
 			return
 		}
+		passFailures.Add(1)
 		log.Error("dispatch pass failed", "incident", id, "err", err)
 	}
 	go func() {
 		errc <- pg.RunAsLeader(ctx, pool, leaderKey, 5*time.Second, func(lctx context.Context) error {
+			leading.Store(true)
+			defer leading.Store(false)
 			return built.Engine.Run(lctx, poll, batch, lease, onErr)
 		})
 	}()
@@ -147,4 +186,20 @@ func (s simDeliverer) Deliver(_ context.Context, d dispatch.Delivery) (string, e
 	s.log.Info("simulated delivery", "purpose", d.Purpose, "channel", d.Channel, "incident", d.IncidentID,
 		"alert", d.AlertID, "responder", d.ResponderID, "role", d.Role)
 	return "sim-" + d.AttemptID.String()[:8], nil
+}
+
+// stallLimit is how old the leader's last successful pass may be before it
+// reports not ready (review I8).
+const stallLimit = 2 * time.Minute
+
+// dispatchLoopReady fails for a leader whose loop has not completed a pass
+// within stallLimit; a standby is ready (it can take over).
+func dispatchLoopReady(leading bool, last, now time.Time) error {
+	if !leading {
+		return nil
+	}
+	if last.IsZero() || now.Sub(last) > stallLimit {
+		return errors.New("dispatch loop stalled: no successful pass within the limit")
+	}
+	return nil
 }
