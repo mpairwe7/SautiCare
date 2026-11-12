@@ -221,6 +221,43 @@ func (q *Queries) ListIncidentIDs(ctx context.Context) ([]pgtype.UUID, error) {
 	return items, nil
 }
 
+const lookupUSSDStep = `-- name: LookupUSSDStep :many
+SELECT response, end_session FROM op.ussd_steps
+WHERE provider = $1::text AND provider_session_id = $2::text
+  AND input_sha256 = $3::bytea
+`
+
+type LookupUSSDStepParams struct {
+	Provider          string
+	ProviderSessionID string
+	InputSha256       []byte
+}
+
+type LookupUSSDStepRow struct {
+	Response   string
+	EndSession bool
+}
+
+func (q *Queries) LookupUSSDStep(ctx context.Context, arg LookupUSSDStepParams) ([]LookupUSSDStepRow, error) {
+	rows, err := q.db.Query(ctx, lookupUSSDStep, arg.Provider, arg.ProviderSessionID, arg.InputSha256)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LookupUSSDStepRow
+	for rows.Next() {
+		var i LookupUSSDStepRow
+		if err := rows.Scan(&i.Response, &i.EndSession); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markOutboxDelivered = `-- name: MarkOutboxDelivered :one
 SELECT op.mark_outbox_delivered($1::uuid[])::int AS marked
 `
@@ -286,4 +323,32 @@ func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) (Ope
 		&i.Created,
 	)
 	return i, err
+}
+
+const saveUSSDStep = `-- name: SaveUSSDStep :exec
+INSERT INTO op.ussd_steps (provider, provider_session_id, input_sha256, response, end_session, incident_id)
+VALUES ($1::text, $2::text, $3::bytea,
+        $4::text, $5::boolean, $6::uuid)
+ON CONFLICT DO NOTHING
+`
+
+type SaveUSSDStepParams struct {
+	Provider          string
+	ProviderSessionID string
+	InputSha256       []byte
+	Response          string
+	EndSession        bool
+	IncidentID        pgtype.UUID
+}
+
+func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) error {
+	_, err := q.db.Exec(ctx, saveUSSDStep,
+		arg.Provider,
+		arg.ProviderSessionID,
+		arg.InputSha256,
+		arg.Response,
+		arg.EndSession,
+		arg.IncidentID,
+	)
+	return err
 }

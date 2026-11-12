@@ -40,3 +40,14 @@ SELECT op.mark_outbox_delivered(sqlc.arg(ids)::uuid[])::int AS marked;
 
 -- name: DefaultPartitionRows :one
 SELECT op.default_partition_rows()::bigint AS n;
+
+-- name: LookupUSSDStep :many
+SELECT response, end_session FROM op.ussd_steps
+WHERE provider = sqlc.arg(provider)::text AND provider_session_id = sqlc.arg(provider_session_id)::text
+  AND input_sha256 = sqlc.arg(input_sha256)::bytea;
+
+-- name: SaveUSSDStep :exec
+INSERT INTO op.ussd_steps (provider, provider_session_id, input_sha256, response, end_session, incident_id)
+VALUES (sqlc.arg(provider)::text, sqlc.arg(provider_session_id)::text, sqlc.arg(input_sha256)::bytea,
+        sqlc.arg(response)::text, sqlc.arg(end_session)::boolean, sqlc.narg(incident_id)::uuid)
+ON CONFLICT DO NOTHING;
