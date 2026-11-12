@@ -330,7 +330,7 @@ func (q *Queries) ListEvents(ctx context.Context, incidentID pgtype.UUID) ([]Lis
 }
 
 const listIdle = `-- name: ListIdle :many
-SELECT id, danger, category, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
+SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
 WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - $1::int * interval '1 second'
   AND NOT ('abandoned' = ANY (flags))
@@ -342,6 +342,7 @@ type ListIdleRow struct {
 	ID         pgtype.UUID
 	Danger     *string
 	Category   *string
+	Severity   *string
 	Dispatched bool
 }
 
@@ -358,6 +359,7 @@ func (q *Queries) ListIdle(ctx context.Context, idleSeconds int32) ([]ListIdleRo
 			&i.ID,
 			&i.Danger,
 			&i.Category,
+			&i.Severity,
 			&i.Dispatched,
 		); err != nil {
 			return nil, err

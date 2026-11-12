@@ -85,7 +85,8 @@ func (s *Store) ListIdle(ctx context.Context, idleFor time.Duration) ([]intake.I
 	}
 	out := make([]intake.Idle, len(rows))
 	for i, r := range rows {
-		out[i] = intake.Idle{ID: uuid.UUID(r.ID.Bytes), Danger: deref(r.Danger), Category: deref(r.Category), Dispatched: r.Dispatched}
+		out[i] = intake.Idle{ID: uuid.UUID(r.ID.Bytes), Danger: deref(r.Danger), Category: deref(r.Category),
+			Severity: incident.Severity(deref(r.Severity)), Dispatched: r.Dispatched}
 	}
 	return out, nil
 }

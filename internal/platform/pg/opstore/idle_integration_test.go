@@ -29,6 +29,7 @@ func TestListIdle(t *testing.T) {
 	}
 	idle, fresh, flagged, done, undispatched := open(), open(), open(), open(), open()
 	appendEv(t, s, idle.IncidentID, incident.EvScreenAnswered, `{"screen":2,"field":"danger","value":"yes"}`, "")
+	appendEv(t, s, idle.IncidentID, incident.EvClassified, `{"severity":"red"}`, testLogic)
 	appendEv(t, s, flagged.IncidentID, incident.EvFlagged, `{"flag":"abandoned"}`, "")
 	for _, o := range []incident.Opened{done, undispatched} {
 		appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":8,"field":"callback","value":"same_number"}`, "")
@@ -51,7 +52,8 @@ func TestListIdle(t *testing.T) {
 	for _, in := range got {
 		ids[in.ID] = in
 	}
-	if len(got) != 2 || ids[idle.IncidentID].Danger != "yes" || ids[idle.IncidentID].Category != "" || ids[idle.IncidentID].Dispatched {
+	if len(got) != 2 || ids[idle.IncidentID].Danger != "yes" || ids[idle.IncidentID].Category != "" || ids[idle.IncidentID].Dispatched ||
+		ids[idle.IncidentID].Severity != incident.SevRed {
 		t.Fatalf("idle = %+v", got)
 	}
 	if u, ok := ids[undispatched.IncidentID]; !ok || u.Dispatched {
