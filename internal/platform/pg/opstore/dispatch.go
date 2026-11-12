@@ -218,3 +218,72 @@ func (s *Store) Now(ctx context.Context) (time.Time, error) {
 	}
 	return t.Time.UTC(), nil
 }
+
+// DispatchSuspended reports whether dispatch is suspended (O6); it is the
+// dispatch.Suspension the worker and intake read.
+func (s *Store) DispatchSuspended(ctx context.Context) (bool, error) {
+	on, err := s.q.DispatchSuspended(ctx)
+	if err != nil {
+		return false, fmt.Errorf("opstore: dispatch suspended: %w", err)
+	}
+	return on, nil
+}
+
+// SuspendDispatch suspends dispatch for a coordinator (op_console); false if
+// already suspended.
+func (s *Store) SuspendDispatch(ctx context.Context, reason string, staff uuid.UUID) (bool, error) {
+	ok, err := s.q.SuspendDispatch(ctx, opdb.SuspendDispatchParams{Reason: reason, StaffID: staffArg(staff)})
+	return ok, mapErr(err)
+}
+
+// ResumeDispatch resumes dispatch for a coordinator (op_console).
+func (s *Store) ResumeDispatch(ctx context.Context, reason string, staff uuid.UUID) (bool, error) {
+	ok, err := s.q.ResumeDispatch(ctx, opdb.ResumeDispatchParams{Reason: reason, StaffID: staffArg(staff)})
+	return ok, mapErr(err)
+}
+
+// AutoSuspendDispatch registers a stopping-rule breach and suspends
+// (op_dispatch); false if already suspended.
+func (s *Store) AutoSuspendDispatch(ctx context.Context, failures, window int) (bool, error) {
+	ok, err := s.q.AutoSuspendDispatch(ctx, opdb.AutoSuspendDispatchParams{Failures: int32(failures), WindowSize: int32(window)}) //nolint:gosec // window ≤ config bounds
+	return ok, mapErr(err)
+}
+
+// RedDispatchOutcomes returns up to window settled red incidents' outcomes,
+// newest first (true = accepted in time), for the stopping rule.
+func (s *Store) RedDispatchOutcomes(ctx context.Context, window int) ([]bool, error) {
+	out, err := s.q.RedDispatchOutcomes(ctx, int32(min(window, 10000))) //nolint:gosec // bounded above
+	if err != nil {
+		return nil, fmt.Errorf("opstore: red outcomes: %w", err)
+	}
+	return out, nil
+}
+
+// ControlLog returns the newest n rows of the dispatch control register.
+func (s *Store) ControlLog(ctx context.Context, n int) ([]dispatch.ControlEntry, error) {
+	rows, err := s.q.ControlLog(ctx, int32(min(n, 10000))) //nolint:gosec // bounded above
+	if err != nil {
+		return nil, fmt.Errorf("opstore: control log: %w", err)
+	}
+	out := make([]dispatch.ControlEntry, 0, len(rows))
+	for _, r := range rows {
+		e := dispatch.ControlEntry{At: r.RecordedAt.Time.UTC(), Action: r.Action, Reason: r.Reason}
+		if r.StaffID.Valid {
+			id := uuid.UUID(r.StaffID.Bytes)
+			e.StaffID = &id
+		}
+		if r.Failures != nil && r.WindowSize != nil {
+			e.Failures, e.Window = int(*r.Failures), int(*r.WindowSize)
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// staffArg is NULL for the zero UUID (so the database refuses it).
+func staffArg(id uuid.UUID) pgtype.UUID {
+	if id == (uuid.UUID{}) {
+		return pgtype.UUID{}
+	}
+	return pgID(id)
+}

@@ -8,6 +8,7 @@ import (
 
 	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/dispatch"
+	"sautihealth.com/sauti/internal/intake"
 )
 
 // Every dispatch fact carries the ranking version and the fingerprint of
@@ -60,5 +61,13 @@ func TestDispatchParamsFromConfig(t *testing.T) {
 		if _, err := DispatchParams(d); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// Intake and the planner escalate a suspended incident with one reason, so
+// the coordinator is alerted once.
+func TestSuspensionReasonIsShared(t *testing.T) {
+	if intake.ReasonDispatchSuspended != dispatch.ReasonSuspended {
+		t.Fatalf("intake %q, dispatch %q", intake.ReasonDispatchSuspended, dispatch.ReasonSuspended)
 	}
 }

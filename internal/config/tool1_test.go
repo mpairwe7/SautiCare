@@ -55,6 +55,7 @@ messages:
   out_of_area: {en: "Call 999 or 112", lg: "Kuba 999 oba 112"}
   help_coming: {en: "HELP IS COMING {ref} {first_aid}", lg: "OBUYAMBI BUJJA {ref} {first_aid}"}
   invalid: {en: "Invalid choice", lg: "Si kituufu"}
+  dispatch_suspended: {en: "Recorded {ref}. A coordinator will call you", lg: "Kiwandiikiddwa {ref}"}
   first_aid:
     trauma: {en: "Press on bleeding", lg: "Nyiga"}
     acute_medical: {en: "Stay with them", lg: "Beera nabo"}
@@ -90,6 +91,8 @@ func TestTool1CatalogueIsComplete(t *testing.T) {
 		"value not a code":           strings.Replace(approvedTool1, "value: trauma,", "value: \"Trauma\",", 1),
 		"duplicate value":            strings.Replace(approvedTool1, "value: acute_medical,", "value: trauma,", 1),
 		"no {ref} on help screen":    strings.Replace(approvedTool1, `lg: "OBUYAMBI BUJJA {ref} {first_aid}"`, `lg: "OBUYAMBI BUJJA"`, 1),
+		"no suspended message":       strings.Replace(approvedTool1, "  dispatch_suspended: {en: \"Recorded {ref}. A coordinator will call you\", lg: \"Kiwandiikiddwa {ref}\"}\n", "", 1),
+		"suspended without {ref}":    strings.Replace(approvedTool1, `lg: "Kiwandiikiddwa {ref}"`, `lg: "Kiwandiikiddwa"`, 1),
 		"out of area without 112":    strings.Replace(approvedTool1, `lg: "Kuba 999 oba 112"`, `lg: "Kuba 999"`, 1),
 		"danger option missing":      strings.Replace(approvedTool1, "    - {value: \"unknown\", label: {en: \"Not sure\", lg: \"Simanyi\"}}\n", "", 1),
 		"non-GSM character":          strings.Replace(approvedTool1, `"Q3 lg"`, `"Q3 lg ŋ"`, 1),
@@ -124,6 +127,9 @@ func TestProductionReadyRefusesPlaceholderTool1(t *testing.T) {
 		"placeholder status":  strings.Replace(approvedTool1, "status: approved", "status: placeholder", 1),
 		"pending marker":      strings.Replace(approvedTool1, `"Q2 en"`, `"PENDING-TOOL1 Q2"`, 1),
 		"pending translation": strings.Replace(approvedTool1, `"Q3 lg"`, `"PENDING-TRANSLATION"`, 1),
+		// O6: the message a caller hears while dispatch is suspended needs the
+		// Medical Director's and PI's approval before production.
+		"pending suspended message": strings.Replace(approvedTool1, `"Recorded {ref}. A coordinator will call you"`, `"PENDING-MD-PI {ref}"`, 1),
 	} {
 		b, err := Load(tool1FS(doc))
 		if err != nil {
@@ -132,5 +138,21 @@ func TestProductionReadyRefusesPlaceholderTool1(t *testing.T) {
 		if err := b.ProductionReady(); !errors.Is(err, ErrNotProductionReady) {
 			t.Errorf("%s: ProductionReady = %v", name, err)
 		}
+	}
+}
+
+// O6: suspension may be enabled in production only once the suspended
+// message (both languages) is approved: no placeholder marker remains.
+func TestSuspensionReady(t *testing.T) {
+	b, err := Load(tool1FS(approvedTool1))
+	if err != nil || b.SuspensionReady() != nil {
+		t.Fatalf("approved: %v %v", err, b.SuspensionReady())
+	}
+	b, err = Load(tool1FS(strings.Replace(approvedTool1, `lg: "Kiwandiikiddwa {ref}"`, `lg: "PENDING-TRANSLATION {ref}"`, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SuspensionReady(); !errors.Is(err, ErrNotProductionReady) || !strings.Contains(err.Error(), "dispatch_suspended") {
+		t.Fatalf("pending translation: %v", err)
 	}
 }

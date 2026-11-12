@@ -66,6 +66,25 @@ type OpConfigVersion struct {
 	AmendmentDate pgtype.Date
 }
 
+type OpDispatchControl struct {
+	ID        bool
+	Suspended bool
+	Reason    string
+	StaffID   pgtype.UUID
+	ChangedAt pgtype.Timestamptz
+}
+
+type OpDispatchControlLog struct {
+	ID          pgtype.UUID
+	RecordedAt  pgtype.Timestamptz
+	Action      string
+	Reason      string
+	StaffID     pgtype.UUID
+	Failures    *int32
+	WindowSize  *int32
+	PayloadSalt []byte
+}
+
 type OpDispatchTimer struct {
 	IncidentID pgtype.UUID
 	DueAt      pgtype.Timestamptz

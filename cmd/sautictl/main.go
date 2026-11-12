@@ -14,6 +14,8 @@
 //	sautictl incident split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff subject UUID>
 //	sautictl responder add --dsn <op_console DSN> --devkeys-dir D --role vht|transporter --name N --phone P --ward W --stage S   (dev/CI only)
 //	sautictl responder available --dsn <op_console DSN> --id <responder id> [--off]                                             (dev/CI only)
+//	sautictl dispatch status --dsn <op_readonly or op_console DSN>
+//	sautictl dispatch suspend|resume --dsn <op_console DSN> --reason <code> --staff <staff subject UUID> [--config config]
 package main
 
 import (
@@ -26,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 	"uuid"
@@ -34,6 +37,7 @@ import (
 
 	"sautihealth.com/sauti/db"
 	"sautihealth.com/sauti/internal/audit"
+	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/pii"
@@ -63,6 +67,7 @@ var commands = map[string]command{
 	"checkpoint":         {"--dsn <audit_appender DSN> --devkeys-dir D --witness-dir W [--origin O]", cmdCheckpoint},
 	"demo":               {"m0 --admin-dsn <DSN> [--config-dir config] [--keep]", cmdDemo},
 	"gazetteer":          {"load --file <gazetteer.yaml> --dsn <operational owner DSN>", cmdGazetteer},
+	"dispatch":           {"status --dsn <DSN> | suspend|resume --dsn <op_console DSN> --reason <code> --staff <UUID> [--config D]", cmdDispatch},
 	"responder":          {"add --dsn <op_console DSN> --devkeys-dir D --role R --name N --phone P --ward W --stage S | available --dsn <DSN> --id <id> [--off]", cmdResponder},
 	"incident":           {"split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff UUID>", cmdIncident},
 	"triage":             {"keygen --out <file> --key-id dev-<name> | sign --key <file> --key-id <id> --rules <bundle>", cmdTriage},
@@ -604,4 +609,98 @@ func cmdResponder(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintf(out, "responder %s available until %s\n", id, p.Until.Format(time.RFC3339))
 		return nil
 	}
+}
+
+var reasonCode = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+
+// cmdDispatch shows, suspends or resumes dispatch (O6; ADR-0026). Suspending
+// and resuming are a coordinator's decisions, recorded with their staff
+// identity in the dated register and the audit ledger. In production,
+// suspending is refused until the message callers then get is approved.
+func cmdDispatch(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 || (args[0] != "status" && args[0] != "suspend" && args[0] != "resume") {
+		return errors.New("usage: sautictl dispatch status|suspend|resume [flags]")
+	}
+	fs := flags("dispatch " + args[0])
+	dsn := fs.String("dsn", "", "operational store DSN (op_console; op_readonly for status)")
+	reason := fs.String("reason", "", "reason code, e.g. coordinator_decision")
+	staffFlag := fs.String("staff", "", "the coordinator's staff subject UUID")
+	cfgDir := fs.String("config", "config", "configuration directory")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *dsn == "" {
+		return errors.New("--dsn is required")
+	}
+	var staff uuid.UUID
+	if args[0] != "status" {
+		if !reasonCode.MatchString(*reason) {
+			return errors.New("--reason must be a code (lower case, digits, _ . -)")
+		}
+		var err error
+		if staff, err = uuid.Parse(*staffFlag); err != nil {
+			return errors.New("--staff must be the coordinator's staff subject UUID")
+		}
+	}
+	if args[0] == "suspend" {
+		senv, err := env.Environment()
+		if err != nil {
+			return err
+		}
+		if senv == "production" {
+			cfg, err := config.Load(os.DirFS(*cfgDir))
+			if err != nil {
+				return err
+			}
+			if err := cfg.SuspensionReady(); err != nil {
+				return fmt.Errorf("dispatch: suspension is not enabled in production until the Medical Director and PI approve its message: %w", err)
+			}
+		}
+	}
+	pool, err := pg.Connect(ctx, *dsn, "sautictl", 2)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	store := opstore.New(pool)
+	switch args[0] {
+	case "suspend":
+		changed, err := store.SuspendDispatch(ctx, *reason, staff)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "dispatch suspended (changed=%v)\n", changed)
+	case "resume":
+		changed, err := store.ResumeDispatch(ctx, *reason, staff)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "dispatch resumed (changed=%v)\n", changed)
+	default:
+		on, err := store.DispatchSuspended(ctx)
+		if err != nil {
+			return err
+		}
+		state := "active"
+		if on {
+			state = "SUSPENDED"
+		}
+		fmt.Fprintf(out, "dispatch: %s\n", state)
+		log, err := store.ControlLog(ctx, 10)
+		if err != nil {
+			return err
+		}
+		for _, e := range log {
+			who := "automatic"
+			if e.StaffID != nil {
+				who = e.StaffID.String()
+			}
+			fmt.Fprintf(out, "%s  %s %s  by %s", e.At.Format(time.RFC3339), e.Action, e.Reason, who)
+			if e.Action == "stopping_rule_breached" {
+				fmt.Fprintf(out, "  (%d of %d red incidents failed)", e.Failures, e.Window)
+			}
+			fmt.Fprintln(out)
+		}
+	}
+	return nil
 }

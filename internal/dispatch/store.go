@@ -75,3 +75,14 @@ type Snapshot struct {
 	Escalations    []string
 	CallerNotified []string
 }
+
+// ControlEntry is one row of the dispatch control log: the dated register
+// of suspensions, resumptions and stopping-rule breaches (O6).
+type ControlEntry struct {
+	At       time.Time
+	Action   string // suspended, resumed, stopping_rule_breached
+	Reason   string
+	StaffID  *uuid.UUID // nil: automatic (the stopping rule)
+	Failures int        // stopping_rule_breached only
+	Window   int
+}

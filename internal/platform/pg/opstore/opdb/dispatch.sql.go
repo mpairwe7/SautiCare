@@ -50,6 +50,22 @@ func (q *Queries) AcknowledgeForward(ctx context.Context, arg AcknowledgeForward
 	return changed, err
 }
 
+const autoSuspendDispatch = `-- name: AutoSuspendDispatch :one
+SELECT op.auto_suspend_dispatch($1::int, $2::int)::boolean AS changed
+`
+
+type AutoSuspendDispatchParams struct {
+	Failures   int32
+	WindowSize int32
+}
+
+func (q *Queries) AutoSuspendDispatch(ctx context.Context, arg AutoSuspendDispatchParams) (bool, error) {
+	row := q.db.QueryRow(ctx, autoSuspendDispatch, arg.Failures, arg.WindowSize)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
 const beginAttempt = `-- name: BeginAttempt :one
 SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
 FROM op.begin_attempt($1::uuid, $2::text, $3::text) AS a(attempt_id, fresh)
@@ -148,6 +164,47 @@ func (q *Queries) CloseAlert(ctx context.Context, arg CloseAlertParams) (bool, e
 	var changed bool
 	err := row.Scan(&changed)
 	return changed, err
+}
+
+const controlLog = `-- name: ControlLog :many
+SELECT recorded_at, action, reason, staff_id, failures, window_size FROM op.dispatch_control_log
+ORDER BY recorded_at DESC, id DESC LIMIT $1::int
+`
+
+type ControlLogRow struct {
+	RecordedAt pgtype.Timestamptz
+	Action     string
+	Reason     string
+	StaffID    pgtype.UUID
+	Failures   *int32
+	WindowSize *int32
+}
+
+func (q *Queries) ControlLog(ctx context.Context, maxRows int32) ([]ControlLogRow, error) {
+	rows, err := q.db.Query(ctx, controlLog, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ControlLogRow
+	for rows.Next() {
+		var i ControlLogRow
+		if err := rows.Scan(
+			&i.RecordedAt,
+			&i.Action,
+			&i.Reason,
+			&i.StaffID,
+			&i.Failures,
+			&i.WindowSize,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const databaseNow = `-- name: DatabaseNow :one
@@ -390,6 +447,17 @@ func (q *Queries) DispatchNotices(ctx context.Context, incidentID pgtype.UUID) (
 	return items, nil
 }
 
+const dispatchSuspended = `-- name: DispatchSuspended :one
+SELECT op.dispatch_suspended()::boolean AS suspended
+`
+
+func (q *Queries) DispatchSuspended(ctx context.Context) (bool, error) {
+	row := q.db.QueryRow(ctx, dispatchSuspended)
+	var suspended bool
+	err := row.Scan(&suspended)
+	return suspended, err
+}
+
 const finishAttempt = `-- name: FinishAttempt :one
 SELECT op.finish_attempt($1::uuid, $2::text, $3::text)::boolean AS changed
 `
@@ -486,6 +554,49 @@ func (q *Queries) RecordForward(ctx context.Context, arg RecordForwardParams) (b
 	return changed, err
 }
 
+const redDispatchOutcomes = `-- name: RedDispatchOutcomes :many
+WITH red AS (
+    SELECT i.id, i.t2, i.t4, i.state,
+           (SELECT min(e.recorded_at) FROM op.incident_events e
+             WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+               AND e.payload ->> 'reason' IN ('no_eligible_responder', 'red_no_acceptance',
+                                              'forwarded_to_facility', 'no_facility_acknowledged')) AS failed_at,
+           EXISTS (SELECT 1 FROM op.incident_events e
+                    WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+                      AND e.payload ->> 'reason' = 'dispatch_suspended') AS during_suspension
+      FROM op.incidents i
+     WHERE i.severity = 'red' AND i.t2 IS NOT NULL AND i.state <> 'merged')
+SELECT (red.t4 IS NOT NULL AND (red.failed_at IS NULL OR red.t4 <= red.failed_at))::boolean AS succeeded
+  FROM red
+ WHERE NOT red.during_suspension AND (red.t4 IS NOT NULL OR red.failed_at IS NOT NULL OR red.state = 'closed')
+ ORDER BY red.t2 DESC, red.id DESC
+ LIMIT $1::int
+`
+
+// Settled red incidents for the stopping rule, newest T2 first: success is
+// an acceptance before any dispatch escalation for lack of one; closure or
+// such an escalation without it is a failure. Merged incidents and those
+// escalated while dispatch was suspended are not judged.
+func (q *Queries) RedDispatchOutcomes(ctx context.Context, windowSize int32) ([]bool, error) {
+	rows, err := q.db.Query(ctx, redDispatchOutcomes, windowSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []bool
+	for rows.Next() {
+		var succeeded bool
+		if err := rows.Scan(&succeeded); err != nil {
+			return nil, err
+		}
+		items = append(items, succeeded)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const responderHistory = `-- name: ResponderHistory :many
 SELECT responder_id,
        count(*) FILTER (WHERE outcome <> 'pending')::int AS alerted,
@@ -529,6 +640,22 @@ func (q *Queries) ResponderHistory(ctx context.Context) ([]ResponderHistoryRow, 
 	return items, nil
 }
 
+const resumeDispatch = `-- name: ResumeDispatch :one
+SELECT op.resume_dispatch($1::text, $2::uuid)::boolean AS changed
+`
+
+type ResumeDispatchParams struct {
+	Reason  string
+	StaffID pgtype.UUID
+}
+
+func (q *Queries) ResumeDispatch(ctx context.Context, arg ResumeDispatchParams) (bool, error) {
+	row := q.db.QueryRow(ctx, resumeDispatch, arg.Reason, arg.StaffID)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
 const scheduleDispatch = `-- name: ScheduleDispatch :exec
 SELECT op.schedule_dispatch($1::uuid, $2::bigint, $3::timestamptz)
 `
@@ -542,6 +669,22 @@ type ScheduleDispatchParams struct {
 func (q *Queries) ScheduleDispatch(ctx context.Context, arg ScheduleDispatchParams) error {
 	_, err := q.db.Exec(ctx, scheduleDispatch, arg.IncidentID, arg.Gen, arg.DueAt)
 	return err
+}
+
+const suspendDispatch = `-- name: SuspendDispatch :one
+SELECT op.suspend_dispatch($1::text, $2::uuid)::boolean AS changed
+`
+
+type SuspendDispatchParams struct {
+	Reason  string
+	StaffID pgtype.UUID
+}
+
+func (q *Queries) SuspendDispatch(ctx context.Context, arg SuspendDispatchParams) (bool, error) {
+	row := q.db.QueryRow(ctx, suspendDispatch, arg.Reason, arg.StaffID)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
 }
 
 const timeOutForward = `-- name: TimeOutForward :one

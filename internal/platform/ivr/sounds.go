@@ -39,6 +39,14 @@ func Sounds(pr intake.Prompt) []string {
 		} else {
 			out = append(out, b+"callback")
 		}
+	case intake.KindSuspended:
+		out = append(out, b+"suspended")
+		for _, r := range pr.Reference {
+			if r >= '0' && r <= '9' {
+				out = append(out, "sauti/digits/"+string(r))
+			}
+		}
+		return out
 	case intake.KindComplete:
 		out = append(out, b+"complete")
 		for _, r := range pr.Reference {

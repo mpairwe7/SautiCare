@@ -85,8 +85,9 @@ func BuildDispatch(ctx context.Context, o DispatchOptions) (Dispatch, error) {
 	if err != nil {
 		return Dispatch{}, err
 	}
+	rule := dispatch.StoppingRule{Window: o.Config.Dispatch.StoppingRule.Window, MaxFailureRate: o.Config.Dispatch.StoppingRule.MaxFailureRate}
 	engine, err := dispatch.NewEngine(dispatch.EngineConfig{Store: o.Store, Deliverer: o.Deliverer, Suspension: o.Suspension,
-		Params: params, Ranker: ranker, LogicVersion: logic, Gazetteer: gaz})
+		Params: params, Ranker: ranker, LogicVersion: logic, Gazetteer: gaz, StoppingRule: rule})
 	if err != nil {
 		return Dispatch{}, err
 	}

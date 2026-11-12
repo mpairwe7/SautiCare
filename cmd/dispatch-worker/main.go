@@ -86,7 +86,7 @@ func run(log *slog.Logger) error {
 	defer pool.Close()
 	store := opstore.New(pool)
 	built, err := wiring.BuildDispatch(ctx, wiring.DispatchOptions{Config: cfg, Store: store, Deliverer: deliver,
-		Suspension: notSuspended{}})
+		Suspension: store})
 	if err != nil {
 		return err
 	}
@@ -102,7 +102,15 @@ func run(log *slog.Logger) error {
 
 	log.Info("dispatch-worker starting", "env", senv, "config", cfg.Fingerprint, "mode", built.Params.Mode,
 		"dispatch_logic", built.LogicVersion, "gazetteer", built.Gazetteer.Version)
-	onErr := func(id uuid.UUID, err error) { log.Error("dispatch pass failed", "incident", id, "err", err) }
+	onErr := func(id uuid.UUID, err error) {
+		if errors.Is(err, dispatch.ErrStoppingRuleBreached) {
+			// O6: an alarm for the coordinator and the PI; resuming is a
+			// logged staff decision (sautictl dispatch resume, or the console).
+			log.Error("DISPATCH SUSPENDED by the stopping rule; responders are not being alerted", "err", err)
+			return
+		}
+		log.Error("dispatch pass failed", "incident", id, "err", err)
+	}
 	go func() {
 		errc <- pg.RunAsLeader(ctx, pool, leaderKey, 5*time.Second, func(lctx context.Context) error {
 			return built.Engine.Run(lctx, poll, batch, lease, onErr)
@@ -121,11 +129,6 @@ func run(log *slog.Logger) error {
 	_ = adminSrv.Shutdown(sctx)
 	return nil
 }
-
-// notSuspended stands in until suspension control (M2 Task 6).
-type notSuspended struct{}
-
-func (notSuspended) Suspended(context.Context) (bool, error) { return false, nil }
 
 // deliverer picks how responders are reached. The channel adapters arrive
 // in Part B; until then development and tests simulate delivery (logging

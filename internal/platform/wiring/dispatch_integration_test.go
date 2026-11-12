@@ -87,7 +87,7 @@ func (r *recorder) count(alert uuid.UUID, purpose string) int {
 
 type flag struct{ v atomic.Bool }
 
-func (f *flag) Suspended(context.Context) (bool, error) { return f.v.Load(), nil }
+func (f *flag) DispatchSuspended(context.Context) (bool, error) { return f.v.Load(), nil }
 
 type engineRig struct {
 	c          *pgtest.TestCluster

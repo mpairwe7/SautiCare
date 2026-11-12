@@ -32,6 +32,9 @@ type Store interface {
 	DispatchEscalate(ctx context.Context, incidentID uuid.UUID, reason string, role responder.Role, logicVersion string) (bool, error)
 	BeginAttempt(ctx context.Context, alert uuid.UUID, purpose, channel string) (uuid.UUID, bool, error)
 	FinishAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
+
+	RedDispatchOutcomes(ctx context.Context, window int) ([]bool, error)
+	AutoSuspendDispatch(ctx context.Context, failures, window int) (bool, error)
 }
 
 // Delivery is one message to a responder: an alert or a stand-down. It
@@ -52,9 +55,10 @@ type Deliverer interface {
 // message (the attempt failed; nothing was sent).
 var ErrRejected = errors.New("dispatch: delivery rejected by the provider")
 
-// Suspension reports whether dispatch is suspended (O6).
+// Suspension reports whether dispatch is suspended (O6); the operational
+// store implements it.
 type Suspension interface {
-	Suspended(ctx context.Context) (bool, error)
+	DispatchSuspended(ctx context.Context) (bool, error)
 }
 
 // Engine executes plans: it reads an incident's facts, plans, records each
@@ -70,6 +74,7 @@ type Engine struct {
 	logic      string
 	gazetteer  location.File
 	stageCells map[string]location.Cell
+	rule       StoppingRule
 }
 
 // EngineConfig wires an Engine.
@@ -81,6 +86,7 @@ type EngineConfig struct {
 	Ranker       Ranker
 	LogicVersion string        // stamped on every dispatch fact
 	Gazetteer    location.File // stages, wards and facilities in force
+	StoppingRule StoppingRule  // Guide §14 (O6)
 }
 
 // NewEngine validates the configuration.
@@ -94,12 +100,15 @@ func NewEngine(c EngineConfig) (*Engine, error) {
 	if c.Ranker.Version() == "" {
 		return nil, errors.New("dispatch: engine needs a ranker")
 	}
+	if err := c.StoppingRule.Validate(); err != nil {
+		return nil, err
+	}
 	cells := map[string]location.Cell{}
 	for _, s := range c.Gazetteer.Stages {
 		cells[s.ID] = s.Cell
 	}
 	return &Engine{store: c.Store, deliverer: c.Deliverer, suspension: c.Suspension, params: c.Params, ranker: c.Ranker,
-		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells}, nil
+		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells, rule: c.StoppingRule}, nil
 }
 
 // maxRounds bounds re-planning within one wake; each round records facts,
@@ -119,7 +128,7 @@ func (e *Engine) Process(ctx context.Context, due Due) error {
 		if err != nil {
 			return err
 		}
-		suspended, err := e.suspension.Suspended(ctx)
+		suspended, err := e.suspension.DispatchSuspended(ctx)
 		if err != nil {
 			return err
 		}
@@ -310,6 +319,28 @@ func (e *Engine) RunOnce(ctx context.Context, batch int, lease time.Duration, on
 // ReasonDispatchError escalates an incident the worker could not process.
 const ReasonDispatchError = "dispatch_error"
 
+// ErrStoppingRuleBreached reports an automatic suspension (O6): an alarm,
+// not a fault.
+var ErrStoppingRuleBreached = errors.New("dispatch: stopping rule breached; dispatch suspended")
+
+// CheckStoppingRule judges the most recent settled red incidents and, on a
+// breach, suspends dispatch and registers the breach with its numbers. A
+// suspended dispatch is left alone (resuming is a coordinator's decision).
+func (e *Engine) CheckStoppingRule(ctx context.Context) (bool, error) {
+	if on, err := e.suspension.DispatchSuspended(ctx); err != nil || on {
+		return false, err
+	}
+	outcomes, err := e.store.RedDispatchOutcomes(ctx, e.rule.Window)
+	if err != nil {
+		return false, err
+	}
+	breached, failures := e.rule.Breached(outcomes)
+	if !breached {
+		return false, nil
+	}
+	return e.store.AutoSuspendDispatch(ctx, failures, e.rule.Window)
+}
+
 // Run polls for due incidents until ctx ends: at once again when a full
 // batch was claimed, otherwise after poll.
 func (e *Engine) Run(ctx context.Context, poll time.Duration, batch int, lease time.Duration, onErr func(uuid.UUID, error)) error {
@@ -317,6 +348,11 @@ func (e *Engine) Run(ctx context.Context, poll time.Duration, batch int, lease t
 		n, err := e.RunOnce(ctx, batch, lease, onErr)
 		if err != nil && ctx.Err() == nil {
 			onErr(uuid.UUID{}, err)
+		}
+		if breached, err := e.CheckStoppingRule(ctx); err != nil && ctx.Err() == nil {
+			onErr(uuid.UUID{}, err)
+		} else if breached {
+			onErr(uuid.UUID{}, ErrStoppingRuleBreached)
 		}
 		if n >= batch && err == nil {
 			continue

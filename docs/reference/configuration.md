@@ -28,6 +28,7 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `forward_ack_timeout` | `60s` | decision 2 |
 | | `voice_fallback_after` | `20s` | decision 8 |
 | | `red_escalation_after` | `3m` | decision 2 (protocol answer): coordinator alerted for red with a role unaccepted, both modes |
+| | `stopping_rule` | `{window: 30, max_failure_rate: 0.15}` | Guide §14, O6: red dispatch failure above 15% across 30 consecutive red incidents suspends dispatch automatically |
 | | `ranking_order` | `zone_distance, response_history, least_recently_dispatched` | decision 4 **open**: safe default |
 | | `ranking_version` | `default-2026-11-12` | stamped on incidents (M2) |
 | `config/gated/flags.yaml` | `android_app`, `caller_link`, `speech_assist`, `app_api` | all `false` | decision 10 |

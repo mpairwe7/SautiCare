@@ -80,6 +80,7 @@ sounds:
     - sauti/en/specific_danger-poisoning
     - sauti/en/specific_danger-trauma
     - sauti/en/specific_danger-yes
+    - sauti/en/suspended
     - sauti/en/ward
     - sauti/en/ward-elsewhere
     - sauti/en/ward-w01
@@ -154,6 +155,7 @@ sounds:
     - sauti/lg/specific_danger-poisoning
     - sauti/lg/specific_danger-trauma
     - sauti/lg/specific_danger-yes
+    - sauti/lg/suspended
     - sauti/lg/ward
     - sauti/lg/ward-elsewhere
     - sauti/lg/ward-w01

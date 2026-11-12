@@ -39,6 +39,7 @@ func TestLoadRepoConfigDefaults(t *testing.T) {
 		{"forward ack 60s", b.Dispatch.ForwardAckTimeout.Duration == 60*time.Second},
 		{"voice fallback 20s", b.Dispatch.VoiceFallbackAfter.Duration == 20*time.Second},
 		{"red escalation at 3 min (decision 2)", b.Dispatch.RedEscalationAfter.Duration == 3*time.Minute},
+		{"stopping rule: above 15% across 30 red (Guide §14)", b.Dispatch.StoppingRule.Window == 30 && b.Dispatch.StoppingRule.MaxFailureRate == 0.15},
 		{"protocol mode until amendment", b.Dispatch.Mode == "protocol"},
 		{"decision 4 default order", strings.Join(b.Dispatch.RankingOrder, ",") == "zone_distance,response_history,least_recently_dispatched"},
 		{"all section 11 flags off", !b.Flags.AndroidApp && !b.Flags.CallerLink && !b.Flags.SpeechAssist && !b.Flags.AppAPI},

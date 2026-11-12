@@ -86,3 +86,41 @@ WHERE s.released_at IS NULL AND i.state NOT IN ('closed', 'merged');
 
 -- name: DatabaseNow :one
 SELECT clock_timestamp()::timestamptz AS now;
+
+-- name: DispatchSuspended :one
+SELECT op.dispatch_suspended()::boolean AS suspended;
+
+-- name: SuspendDispatch :one
+SELECT op.suspend_dispatch(sqlc.arg(reason)::text, sqlc.narg(staff_id)::uuid)::boolean AS changed;
+
+-- name: ResumeDispatch :one
+SELECT op.resume_dispatch(sqlc.arg(reason)::text, sqlc.narg(staff_id)::uuid)::boolean AS changed;
+
+-- name: AutoSuspendDispatch :one
+SELECT op.auto_suspend_dispatch(sqlc.arg(failures)::int, sqlc.arg(window_size)::int)::boolean AS changed;
+
+-- name: ControlLog :many
+SELECT recorded_at, action, reason, staff_id, failures, window_size FROM op.dispatch_control_log
+ORDER BY recorded_at DESC, id DESC LIMIT sqlc.arg(max_rows)::int;
+
+-- Settled red incidents for the stopping rule, newest T2 first: success is
+-- an acceptance before any dispatch escalation for lack of one; closure or
+-- such an escalation without it is a failure. Merged incidents and those
+-- escalated while dispatch was suspended are not judged.
+-- name: RedDispatchOutcomes :many
+WITH red AS (
+    SELECT i.id, i.t2, i.t4, i.state,
+           (SELECT min(e.recorded_at) FROM op.incident_events e
+             WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+               AND e.payload ->> 'reason' IN ('no_eligible_responder', 'red_no_acceptance',
+                                              'forwarded_to_facility', 'no_facility_acknowledged')) AS failed_at,
+           EXISTS (SELECT 1 FROM op.incident_events e
+                    WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+                      AND e.payload ->> 'reason' = 'dispatch_suspended') AS during_suspension
+      FROM op.incidents i
+     WHERE i.severity = 'red' AND i.t2 IS NOT NULL AND i.state <> 'merged')
+SELECT (red.t4 IS NOT NULL AND (red.failed_at IS NULL OR red.t4 <= red.failed_at))::boolean AS succeeded
+  FROM red
+ WHERE NOT red.during_suspension AND (red.t4 IS NOT NULL OR red.failed_at IS NOT NULL OR red.state = 'closed')
+ ORDER BY red.t2 DESC, red.id DESC
+ LIMIT sqlc.arg(window_size)::int;

@@ -42,7 +42,7 @@ func (s *Service) StartIVR(ctx context.Context, callID string, phone pii.Phone) 
 	if err != nil {
 		return IVRTurn{}, err
 	}
-	pr, err := s.next(p, call.HasPhone)
+	pr, err := s.next(ctx, p, call.HasPhone)
 	if err != nil {
 		return IVRTurn{}, err
 	}
