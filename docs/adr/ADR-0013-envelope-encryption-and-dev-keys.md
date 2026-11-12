@@ -30,6 +30,10 @@ Chosen option: **application-level AES-256-GCM** with `AAD = sauti-aad/v1 ‖ le
 ## Consequences
 
 * Good: destroying a period key makes every copy unreadable, including backups.
+* Guards added after the CodeRabbit review of PR #2:
+  * `Seal`/`Open` refuse an AAD without a complete location (store, table, column, row ID), which would not bind the ciphertext to a row.
+  * The MAC path refuses data keys that are not 32 bytes, so a missing key can never yield a MAC derived from public input.
+  * `devkeys` validates key lengths and never overwrites `keys.json`.
 * Bad: until P0, processes cannot run in production by design.
 
 ## Confirmation

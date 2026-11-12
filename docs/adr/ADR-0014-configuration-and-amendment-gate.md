@@ -24,7 +24,12 @@ Triage rules, the Tool 2 list, dispatch parameters, SMS content, decline reasons
 
 ## Decision Outcome
 
-Chosen option: **versioned YAML in Git** (`config/`), decoded strictly (unknown keys fail). The fingerprint is sha256 over every gated file's path and content and is the dispatch-parameter version. `tools/amendgate` fails CI when, with the window active at base or head, a gated path changes without an amendment whose recorded sha256 equals the new content. `ProductionReady()` refuses `protocol_status: pending` and placeholder copy (`XXX`, `PENDING-TRANSLATION`). Deployment settings stay in environment variables.
+Chosen option: **versioned YAML in Git** (`config/`), decoded strictly (unknown keys fail). The fingerprint is sha256 over every gated file's path and content and is the dispatch-parameter version. `tools/amendgate` fails CI when, with the window active at base or head, a gated path changes without an amendment whose recorded sha256 equals the new content. Hardening after the CodeRabbit review of PR #2:
+- **The change under review cannot shrink its own gate.** The effective gate is the union of a built-in minimum (`config/gated/**`, `config/study.yaml`, `triage-rules/**`, `governance/gated-paths.txt`), the gate list at the base ref and the gate list in the change. Editing the list is itself gated.
+- **Hashes cover the tracked content.** They cover the blob at HEAD, not whatever a working-tree path resolves to.
+- **Gated paths must be regular files.** A symbolic link on a gated path is always a violation.
+
+`config/platform.yaml` (checkpoint interval, batch sizes) is deliberately ungated operational tuning. Rule 3.11 freezes protocol parameters, not platform tuning. `ProductionReady()` refuses `protocol_status: pending` and placeholder copy (`XXX`, `PENDING-TRANSLATION`). Deployment settings stay in environment variables.
 
 ## Consequences
 

@@ -29,4 +29,6 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 
 `Bundle.ProductionReady()` refuses to start with `SAUTI_ENV=production` while `protocol_status` is not `approved`, or while any screen contains `XXX` or `PENDING-TRANSLATION`.
 
+**What is gated.** The gated paths are `config/gated/**`, `config/study.yaml`, `triage-rules/**` and the gate list `governance/gated-paths.txt` itself. The effective gate is the union of this built-in minimum, the list at the base ref and the list in the change, so a change can only widen it. Gated paths must be regular files, not symlinks, and are hashed as tracked at HEAD. `config/platform.yaml` is ungated operational tuning by design.
+
 **Changing a value.** Before the study window, change it in a pull request. During the window, add an amendment record to `governance/amendments.yaml` holding the ethics reference, the approval date and the sha256 of the new file content; CI rejects the change otherwise.

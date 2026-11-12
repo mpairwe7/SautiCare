@@ -10,7 +10,7 @@
 
 ## Summary
 
-An audit outbox row does not match the payload contract: an unknown key, a malformed field, or an entry ID that does not match the row. The relay stops rather than skipping the row or copying unknown fields into the five-year ledger, because an unknown field could carry personal data (hard constraint 8).
+An audit outbox row does not match the payload contract: an unknown key, a malformed field, trailing data after the JSON object, or an entry ID that does not match the row. The relay stops rather than skipping the row or copying unknown fields into the five-year ledger, because an unknown field could carry personal data (hard constraint 8).
 
 ## Triggers and detection
 

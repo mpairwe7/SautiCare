@@ -74,6 +74,7 @@ threats:
       - internal/pii/pii_test.go::TestPhoneMasksEverywhere
       - internal/platform/logging/redact_test.go::TestRedactionMasksPhoneInsideErrorValues
       - internal/crypto/crypto_test.go::TestOpenFailsWithSwappedAAD
+      - internal/crypto/crypto_test.go::TestSealAndOpenRequireACompleteLocation
       - "planned:M2 responder-facing payload scan and masked bridge test"
 
   - id: T-006
@@ -161,6 +162,8 @@ threats:
     verified_by:
       - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
       - tools/amendgate/check_test.go::TestCheckFailsWhenHashDiffersFromAmendment
+      - tools/amendgate/check_test.go::TestEffectiveGlobsCannotShrink
+      - tools/amendgate/check_test.go::TestGatedSymlinkIsRejected
 
   - id: T-012
     title: A new kind of personal record is created without the DPO (e.g. call audio)
