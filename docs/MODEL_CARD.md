@@ -27,7 +27,7 @@ In the pilot, **no machine-learning model makes or influences a dispatch decisio
 
 ## 3. Safety properties (enforced, tested)
 
-- **Severity can never be lowered.** This is enforced by the Go reducer and the SQL write path (`internal/incident/fold_test.go::TestApplyRejectsSeverityLowering`).
+- **Severity can never be lowered.** This is enforced by the Go reducer and the SQL write path (`internal/incident/fold_test.go::TestApplyRejectsSeverityLowering`). A merge of duplicate calls never lowers it either: the surviving incident takes the higher severity of any call it absorbs, and its escalation (`internal/platform/pg/opstore/dedup_integration_test.go::TestMergeCarriesSeverityAndEscalation`).
 - **Every incident records the logic version** that classified it, together with the configuration fingerprint ([ADR-0014](adr/ADR-0014-configuration-and-amendment-gate.md)).
 - **A rule error is treated as red, flagged `triage_rule_error` and escalated** (Build Prompt §14): `internal/triage/triage_test.go::TestRuntimeErrorIsRed`, `internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`. The three events are one transaction with the screen 5 answer, so a failure cannot leave the red classification without its flag and escalation (`internal/intake/atomicity_test.go::TestRuleErrorFlagAndEscalationSurviveAFailure`). The coordinator voice call is the Escalate port (M2).
 - **Only a signed, total table runs.** A bundle loads only with a valid signature from a trusted key, only if every combination of its inputs reaches a row, and only if its inputs equal the Tool 1 catalogue's options (`internal/triage/triage_test.go::TestLoadRejectsNonTotalTable`, `internal/intake/machine_test.go::TestCatalogueMatchesTriageDomain`).

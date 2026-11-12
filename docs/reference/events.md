@@ -17,11 +17,12 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `responder.departed` | **T6** | — | |
 | `responder.at_facility` | **T7** | `facility` | |
 | `incident.flagged` | — | `flag` | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
-| `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch` |
+| `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch`; deduplication: `merged_call_escalated` (an escalated call merged into a survivor that was not) |
 | `incident.merged` | — | `into` (incident UUID: existing, open, not itself) | on the later call, at T2 (ADR-0022); a merged call then accepts only its own caller's answers and its unmerge |
 | `incident.merge_absorbed` | T1 (earliest) | exactly `from` (incident UUID), `t1` (RFC 3339, ≤ µs) | on the survivor; T1 = earliest of its own call and every absorbed call |
-| `incident.split` | T1 (recomputed) | exactly `from` | staff only; the call leaves the survivor's `absorbed` set |
-| `incident.unmerged` | — | exactly `from` (the survivor) | staff; `merged` → `dispatching`; needs T2 |
+| `incident.severity_raised` | — | exactly `severity` (`red`/`yellow`/`green`), `from` (the merged call's incident UUID) | on the survivor, in the merge's transaction, when the merged call is more urgent; the severity must rise strictly; sets severity, not `logic_version` |
+| `incident.split` | T1 (recomputed) | exactly `from` | staff only, from the console role only (`op.split_incident`; the database refuses every other role); the call leaves the survivor's `absorbed` set |
+| `incident.unmerged` | — | exactly `from` (the survivor) | staff, console role only; `merged` → `dispatching`; needs T2 |
 | `incident.closed` | — | `reason` | terminal |
 
 ## Idempotency keys and atomic batches
@@ -31,6 +32,10 @@ Every append carries an idempotency key, unique per incident; a retry with the s
 Intake uses two kinds of key (see [tool1-flow.md](tool1-flow.md)):
 - **Session-scoped**, for what a caller said: `ussd:<provider>:<session>:s<screen>` or `ivr:<call>:s<screen>` for `screen.answered`, with a suffix for the sealed identifier it references.
 - **Incident-scoped**, for what the answers imply: `intake:<incident>:classify`, `:rule_error`, `:escalate`, `:out_of_area`, `:close`, `:needs_location_callback` and `:dispatch_ready`. Whichever session or channel records one first, every retry or redial converges on that one event.
+
+A merge at T2 (ADR-0022) keys its events by the merged call: `intake:<call>:dispatch_ready:merge` (`incident.merged`), and on the survivor `dedup:absorb:<call>`, `dedup:raise:<call>` (`incident.severity_raised`) and `dedup:escalate:<call>`. A coordinator's split uses `split:<survivor>:<call>:split` and `…:unmerge`.
+
+**Staff actions.** An event with actor `staff`, `incident.split` and `incident.unmerged` are accepted only from a session of the console role (`op_console`); intake, IVR and every other role get `SA422`.
 
 ## Lifecycle
 
@@ -48,8 +53,13 @@ States: `intake → triaged → dispatching → assigned → on_scene → transp
 | on_scene | responder.departed | transporting |
 | transporting | responder.at_facility | at_facility |
 | * | screen.answered, incident.flagged, incident.escalated | — |
+| * | incident.merge_absorbed, incident.split, incident.severity_raised | — |
 | * | incident.closed | closed |
 | intake, triaged, dispatching | incident.merged | merged |
+| merged | incident.unmerged | dispatching |
+| merged | screen.answered | — |
+
+A merged incident accepts only its exact transitions (its unmerge and its own caller's answers), never a `*` event.
 
 ## Errors raised by the write path
 
