@@ -41,6 +41,10 @@ import (
 
 const leaderKey = 7347002
 
+// partitionMonthsAhead is how far ahead the leader keeps monthly
+// incident_events partitions.
+const partitionMonthsAhead = 3
+
 type relayMetrics struct {
 	relayed  *metrics.Counter
 	lag      *metrics.Gauge
@@ -111,7 +115,8 @@ func run(log *slog.Logger) error {
 		diverged: reg.Gauge("sauti_audit_chain_diverged", "1 when the ledger no longer matches the last witnessed checkpoint."),
 	}
 	ledger := auditstore.New(auditPool)
-	relay := audit.NewRelay(opstore.New(opPool), ledger, log, m, cfg.Platform.OutboxBatchSize)
+	ops := opstore.New(opPool)
+	relay := audit.NewRelay(ops, ledger, log, m, cfg.Platform.OutboxBatchSize)
 	witness := devkeys.NewFSWitness(env.Default("SAUTI_WITNESS_DIR", "var/witness"))
 	cp := audit.NewCheckpointer(ledger, keys.Signer(), witness, env.Default("SAUTI_ORIGIN", "sauti-dispatch"), time.Now)
 	// Anchor on the last witnessed checkpoint so the relay never signs a
@@ -151,6 +156,13 @@ func run(log *slog.Logger) error {
 	log.Info("outbox-relay waiting for leadership", "env", senv, "config", cfg.Fingerprint)
 	return pg.RunAsLeader(ctx, opPool, leaderKey, 5*time.Second, func(lctx context.Context) error {
 		log.Info("outbox-relay is the active leader")
+		// Monthly event partitions three months ahead, so no event lands in
+		// the default partition (runbook: event-partition-maintenance.md).
+		go func() {
+			if err := ops.MaintainEventPartitions(lctx, partitionMonthsAhead, 24*time.Hour, log); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("event partition maintenance stopped", "err", err)
+			}
+		}()
 		go func() {
 			t := time.NewTicker(cfg.Platform.CheckpointInterval.Duration)
 			defer t.Stop()
