@@ -17,8 +17,10 @@ ALTER TABLE op.incidents
     ADD COLUMN ward             text,
     ADD COLUMN landmark         text,
     ADD COLUMN last_screen      int  NOT NULL DEFAULT 0 CHECK (last_screen BETWEEN 0 AND 8),
-    ADD COLUMN zone_col         int  CHECK (zone_col >= 0),
-    ADD COLUMN zone_row         int  CHECK (zone_row >= 0),
+    -- UTM 36N (EPSG:32636) has no false northing: rows are negative south of
+    -- the equator.
+    ADD COLUMN zone_col         int,
+    ADD COLUMN zone_row         int,
     ADD COLUMN location_quality text CHECK (location_quality IN ('landmark', 'fuzzy', 'ward')),
     ADD CONSTRAINT incidents_zone_complete
         CHECK ((zone_col IS NULL) = (zone_row IS NULL) AND (zone_col IS NULL) = (location_quality IS NULL));
@@ -103,9 +105,9 @@ BEGIN
     END IF;
     IF jsonb_typeof(p -> 'zone') IS DISTINCT FROM 'object'
        OR EXISTS (SELECT 1 FROM jsonb_object_keys(p -> 'zone') k WHERE k NOT IN ('col', 'row'))
-       OR jsonb_typeof(p #> '{zone,col}') IS DISTINCT FROM 'number' OR (p #>> '{zone,col}') !~ '^(0|[1-9][0-9]{0,6})$'
-       OR jsonb_typeof(p #> '{zone,row}') IS DISTINCT FROM 'number' OR (p #>> '{zone,row}') !~ '^(0|[1-9][0-9]{0,6})$' THEN
-        PERFORM op.reject('dispatch_ready: zone col and row must be non-negative integers');
+       OR jsonb_typeof(p #> '{zone,col}') IS DISTINCT FROM 'number' OR (p #>> '{zone,col}') !~ '^(0|-?[1-9][0-9]{0,6})$'
+       OR jsonb_typeof(p #> '{zone,row}') IS DISTINCT FROM 'number' OR (p #>> '{zone,row}') !~ '^(0|-?[1-9][0-9]{0,6})$' THEN
+        PERFORM op.reject('dispatch_ready: zone col and row must be integers');
     END IF;
 END
 $$;

@@ -115,13 +115,18 @@ func TestDispatchReadySetsZone(t *testing.T) {
 		`{"zone":{"col":1,"row":2},"location_quality":"guess"}`,
 		`{"zone":{"col":1},"location_quality":"ward"}`,
 		`{"location_quality":"ward"}`,
-		`{"zone":{"col":-1,"row":2},"location_quality":"ward"}`,
+		`{"zone":{"col":1.5,"row":2},"location_quality":"ward"}`,
+		`{"zone":{"col":-0,"row":2},"location_quality":"ward"}`,
 		`{"zone":{"col":"1","row":2},"location_quality":"ward"}`,
 		`{"zone":{"col":1,"row":2,"lat":0.3},"location_quality":"ward"}`,
 	} {
 		if _, err := Apply(q, ev(3, EvDispatchReady, bad)); !errors.Is(err, ErrIllegalTransition) {
 			t.Errorf("dispatch_ready %s: err = %v", bad, err)
 		}
+	}
+	south, err := Fold(append(base, ev(3, EvDispatchReady, `{"zone":{"col":933,"row":-56},"location_quality":"ward"}`)))
+	if err != nil || *south.Zone != (Zone{Col: 933, Row: -56}) {
+		t.Fatalf("south of the equator (EPSG:32636 has no false northing): %+v %v", south.Zone, err)
 	}
 	none, err := Fold(append(base, ev(3, EvDispatchReady, `{}`)))
 	if err != nil || none.Zone != nil || none.LocationQuality != "" {

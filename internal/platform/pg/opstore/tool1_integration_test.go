@@ -40,7 +40,7 @@ func TestProjectionParityTool1(t *testing.T) {
 	appendEv(t, s, id, incident.EvScreenAnswered, `{"screen":6,"field":"ward","value":"w01"}`, "")
 	appendEv(t, s, id, incident.EvScreenAnswered, fmt.Sprintf(`{"screen":7,"field":"landmark","value":"other","identifier_id":%q}`, ident), "")
 	appendEv(t, s, id, incident.EvScreenAnswered, `{"screen":3,"field":"category","value":"trauma"}`, "")
-	appendEv(t, s, id, incident.EvDispatchReady, `{"zone":{"col":901,"row":70},"location_quality":"fuzzy"}`, "")
+	appendEv(t, s, id, incident.EvDispatchReady, `{"zone":{"col":901,"row":-70},"location_quality":"fuzzy"}`, "")
 	appendEv(t, s, id, incident.EvScreenAnswered, `{"screen":8,"field":"callback","value":"same_number"}`, "")
 
 	evs, err := s.Events(ctx, id)
@@ -59,7 +59,7 @@ func TestProjectionParityTool1(t *testing.T) {
 		t.Fatalf("DB projection differs from Fold: %s", d)
 	}
 	if got.Language != "lg" || got.Category != "trauma" || got.Landmark != "other" || got.LastScreen != 8 ||
-		got.Zone == nil || *got.Zone != (incident.Zone{Col: 901, Row: 70}) || got.LocationQuality != "fuzzy" ||
+		got.Zone == nil || *got.Zone != (incident.Zone{Col: 901, Row: -70}) || got.LocationQuality != "fuzzy" ||
 		got.State != incident.StateDispatching {
 		t.Fatalf("projection = %+v", got)
 	}
@@ -110,7 +110,7 @@ func TestSQLRejectsWhatFoldRejects(t *testing.T) {
 		`{"zone":{"col":1,"row":2},"location_quality":"guess"}`,
 		`{"zone":{"col":1},"location_quality":"ward"}`,
 		`{"location_quality":"ward"}`,
-		`{"zone":{"col":-1,"row":2},"location_quality":"ward"}`,
+		`{"zone":{"col":1.5,"row":2},"location_quality":"ward"}`,
 		`{"zone":{"col":1,"row":2,"lat":0.3},"location_quality":"ward"}`,
 	} {
 		_, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvDispatchReady,

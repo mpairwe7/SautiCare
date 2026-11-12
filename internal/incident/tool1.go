@@ -39,7 +39,7 @@ var fieldScreens = map[string]int{
 var (
 	codeValue    = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 	screenNumber = regexp.MustCompile(`^[1-8]$`)
-	cellIndex    = regexp.MustCompile(`^(0|[1-9][0-9]{0,6})$`)
+	cellIndex    = regexp.MustCompile(`^(0|-?[1-9][0-9]{0,6})$`)
 	uuidText     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
 
@@ -187,7 +187,7 @@ func ParseDispatchLocation(raw json.RawMessage) (DispatchLocation, error) {
 	col, okc := jsonNumber(zm["col"], cellIndex)
 	row, okr := jsonNumber(zm["row"], cellIndex)
 	if !okc || !okr {
-		return bad("zone col and row must be non-negative integers")
+		return bad("zone col and row must be integers")
 	}
 	return DispatchLocation{Zone: &Zone{Col: col, Row: row}, Quality: q}, nil
 }

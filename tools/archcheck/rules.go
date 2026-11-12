@@ -10,6 +10,7 @@ var Allowed = map[string][]string{
 	"crypto":   {"pii"},
 	"incident": {"pii", "crypto"},
 	"audit":    {"crypto"},
+	"location": {},
 	"intake":   {"incident", "pii", "config"},
 }
 
