@@ -106,3 +106,27 @@ WHERE category = sqlc.arg(category)::text AND t2 IS NOT NULL AND state NOT IN ('
 
 -- name: SplitIncident :exec
 SELECT op.split_incident(sqlc.arg(survivor)::uuid, sqlc.arg(member)::uuid, sqlc.arg(staff)::uuid);
+
+-- name: RegisterResponder :exec
+SELECT op.register_responder(sqlc.arg(id)::uuid, sqlc.arg(role)::text, sqlc.arg(name_ct)::bytea, sqlc.arg(name_key_id)::text,
+    sqlc.arg(phone_ct)::bytea, sqlc.arg(phone_key_id)::text, sqlc.arg(phone_mac)::bytea, sqlc.arg(phone_mac_key_id)::text,
+    sqlc.arg(ward)::text, sqlc.arg(stage)::text, sqlc.narg(certified_at)::timestamptz, sqlc.narg(insured_until)::timestamptz,
+    sqlc.arg(kit_ok)::boolean, sqlc.arg(research_consent)::boolean);
+
+-- name: SetResponderGates :exec
+SELECT op.set_responder_gates(sqlc.arg(id)::uuid, sqlc.narg(certified_at)::timestamptz, sqlc.narg(insured_until)::timestamptz,
+    sqlc.arg(kit_ok)::boolean, sqlc.arg(status)::text);
+
+-- name: SetAvailability :one
+SELECT a.period_from::timestamptz AS period_from, a.period_until::timestamptz AS period_until
+FROM op.set_availability(sqlc.arg(id)::uuid, sqlc.arg(available)::boolean, sqlc.arg(source)::text) AS a(period_from, period_until);
+
+-- name: ListResponders :many
+SELECT r.id, r.role, r.ward, r.stage, r.certified_at, r.insured_until, r.kit_ok, r.research_consent, r.status,
+       lower(a.period)::timestamptz AS available_from, upper(a.period)::timestamptz AS available_until
+FROM op.responders r
+LEFT JOIN LATERAL (SELECT period FROM op.availability v WHERE v.responder_id = r.id ORDER BY lower(v.period) DESC LIMIT 1) a ON true
+ORDER BY r.id;
+
+-- name: ResponderByPhone :many
+SELECT id FROM op.responders WHERE phone_mac = ANY (sqlc.arg(macs)::bytea[]) AND status <> 'retired' LIMIT 2;

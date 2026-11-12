@@ -8,6 +8,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type OpAvailability struct {
+	ResponderID pgtype.UUID
+	Period      pgtype.Range[pgtype.Timestamptz]
+	Source      string
+	RemindedAt  pgtype.Timestamptz
+}
+
 type OpConfigVersion struct {
 	Kind          string
 	Version       string
@@ -145,6 +152,26 @@ type OpOutbox struct {
 	CreatedAt   pgtype.Timestamptz
 	Payload     []byte
 	DeliveredAt pgtype.Timestamptz
+}
+
+type OpResponder struct {
+	ID              pgtype.UUID
+	Role            string
+	NameCt          []byte
+	NameKeyID       string
+	PhoneCt         []byte
+	PhoneKeyID      string
+	PhoneMac        []byte
+	PhoneMacKeyID   string
+	Ward            string
+	Stage           string
+	CertifiedAt     pgtype.Timestamptz
+	InsuredUntil    pgtype.Timestamptz
+	KitOk           bool
+	ResearchConsent bool
+	Status          string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
 }
 
 type OpSession struct {

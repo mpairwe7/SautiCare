@@ -5,14 +5,15 @@ package main
 // an error: adding one is a reviewed change. internal/platform is not a
 // context — it holds adapters and may import any context.
 var Allowed = map[string][]string{
-	"pii":      {},
-	"config":   {},
-	"crypto":   {"pii"},
-	"incident": {"pii", "crypto"},
-	"audit":    {"crypto"},
-	"location": {},
-	"triage":   {"crypto"},
-	"intake":   {"incident", "pii", "config", "crypto", "location", "triage"},
+	"pii":       {},
+	"config":    {},
+	"crypto":    {"pii"},
+	"incident":  {"pii", "crypto"},
+	"audit":     {"crypto"},
+	"location":  {},
+	"responder": {"pii", "crypto"},
+	"triage":    {"crypto"},
+	"intake":    {"incident", "pii", "config", "crypto", "location", "triage"},
 }
 
 // netImports may be used only by adapters, processes, tests and tools (R3).

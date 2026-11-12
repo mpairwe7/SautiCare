@@ -44,7 +44,7 @@ func TestAllStoresMigrateFromZero(t *testing.T) {
 		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants", "0004_default_privileges", "0005_salted_payload_hash",
 			"0006_tool1_projection", "0007_gazetteer",
 			"0008_identifiers_and_steps", "0009_resume", "0010_merge_split", "0011_severity_raised",
-			"0012_ivr_grants"},
+			"0012_ivr_grants", "0013_responders"},
 		pg.StoreAudit:    {"0000_schema", "0001_ledger", "0002_default_privileges", "0003_hash_at"},
 		pg.StoreAnalytic: {"0000_schema", "0001_meds", "0002_default_privileges"},
 		pg.StoreLinkage:  {"0000_schema", "0001_vault", "0002_default_privileges"},
