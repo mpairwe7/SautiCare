@@ -210,6 +210,37 @@ func TestAppendRejectsFreeTextLogicVersion(t *testing.T) {
 	}
 }
 
+// CodeRabbit PR #3: an append carries its own deadline, pool wait included,
+// so a stalled audit store cannot block the relay without limit.
+func TestAppendHasItsOwnDeadline(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	pool, err := pg.Connect(ctx, c.DSN(pg.StoreAudit, "audit_appender"), "test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	held, err := pool.Acquire(ctx) // the only connection: the pool is exhausted
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	defer auditstore.SetAppendTimeout(200 * time.Millisecond)()
+	done := make(chan error, 1)
+	go func() {
+		_, err := auditstore.New(pool).Append(ctx, req(1)) // ctx has no deadline
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Append on an exhausted pool: err = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Append waited on an exhausted pool with no deadline")
+	}
+}
+
 func TestReaderCannotAppend(t *testing.T) {
 	c := pgtest.Cluster(t)
 	if _, err := readerStore(t, c).Append(context.Background(), req(1)); pgCode(err) != "42501" {

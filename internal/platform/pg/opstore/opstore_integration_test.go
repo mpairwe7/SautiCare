@@ -592,7 +592,8 @@ func TestOutboxPayloadHasOnlyAllowedKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(raw), "772123456") {
-			t.Fatalf("outbox payload leaked content: %s", raw)
+			// Never print the payload: it is the leak under test.
+			t.Fatalf("outbox row %s: payload contains the caller's phone number", id)
 		}
 		var m map[string]any
 		_ = json.Unmarshal(raw, &m)

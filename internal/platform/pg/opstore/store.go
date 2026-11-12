@@ -297,7 +297,7 @@ func (s *Store) Claim(ctx context.Context, topic string, limit int) (audit.Outbo
 	q := opdb.New(tx)
 	rows, err := q.ClaimOutbox(ctx, opdb.ClaimOutboxParams{Topic: topic, MaxRows: int32(max(1, min(limit, 10000)))}) //nolint:gosec // clamped
 	if err != nil {
-		_ = tx.Rollback(ctx)
+		rollback(ctx, tx)
 		return nil, err
 	}
 	b := &batch{tx: tx, q: q, rows: make([]audit.OutboxRow, len(rows))}
@@ -323,7 +323,7 @@ func (b *batch) Complete(ctx context.Context, delivered []uuid.UUID) error {
 			ids[i] = pgID(d)
 		}
 		if _, err := b.q.MarkOutboxDelivered(ctx, ids); err != nil {
-			_ = b.tx.Rollback(ctx)
+			rollback(ctx, b.tx)
 			return err
 		}
 	}
@@ -331,4 +331,16 @@ func (b *batch) Complete(ctx context.Context, delivered []uuid.UUID) error {
 }
 
 // Abort releases the locks without marking anything delivered.
-func (b *batch) Abort(ctx context.Context) { _ = b.tx.Rollback(context.WithoutCancel(ctx)) }
+func (b *batch) Abort(ctx context.Context) { rollback(ctx, b.tx) }
+
+// cleanupTimeout bounds a rollback on a cleanup path.
+const cleanupTimeout = 5 * time.Second
+
+// rollback ends tx on a fresh, short-lived context: it still runs after ctx
+// is cancelled, and it cannot block for longer than cleanupTimeout if the
+// connection stalls.
+func rollback(ctx context.Context, tx pgx.Tx) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+	_ = tx.Rollback(rctx)
+}

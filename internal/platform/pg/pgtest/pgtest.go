@@ -32,6 +32,14 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg/migrate"
 )
 
+// Deadlines for the harness's own database calls, so a held advisory lock
+// or a stalled server fails the test promptly instead of hanging it until
+// the test binary times out.
+const (
+	setupTimeout   = 2 * time.Minute  // bootstrap and migration of one cluster
+	connectTimeout = 30 * time.Second // one connection, or one statement on it
+)
+
 var (
 	once         sync.Once
 	adminURL     string
@@ -146,11 +154,17 @@ func withUserDB(base, user, password, dbname string) string {
 
 func connect(tb testing.TB, dsn string) *pgx.Conn {
 	tb.Helper()
-	c, err := pgx.Connect(context.Background(), dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	c, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		tb.Fatalf("pgtest: connect: %v", err)
 	}
-	tb.Cleanup(func() { _ = c.Close(context.Background()) })
+	tb.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+		defer cancel()
+		_ = c.Close(ctx)
+	})
 	return c
 }
 
@@ -172,7 +186,9 @@ func EmptyDB(tb testing.TB) string {
 	tb.Helper()
 	admin := AdminConn(tb)
 	name := "sauti_empty" + RandomSuffix()
-	if _, err := admin.Exec(context.Background(), "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
 		tb.Fatal(err)
 	}
 	tb.Cleanup(func() { dropDB(tb, name) })
@@ -182,12 +198,14 @@ func EmptyDB(tb testing.TB) string {
 }
 
 func dropDB(tb testing.TB, name string) {
-	c, err := pgx.Connect(context.Background(), AdminURL(tb))
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	c, err := pgx.Connect(ctx, AdminURL(tb))
 	if err != nil {
 		return
 	}
-	defer func() { _ = c.Close(context.Background()) }()
-	_, _ = c.Exec(context.Background(), "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
+	defer func() { _ = c.Close(ctx) }()
+	_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
 }
 
 // DropDatabases drops bootstrap-created databases.
@@ -206,7 +224,8 @@ type TestCluster struct {
 // Cluster bootstraps and migrates the five stores for one test.
 func Cluster(tb testing.TB) *TestCluster {
 	tb.Helper()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), setupTimeout)
+	defer cancel()
 	admin := AdminConn(tb)
 	dbs, err := bootstrap.Run(ctx, admin, bootstrap.Options{Suffix: RandomSuffix(), Password: RolePassword(tb), Env: "test"})
 	if err != nil {

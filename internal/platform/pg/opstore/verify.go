@@ -24,7 +24,7 @@ func VerifyProjections(ctx context.Context, s *Store) (int, []string, error) {
 	if err != nil {
 		return 0, nil, fmt.Errorf("opstore: verify snapshot: %w", err)
 	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	defer rollback(ctx, tx)
 	snap := &Store{pool: s.pool, q: opdb.New(tx)}
 
 	ids, err := snap.ListIncidentIDs(ctx)
