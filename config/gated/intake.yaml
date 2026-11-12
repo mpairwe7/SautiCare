@@ -7,3 +7,8 @@ screen_char_limits: {}          # per network code, e.g. "64110": 182, once conf
 # as a match; below it the incident is located at ward level and flagged
 # needs_location_callback (Build Prompt §12). Field-tested during M7.
 fuzzy_match_min_similarity: 0.45
+# A session silent this long without finishing Tool 1 is flagged abandoned
+# (abandoned_before_category if no category); after a danger yes, before
+# dispatch, it is escalated for an immediate coordinator call-back (Build
+# Prompt §10.3; Guide §4). Network USSD sessions end after roughly 120-180 s.
+abandon_after: 120s

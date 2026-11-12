@@ -318,6 +318,47 @@ func (q *Queries) ListEvents(ctx context.Context, incidentID pgtype.UUID) ([]Lis
 	return items, nil
 }
 
+const listIdle = `-- name: ListIdle :many
+SELECT id, danger, category, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
+WHERE state NOT IN ('closed', 'merged') AND last_screen < 8
+  AND updated_at < clock_timestamp() - $1::int * interval '1 second'
+  AND NOT ('abandoned' = ANY (flags))
+ORDER BY updated_at
+LIMIT 500
+`
+
+type ListIdleRow struct {
+	ID         pgtype.UUID
+	Danger     *string
+	Category   *string
+	Dispatched bool
+}
+
+func (q *Queries) ListIdle(ctx context.Context, idleSeconds int32) ([]ListIdleRow, error) {
+	rows, err := q.db.Query(ctx, listIdle, idleSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListIdleRow
+	for rows.Next() {
+		var i ListIdleRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Danger,
+			&i.Category,
+			&i.Dispatched,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIncidentIDs = `-- name: ListIncidentIDs :many
 SELECT id FROM op.incidents ORDER BY id
 `

@@ -66,6 +66,9 @@ type Intake struct {
 	// needs to count as a match; below it the incident is located at ward
 	// level and flagged for a location call-back (Build Prompt §12).
 	FuzzyMatchMinSimilarity float64 `yaml:"fuzzy_match_min_similarity"`
+	// AbandonAfter is how long an unfinished session may be silent before it
+	// is flagged abandoned (and escalated after a danger yes, Guide §4).
+	AbandonAfter Duration `yaml:"abandon_after"`
 }
 
 // Dispatch holds Build Prompt §10.4 parameters.

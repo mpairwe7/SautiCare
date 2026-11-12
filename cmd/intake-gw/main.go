@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/platform/africastalking"
 	"sautihealth.com/sauti/internal/platform/devkeys"
 	"sautihealth.com/sauti/internal/platform/env"
@@ -41,6 +42,13 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/wiring"
 )
+
+// sweeperLeaderKey is the advisory-lock key for the abandonment sweeper
+// (outbox-relay holds 7347002).
+const sweeperLeaderKey = 7347003
+
+// sweepEvery is how often the leader looks for abandoned sessions.
+const sweepEvery = 15 * time.Second
 
 func main() {
 	log := slog.New(logging.NewHandler(os.Stderr, slog.LevelInfo))
@@ -123,6 +131,14 @@ func run(log *slog.Logger) error {
 	errc := make(chan error, 2)
 	go func() { errc <- public.ListenAndServe() }()
 	go func() { errc <- adminSrv.ListenAndServe() }()
+	// One abandonment sweeper across all intake-gw instances (leadership by
+	// advisory lock); it never blocks the request path.
+	sweeper := intake.NewSweeper(store, built.Incidents, cfg.Intake.AbandonAfter.Duration)
+	go func() {
+		_ = pg.RunAsLeader(ctx, pool, sweeperLeaderKey, 5*time.Second, func(lctx context.Context) error {
+			return sweeper.Run(lctx, sweepEvery, func(err error) { log.Error("abandonment sweep failed", "err", err) })
+		})
+	}()
 	log.Info("intake-gw listening", "env", senv, "config", cfg.Fingerprint, "protocol", cfg.ProtocolStatus,
 		"triage", built.Triage.LogicVersion(), "gazetteer", built.Gazetteer.Version)
 

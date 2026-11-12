@@ -9,6 +9,7 @@ import (
 
 	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/platform/pg/opstore/opdb"
 )
 
@@ -66,4 +67,22 @@ func (s *Store) FindResumable(ctx context.Context, macs []crypto.MAC, window tim
 		return uuid.UUID{}, false, nil
 	}
 	return uuid.UUID(ids[0].Bytes), true, nil
+}
+
+// ListIdle implements intake.IdleReader: open, unfinished incidents with no
+// event for idleFor and no abandoned flag, oldest first (at most 500 a sweep).
+func (s *Store) ListIdle(ctx context.Context, idleFor time.Duration) ([]intake.Idle, error) {
+	secs := idleFor.Seconds()
+	if secs <= 0 || secs > math.MaxInt32 {
+		return nil, fmt.Errorf("opstore: idle time %v out of range", idleFor)
+	}
+	rows, err := s.q.ListIdle(ctx, int32(secs))
+	if err != nil {
+		return nil, fmt.Errorf("opstore: list idle: %w", err)
+	}
+	out := make([]intake.Idle, len(rows))
+	for i, r := range rows {
+		out[i] = intake.Idle{ID: uuid.UUID(r.ID.Bytes), Danger: deref(r.Danger), Category: deref(r.Category), Dispatched: r.Dispatched}
+	}
+	return out, nil
 }

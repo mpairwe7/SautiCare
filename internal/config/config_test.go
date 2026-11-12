@@ -58,7 +58,7 @@ func minimalFS() fstest.MapFS {
 		"study.yaml":          {Data: []byte("study_window_active: false\n")},
 		"platform.yaml":       {Data: []byte("checkpoint_interval: 5m\noutbox_batch_size: 10\nrelay_poll_interval: 1s\n")},
 		"gated/protocol.yaml": {Data: []byte("protocol_status: approved\nprotocol_version: \"2.0\"\n")},
-		"gated/intake.yaml":   {Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\n")},
+		"gated/intake.yaml":   {Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 120s\n")},
 		"gated/dispatch.yaml": {Data: []byte("mode: protocol\nring_step_metres: 500\nring_interval: 60s\nmax_radius_metres: 2500\ncascade_timeout: 90s\nred_parallel_count: 3\nforward_ack_timeout: 60s\nvoice_fallback_after: 20s\nranking_order: [zone_distance]\nranking_version: v1\n")},
 		"gated/flags.yaml":    {Data: []byte("android_app: false\ncaller_link: false\nspeech_assist: false\napp_api: false\n")},
 		"gated/screens.yaml":  {Data: []byte("internal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")},
@@ -234,5 +234,19 @@ func TestLoadReadsTriageTrustAnchors(t *testing.T) {
 	fs["gated/triage.yaml"] = &fstest.MapFile{Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {}\n")}
 	if _, err := Load(fs); err == nil {
 		t.Fatal("no trusted keys accepted")
+	}
+}
+
+// abandon_after decides when an unfinished session is flagged abandoned
+// (and escalated after a danger yes); zero would flag every live session.
+func TestLoadRequiresPositiveAbandonAfter(t *testing.T) {
+	fs := minimalFS()
+	fs["gated/intake.yaml"] = &fstest.MapFile{Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 0s\n")}
+	if _, err := Load(fs); err == nil {
+		t.Fatal("abandon_after 0 accepted")
+	}
+	b, err := Load(minimalFS())
+	if err != nil || b.Intake.AbandonAfter.Duration != 2*time.Minute {
+		t.Fatalf("abandon_after = %v, %v", b.Intake.AbandonAfter, err)
 	}
 }

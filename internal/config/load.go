@@ -97,6 +97,9 @@ func Load(fsys fs.FS) (Bundle, error) {
 	b.ProtocolStatus = proto.ProtocolStatus
 	b.ProtocolVersion = proto.ProtocolVersion
 	b.Fingerprint = "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if b.Intake.AbandonAfter.Duration <= 0 {
+		return Bundle{}, errors.New("config: intake abandon_after must be positive")
+	}
 	if s := b.Intake.FuzzyMatchMinSimilarity; s <= 0 || s >= 1 {
 		return Bundle{}, fmt.Errorf("config: intake fuzzy_match_min_similarity %v must be between 0 and 1", s)
 	}
