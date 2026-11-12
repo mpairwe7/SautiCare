@@ -107,6 +107,40 @@ func (q *Queries) DefaultPartitionRows(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+const findResumable = `-- name: FindResumable :many
+SELECT i.id FROM op.sessions s JOIN op.incidents i ON i.id = s.incident_id
+WHERE s.phone_mac = ANY ($1::bytea[])
+  AND i.state NOT IN ('closed', 'merged') AND i.last_screen < 8
+  AND i.updated_at >= clock_timestamp() - $2::int * interval '1 second'
+ORDER BY i.updated_at DESC
+LIMIT 1
+`
+
+type FindResumableParams struct {
+	Macs          [][]byte
+	WindowSeconds int32
+}
+
+func (q *Queries) FindResumable(ctx context.Context, arg FindResumableParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, findResumable, arg.Macs, arg.WindowSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getIncident = `-- name: GetIncident :one
 SELECT id, reference, channel, state, version, severity, logic_version,
        t1, t2, t3, t4, t5, t6, t7, escalated, flags, merged_into,
@@ -184,7 +218,7 @@ func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentR
 }
 
 const latestUSSDStep = `-- name: LatestUSSDStep :many
-SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text
 ORDER BY consumed_len DESC, created_at DESC
 LIMIT 1
@@ -202,6 +236,7 @@ type LatestUSSDStepRow struct {
 	InputMac    []byte
 	MacKeyID    string
 	IncidentID  pgtype.UUID
+	PromptKind  string
 }
 
 func (q *Queries) LatestUSSDStep(ctx context.Context, arg LatestUSSDStepParams) ([]LatestUSSDStepRow, error) {
@@ -220,6 +255,7 @@ func (q *Queries) LatestUSSDStep(ctx context.Context, arg LatestUSSDStepParams) 
 			&i.InputMac,
 			&i.MacKeyID,
 			&i.IncidentID,
+			&i.PromptKind,
 		); err != nil {
 			return nil, err
 		}
@@ -307,7 +343,7 @@ func (q *Queries) ListIncidentIDs(ctx context.Context) ([]pgtype.UUID, error) {
 }
 
 const lookupUSSDStep = `-- name: LookupUSSDStep :many
-SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text
   AND input_mac = ANY ($3::bytea[])
 `
@@ -325,6 +361,7 @@ type LookupUSSDStepRow struct {
 	InputMac    []byte
 	MacKeyID    string
 	IncidentID  pgtype.UUID
+	PromptKind  string
 }
 
 func (q *Queries) LookupUSSDStep(ctx context.Context, arg LookupUSSDStepParams) ([]LookupUSSDStepRow, error) {
@@ -343,6 +380,7 @@ func (q *Queries) LookupUSSDStep(ctx context.Context, arg LookupUSSDStepParams) 
 			&i.InputMac,
 			&i.MacKeyID,
 			&i.IncidentID,
+			&i.PromptKind,
 		); err != nil {
 			return nil, err
 		}
@@ -421,11 +459,68 @@ func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) (Ope
 	return i, err
 }
 
+const resumeSession = `-- name: ResumeSession :one
+SELECT r.incident_id::uuid AS incident_id, r.reference::text AS reference, r.event_id::uuid AS event_id,
+       r.t1::timestamptz AS t1, r.created::boolean AS created
+FROM op.resume_session(
+    $1::uuid, $2::text, $3::uuid,
+    $4::text, $5::bytea, $6::text,
+    $7::bytea, $8::text, $9::text,
+    $10::text
+) AS r(incident_id, reference, event_id, t1, created)
+`
+
+type ResumeSessionParams struct {
+	IncidentID        pgtype.UUID
+	Channel           string
+	SessionID         pgtype.UUID
+	ProviderSessionID string
+	PhoneCt           []byte
+	PhoneKeyID        *string
+	PhoneMac          []byte
+	PhoneMacKeyID     *string
+	NetworkCode       *string
+	IdemKey           string
+}
+
+type ResumeSessionRow struct {
+	IncidentID pgtype.UUID
+	Reference  string
+	EventID    pgtype.UUID
+	T1         pgtype.Timestamptz
+	Created    bool
+}
+
+func (q *Queries) ResumeSession(ctx context.Context, arg ResumeSessionParams) (ResumeSessionRow, error) {
+	row := q.db.QueryRow(ctx, resumeSession,
+		arg.IncidentID,
+		arg.Channel,
+		arg.SessionID,
+		arg.ProviderSessionID,
+		arg.PhoneCt,
+		arg.PhoneKeyID,
+		arg.PhoneMac,
+		arg.PhoneMacKeyID,
+		arg.NetworkCode,
+		arg.IdemKey,
+	)
+	var i ResumeSessionRow
+	err := row.Scan(
+		&i.IncidentID,
+		&i.Reference,
+		&i.EventID,
+		&i.T1,
+		&i.Created,
+	)
+	return i, err
+}
+
 const saveUSSDStep = `-- name: SaveUSSDStep :exec
-INSERT INTO op.ussd_steps (provider, provider_session_id, input_mac, mac_key_id, consumed_len, response, end_session, incident_id)
+INSERT INTO op.ussd_steps (provider, provider_session_id, input_mac, mac_key_id, consumed_len, response, end_session,
+                           incident_id, prompt_kind)
 VALUES ($1::text, $2::text, $3::bytea,
         $4::text, $5::int, $6::text,
-        $7::boolean, $8::uuid)
+        $7::boolean, $8::uuid, $9::text)
 ON CONFLICT DO NOTHING
 `
 
@@ -438,6 +533,7 @@ type SaveUSSDStepParams struct {
 	Response          string
 	EndSession        bool
 	IncidentID        pgtype.UUID
+	PromptKind        string
 }
 
 func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) error {
@@ -450,6 +546,7 @@ func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) erro
 		arg.Response,
 		arg.EndSession,
 		arg.IncidentID,
+		arg.PromptKind,
 	)
 	return err
 }

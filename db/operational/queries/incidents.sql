@@ -44,23 +44,42 @@ SELECT op.mark_outbox_delivered(sqlc.arg(ids)::uuid[])::int AS marked;
 SELECT op.default_partition_rows()::bigint AS n;
 
 -- name: LookupUSSDStep :many
-SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
 WHERE provider = sqlc.arg(provider)::text AND provider_session_id = sqlc.arg(provider_session_id)::text
   AND input_mac = ANY (sqlc.arg(input_macs)::bytea[]);
 
 -- name: LatestUSSDStep :many
-SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
 WHERE provider = sqlc.arg(provider)::text AND provider_session_id = sqlc.arg(provider_session_id)::text
 ORDER BY consumed_len DESC, created_at DESC
 LIMIT 1;
 
 -- name: SaveUSSDStep :exec
-INSERT INTO op.ussd_steps (provider, provider_session_id, input_mac, mac_key_id, consumed_len, response, end_session, incident_id)
+INSERT INTO op.ussd_steps (provider, provider_session_id, input_mac, mac_key_id, consumed_len, response, end_session,
+                           incident_id, prompt_kind)
 VALUES (sqlc.arg(provider)::text, sqlc.arg(provider_session_id)::text, sqlc.arg(input_mac)::bytea,
         sqlc.arg(mac_key_id)::text, sqlc.arg(consumed_len)::int, sqlc.arg(response)::text,
-        sqlc.arg(end_session)::boolean, sqlc.narg(incident_id)::uuid)
+        sqlc.arg(end_session)::boolean, sqlc.narg(incident_id)::uuid, sqlc.arg(prompt_kind)::text)
 ON CONFLICT DO NOTHING;
 
 -- name: StoreIdentifier :one
 SELECT op.store_identifier(sqlc.arg(id)::uuid, sqlc.arg(incident_id)::uuid, sqlc.arg(kind)::text,
                            sqlc.arg(ct)::bytea, sqlc.arg(key_id)::text, sqlc.arg(idem_key)::text)::uuid AS id;
+
+-- name: ResumeSession :one
+SELECT r.incident_id::uuid AS incident_id, r.reference::text AS reference, r.event_id::uuid AS event_id,
+       r.t1::timestamptz AS t1, r.created::boolean AS created
+FROM op.resume_session(
+    sqlc.arg(incident_id)::uuid, sqlc.arg(channel)::text, sqlc.arg(session_id)::uuid,
+    sqlc.arg(provider_session_id)::text, sqlc.narg(phone_ct)::bytea, sqlc.narg(phone_key_id)::text,
+    sqlc.narg(phone_mac)::bytea, sqlc.narg(phone_mac_key_id)::text, sqlc.narg(network_code)::text,
+    sqlc.arg(idem_key)::text
+) AS r(incident_id, reference, event_id, t1, created);
+
+-- name: FindResumable :many
+SELECT i.id FROM op.sessions s JOIN op.incidents i ON i.id = s.incident_id
+WHERE s.phone_mac = ANY (sqlc.arg(macs)::bytea[])
+  AND i.state NOT IN ('closed', 'merged') AND i.last_screen < 8
+  AND i.updated_at >= clock_timestamp() - sqlc.arg(window_seconds)::int * interval '1 second'
+ORDER BY i.updated_at DESC
+LIMIT 1;

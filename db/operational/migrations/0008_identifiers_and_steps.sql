@@ -54,6 +54,9 @@ ALTER TABLE op.ussd_steps
     ADD COLUMN input_mac    bytea NOT NULL CHECK (octet_length(input_mac) = 32),
     ADD COLUMN mac_key_id   text  NOT NULL,
     ADD COLUMN consumed_len int   NOT NULL CHECK (consumed_len >= 0),
+    -- The prompt the step showed (intake.Kind): the next callback's input
+    -- answers it.
+    ADD COLUMN prompt_kind  text  NOT NULL DEFAULT '' CHECK (prompt_kind ~ '^[a-z_]{0,32}$'),
     ADD PRIMARY KEY (provider, provider_session_id, input_mac);
 
 CREATE INDEX ussd_steps_latest ON op.ussd_steps (provider, provider_session_id, consumed_len DESC);

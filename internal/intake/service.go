@@ -41,6 +41,7 @@ type Screen struct {
 // keeps a '*' typed inside a free-text answer.
 type Step struct {
 	Screen      Screen
+	Kind        Kind // the prompt shown; the next callback's input answers it
 	ConsumedLen int
 	MAC         crypto.MAC
 	IncidentID  uuid.UUID

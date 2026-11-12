@@ -17,6 +17,7 @@ type fakeStore struct {
 	opens      []OpenParams
 	appends    []AppendParams
 	idents     []IdentifierParams
+	resumes    []ResumeParams
 }
 
 func (f *fakeStore) StoreIdentifier(_ context.Context, p IdentifierParams) (uuid.UUID, error) {
@@ -159,5 +160,31 @@ func TestStoreIdentifierSealsWithRowAAD(t *testing.T) {
 	}
 	if _, err := svc.StoreIdentifier(context.Background(), inc, IdentifierLandmarkText, []byte("x"), ""); err == nil {
 		t.Fatal("identifier without an idempotency key accepted")
+	}
+}
+
+func (f *fakeStore) ResumeSession(_ context.Context, p ResumeParams) (Opened, error) {
+	f.resumes = append(f.resumes, p)
+	return Opened{IncidentID: p.IncidentID, Reference: "1234567894", EventID: uuid.NewV7(), T1: time.Now(), Created: true}, nil
+}
+
+// A redial resumes the same incident through a new session row; the number
+// is sealed to that new row, never copied from the old one.
+func TestResumeSessionSealsPhoneForNewSession(t *testing.T) {
+	st, se := &fakeStore{}, &fakeSealer{}
+	svc := NewService(st, se, rand.Reader)
+	inc := uuid.NewV7()
+	cmd := startCmd(t)
+	o, err := svc.ResumeSession(context.Background(), ResumeSession{IncidentID: inc, Channel: ChannelIVR,
+		ProviderSessionID: "call-9", Phone: cmd.Phone, IdemKey: "ivr:call-9:start"})
+	if err != nil || o.IncidentID != inc || len(st.resumes) != 1 {
+		t.Fatalf("resume: %+v %v", o, err)
+	}
+	r := st.resumes[0]
+	if r.SessionID == (uuid.UUID{}) || len(se.aads) != 1 || se.aads[0].RowID != r.SessionID.String() || se.aads[0].Table != "sessions" {
+		t.Fatalf("params %+v aads %+v", r, se.aads)
+	}
+	if _, err := svc.ResumeSession(context.Background(), ResumeSession{IncidentID: inc, Channel: ChannelIVR, ProviderSessionID: "c"}); err == nil {
+		t.Fatal("resume without an idempotency key accepted")
 	}
 }

@@ -169,6 +169,7 @@ type OpUssdStep struct {
 	InputMac          []byte
 	MacKeyID          string
 	ConsumedLen       int32
+	PromptKind        string
 }
 
 type OpWard struct {

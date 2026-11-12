@@ -23,6 +23,21 @@ type Store interface {
 	// StoreIdentifier stores a sealed identifier once per (incident,
 	// IdemKey) and returns the stored row's ID (the existing one on a retry).
 	StoreIdentifier(ctx context.Context, p IdentifierParams) (uuid.UUID, error)
+	// ResumeSession attaches a new session to an existing incident and
+	// appends session.resumed; a retried call returns Created = false.
+	ResumeSession(ctx context.Context, p ResumeParams) (Opened, error)
+}
+
+// ResumeParams attaches a redial's session to an existing incident.
+type ResumeParams struct {
+	IncidentID        uuid.UUID
+	Channel           Channel
+	SessionID         uuid.UUID
+	ProviderSessionID string
+	NetworkCode       string
+	IdemKey           string
+	Phone             crypto.Sealed
+	PhoneMAC          crypto.MAC
 }
 
 // Identifier kinds from screen answers (Build Prompt §9 "callback number",
@@ -178,4 +193,30 @@ func (s *Service) StoreIdentifier(ctx context.Context, incidentID uuid.UUID, kin
 		return uuid.UUID{}, fmt.Errorf("incident: seal identifier: %w", err)
 	}
 	return s.store.StoreIdentifier(ctx, IdentifierParams{ID: id, IncidentID: incidentID, Kind: kind, Sealed: sealed, IdemKey: idemKey})
+}
+
+// ResumeSession continues an incident from a redial on either channel
+// (Engineering Guide §4: within ten minutes, at the first unanswered
+// screen). The caller decides resumability (intake); the incident keeps its
+// T1 and reference, and the new session's number is sealed to the new
+// session row.
+func (s *Service) ResumeSession(ctx context.Context, cmd ResumeSession) (Opened, error) {
+	if cmd.IdemKey == "" {
+		return Opened{}, errors.New("incident: resume requires an idempotency key")
+	}
+	p := ResumeParams{IncidentID: cmd.IncidentID, Channel: cmd.Channel, SessionID: uuid.NewV7(),
+		ProviderSessionID: cmd.ProviderSessionID, NetworkCode: cmd.NetworkCode, IdemKey: cmd.IdemKey}
+	if !cmd.Phone.IsZero() {
+		aad := crypto.AAD{Store: "operational", Table: "sessions", Column: "phone", RowID: p.SessionID.String()}
+		sealed, err := s.sealer.SealPhone(ctx, cmd.Phone, aad)
+		if err != nil {
+			return Opened{}, fmt.Errorf("incident: seal phone: %w", err)
+		}
+		mac, err := s.sealer.PhoneMAC(ctx, cmd.Phone)
+		if err != nil {
+			return Opened{}, fmt.Errorf("incident: phone mac: %w", err)
+		}
+		p.Phone, p.PhoneMAC = sealed, mac
+	}
+	return s.store.ResumeSession(ctx, p)
 }

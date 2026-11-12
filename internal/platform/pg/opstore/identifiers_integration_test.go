@@ -102,7 +102,7 @@ func TestStepStoreKeyedByMAC(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := s.Save(ctx, "at", "S1", intake.Step{Screen: intake.Screen{Text: "screen " + text}, ConsumedLen: len(text),
-			MAC: mac, IncidentID: o.IncidentID}); err != nil {
+			MAC: mac, IncidentID: o.IncidentID, Kind: intake.KindDanger}); err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
@@ -113,7 +113,8 @@ func TestStepStoreKeyedByMAC(t *testing.T) {
 		t.Fatalf("Lookup = %+v %v %v", st, ok, err)
 	}
 	latest, ok, err := s.Latest(ctx, "at", "S1")
-	if err != nil || !ok || latest.ConsumedLen != 3 || latest.Screen.Text != "screen 1*2" || latest.IncidentID != o.IncidentID {
+	if err != nil || !ok || latest.ConsumedLen != 3 || latest.Screen.Text != "screen 1*2" || latest.IncidentID != o.IncidentID ||
+		latest.Kind != intake.KindDanger {
 		t.Fatalf("Latest = %+v %v %v", latest, ok, err)
 	}
 	if _, ok, _ := s.Latest(ctx, "at", "S2"); ok {
