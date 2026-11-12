@@ -72,6 +72,39 @@ func TestSweeperEscalatesDangerYesBeforeDispatch(t *testing.T) {
 	}
 }
 
+// I5: a call classified red (screen 5 yes) whose caller answered no or
+// "don't know" at screen 2 and dropped before T2 is as urgent as a danger
+// yes: it is escalated too, with its own reason. A danger yes keeps its
+// reason; a call already dispatching is not escalated.
+func TestSweeperEscalatesRedBeforeDispatch(t *testing.T) {
+	no, unknown, both, dispatched, yellow := uuid.NewV7(), uuid.NewV7(), uuid.NewV7(), uuid.NewV7(), uuid.NewV7()
+	r := &idleReader{idle: []Idle{
+		{ID: no, Danger: "no", Category: "trauma", Severity: incident.SevRed},
+		{ID: unknown, Danger: "unknown", Category: "trauma", Severity: incident.SevRed},
+		{ID: both, Danger: "yes", Category: "trauma", Severity: incident.SevRed},
+		{ID: dispatched, Danger: "no", Category: "trauma", Severity: incident.SevRed, Dispatched: true},
+		{ID: yellow, Danger: "no", Category: "trauma", Severity: incident.SevYellow},
+	}}
+	log := &appendLog{}
+	if _, err := NewSweeper(r, log, time.Minute).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	red := `incident.escalated {"reason":"abandoned_red_before_dispatch"}`
+	for _, id := range []uuid.UUID{no, unknown} {
+		if got := log.payloads(id); !slices.Contains(got, red) {
+			t.Errorf("red abandonment not escalated: %v", got)
+		}
+	}
+	if got := log.payloads(both); !slices.Contains(got, `incident.escalated {"reason":"abandoned_after_danger_yes"}`) || slices.Contains(got, red) {
+		t.Errorf("danger yes and red: %v", got)
+	}
+	for _, id := range []uuid.UUID{dispatched, yellow} {
+		if got := log.payloads(id); slices.ContainsFunc(got, func(s string) bool { return s[:18] == "incident.escalated" }) {
+			t.Errorf("escalated: %v", got)
+		}
+	}
+}
+
 // Keys are stable per incident, so a sweep repeated by a new leader or after
 // a crash writes nothing twice.
 func TestSweeperIsIdempotent(t *testing.T) {

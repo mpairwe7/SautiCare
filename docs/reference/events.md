@@ -17,12 +17,20 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `responder.departed` | **T6** | — | |
 | `responder.at_facility` | **T7** | `facility` | |
 | `incident.flagged` | — | `flag` | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
-| `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes` |
+| `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch` |
 | `incident.merged` | — | `into` (incident UUID: existing, open, not itself) | on the later call, at T2 (ADR-0022); a merged call then accepts only its own caller's answers and its unmerge |
 | `incident.merge_absorbed` | T1 (earliest) | exactly `from` (incident UUID), `t1` (RFC 3339, ≤ µs) | on the survivor; T1 = earliest of its own call and every absorbed call |
 | `incident.split` | T1 (recomputed) | exactly `from` | staff only; the call leaves the survivor's `absorbed` set |
 | `incident.unmerged` | — | exactly `from` (the survivor) | staff; `merged` → `dispatching`; needs T2 |
 | `incident.closed` | — | `reason` | terminal |
+
+## Idempotency keys and atomic batches
+
+Every append carries an idempotency key, unique per incident; a retry with the same key returns the stored event and writes nothing. `op.append_incident_event` can also run several times in one transaction (`incident.Service.AppendBatch`, `opstore.Store.AppendBatch`): all of the events are stored or none, and each sees the state the previous one left.
+
+Intake uses two kinds of key (see [tool1-flow.md](tool1-flow.md)):
+- **Session-scoped**, for what a caller said: `ussd:<provider>:<session>:s<screen>` or `ivr:<call>:s<screen>` for `screen.answered`, with a suffix for the sealed identifier it references.
+- **Incident-scoped**, for what the answers imply: `intake:<incident>:classify`, `:rule_error`, `:escalate`, `:out_of_area`, `:close`, `:needs_location_callback` and `:dispatch_ready`. Whichever session or channel records one first, every retry or redial converges on that one event.
 
 ## Lifecycle
 
