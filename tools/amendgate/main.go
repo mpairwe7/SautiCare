@@ -36,10 +36,15 @@ func main() {
 }
 
 func run(base, manifest, gatedList, study string) error {
-	globs, err := readGlobs(gatedList)
+	headGlobs, err := readGlobs(gatedList)
 	if err != nil {
 		return err
 	}
+	var baseGlobs []string
+	if b, err := gitOutput("show", base+":"+gatedList); err == nil {
+		baseGlobs = parseGlobs(string(b))
+	}
+	globs := effectiveGlobs(baseGlobs, headGlobs)
 	var am struct {
 		Amendments []Amendment `yaml:"amendments"`
 	}
@@ -91,20 +96,23 @@ func windowActive(b []byte, err error) (bool, error) {
 }
 
 func readGlobs(p string) ([]string, error) {
-	f, err := os.Open(p)
+	b, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = f.Close() }()
+	return parseGlobs(string(b)), nil
+}
+
+func parseGlobs(s string) []string {
 	var out []string
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(strings.NewReader(s))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line != "" && !strings.HasPrefix(line, "#") {
 			out = append(out, line)
 		}
 	}
-	return out, sc.Err()
+	return out
 }
 
 func gitOutput(args ...string) ([]byte, error) {
@@ -133,12 +141,19 @@ func changedFiles(base string) ([]ChangedFile, error) {
 			files = append(files, ChangedFile{Path: p, Deleted: true})
 			continue
 		}
-		b, err := os.ReadFile(p)
+		// Hash the content tracked at HEAD and record its mode, rather than
+		// following a working-tree path (CodeRabbit PR #2).
+		lsTree, err := gitOutput("ls-tree", "HEAD", "--", p)
 		if err != nil {
 			return nil, err
 		}
-		sum := sha256.Sum256(b)
-		files = append(files, ChangedFile{Path: p, SHA256: hex.EncodeToString(sum[:])})
+		blob, err := gitOutput("show", "HEAD:"+p)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(blob)
+		files = append(files, ChangedFile{Path: p, SHA256: hex.EncodeToString(sum[:]),
+			Symlink: strings.HasPrefix(string(lsTree), "120000 ")})
 	}
 	return files, nil
 }

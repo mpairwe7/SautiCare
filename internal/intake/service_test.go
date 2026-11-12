@@ -137,3 +137,18 @@ func TestScreensFitCharLimit(t *testing.T) {
 		}
 	}
 }
+
+// CodeRabbit PR #2: a language whose template lacks {ref} (the Luganda
+// placeholder) must fall back to English so the caller still gets the
+// incident reference.
+func TestHandleUSSDAlwaysCarriesTheReference(t *testing.T) {
+	ref, _ := incident.NewReference(rand.Reader)
+	svc := NewService(&fakeStarter{ref: ref}, &memSteps{}, repoScreens(t), "lg")
+	sc, err := svc.HandleUSSD(context.Background(), request(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sc.Text, ref.Spoken()) {
+		t.Fatalf("screen %q lacks the reference %s", sc.Text, ref.Spoken())
+	}
+}

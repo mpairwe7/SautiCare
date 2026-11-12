@@ -97,8 +97,10 @@ func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error)
 	if err != nil {
 		return Screen{}, err
 	}
-	tmpl, ok := s.screens.StartedTestMode[s.lang]
-	if !ok {
+	// The final screen must carry the reference; a missing or placeholder
+	// template (no {ref}) falls back to English.
+	tmpl := s.screens.StartedTestMode[s.lang]
+	if !strings.Contains(tmpl, "{ref}") {
 		tmpl = s.screens.StartedTestMode["en"]
 	}
 	sc := Screen{Text: Render(tmpl, opened.Reference), End: true}

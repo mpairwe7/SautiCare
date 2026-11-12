@@ -197,3 +197,20 @@ func TestTransitionsCoverEveryEventType(t *testing.T) {
 		}
 	}
 }
+
+// CodeRabbit PR #2: an event of another incident must not change this one.
+func TestApplyRejectsEventOfAnotherIncident(t *testing.T) {
+	p, err := Fold(FixtureLifecycle()[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := ev(2, EvClassified, `{"severity":"red"}`)
+	foreign.IncidentID = uuid.NewV7()
+	got, err := Apply(p, foreign)
+	if !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("foreign event: err = %v, want ErrIllegalTransition", err)
+	}
+	if got.Version != 1 || got.Severity != "" {
+		t.Fatalf("projection changed by a foreign event: %+v", got)
+	}
+}
