@@ -237,6 +237,20 @@ func (m *Machine) Next(p incident.Projection, hasPhone bool) Prompt {
 	return m.prompt(p, k, hasPhone)
 }
 
+// TriggerScreen is the screen whose answer records T2 (7 or 8).
+func (m *Machine) TriggerScreen() int { return m.trigger }
+
+// DispatchDue reports whether the answers call for T2 and the incident has
+// none: classified (triaged), inside the area, the landmark known, and the
+// trigger screen reached (screen 7, or screen 8 when that is the trigger).
+// It reads only the projection, so whichever session or channel sees it
+// first, a failed request's T2 is still recorded.
+func (m *Machine) DispatchDue(p incident.Projection) bool {
+	return p.State == incident.StateTriaged && p.T[2] == nil && p.Severity != "" &&
+		p.Ward != "" && p.Ward != location.WardElsewhere && p.Landmark != "" &&
+		(m.trigger == 7 || p.LastScreen >= 8)
+}
+
 // Reprompt returns the prompt of kind again with the invalid-choice notice.
 func (m *Machine) Reprompt(p incident.Projection, k Kind, hasPhone bool) Prompt {
 	pr := m.prompt(p, k, hasPhone)

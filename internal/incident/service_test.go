@@ -16,6 +16,7 @@ type fakeStore struct {
 	takenFirst int
 	opens      []OpenParams
 	appends    []AppendParams
+	batches    [][]AppendParams
 	idents     []IdentifierParams
 	resumes    []ResumeParams
 }
@@ -36,6 +37,11 @@ func (f *fakeStore) OpenIncident(_ context.Context, p OpenParams) (Opened, error
 func (f *fakeStore) Append(_ context.Context, p AppendParams) (Appended, error) {
 	f.appends = append(f.appends, p)
 	return Appended{NewState: StateIntake}, nil
+}
+
+func (f *fakeStore) AppendBatch(_ context.Context, ps []AppendParams) ([]Appended, error) {
+	f.batches = append(f.batches, ps)
+	return make([]Appended, len(ps)), nil
 }
 
 func (f *fakeStore) Events(context.Context, uuid.UUID) ([]Event, error) { return nil, nil }
@@ -134,6 +140,36 @@ func TestAppendRejectsUnknownEventType(t *testing.T) {
 	}
 	if len(st.appends) != 0 {
 		t.Fatal("unknown type reached the store")
+	}
+}
+
+// A batch is validated as a whole before anything reaches the store: one
+// bad event refuses every event, and an empty payload becomes {}.
+func TestAppendBatchValidatesEveryEvent(t *testing.T) {
+	st := &fakeStore{}
+	svc := NewService(st, &fakeSealer{}, rand.Reader)
+	id := uuid.NewV7()
+	good := AppendParams{IncidentID: id, Type: EvFlagged, Payload: []byte(`{"flag":"x"}`), IdemKey: "a"}
+	for _, bad := range []AppendParams{
+		{IncidentID: id, Type: "made.up", IdemKey: "b"},
+		{IncidentID: id, Type: EvSessionStarted, IdemKey: "b"},
+		{IncidentID: id, Type: EvEscalated},
+	} {
+		if _, err := svc.AppendBatch(context.Background(), []AppendParams{good, bad}); err == nil {
+			t.Errorf("batch with %+v accepted", bad)
+		}
+	}
+	if _, err := svc.AppendBatch(context.Background(), nil); err == nil {
+		t.Error("empty batch accepted")
+	}
+	if len(st.batches) != 0 {
+		t.Fatalf("a refused batch reached the store: %v", st.batches)
+	}
+	if _, err := svc.AppendBatch(context.Background(), []AppendParams{good, {IncidentID: id, Type: EvEscalated, IdemKey: "c"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.batches) != 1 || string(st.batches[0][1].Payload) != "{}" {
+		t.Fatalf("batches = %v", st.batches)
 	}
 }
 
