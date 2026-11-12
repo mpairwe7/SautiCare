@@ -35,7 +35,7 @@ func TestProjectionParityTool1(t *testing.T) {
 	} {
 		appendEv(t, s, id, incident.EvScreenAnswered, a, "")
 	}
-	appendEv(t, s, id, incident.EvClassified, `{"severity":"yellow"}`, "tool1-test+sha256:00")
+	appendEv(t, s, id, incident.EvClassified, `{"severity":"yellow"}`, "tool1-test+sha256:000000000000")
 	appendEv(t, s, id, incident.EvSessionResumed, `{"channel":"ivr"}`, "")
 	appendEv(t, s, id, incident.EvScreenAnswered, `{"screen":6,"field":"ward","value":"w01"}`, "")
 	appendEv(t, s, id, incident.EvScreenAnswered, fmt.Sprintf(`{"screen":7,"field":"landmark","value":"other","identifier_id":%q}`, ident), "")
@@ -105,7 +105,7 @@ func TestSQLRejectsWhatFoldRejects(t *testing.T) {
 		}
 	}
 	// dispatch_ready validation, from a triaged incident.
-	appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"red"}`, "tool1-test")
+	appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"red"}`, "tool1-test+sha256:000000000000")
 	for i, p := range []string{
 		`{"zone":{"col":1,"row":2},"location_quality":"guess"}`,
 		`{"zone":{"col":1},"location_quality":"ward"}`,

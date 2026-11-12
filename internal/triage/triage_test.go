@@ -140,17 +140,18 @@ func TestLoadRejectsUntrustedKey(t *testing.T) {
 func TestLoadRejectsNonTotalTable(t *testing.T) {
 	gap := strings.Replace(rules, "  - id: green-default\n    when: \"true\"\n    severity: green\n", "", 1)
 	for name, doc := range map[string]string{
-		"gap":           gap,
-		"bad severity":  strings.Replace(rules, "severity: green", "severity: blue", 1),
-		"not boolean":   strings.Replace(rules, `when: "true"`, `when: '"true"'`, 1),
-		"unknown input": strings.Replace(rules, `when: "true"`, `when: 'colour == "x"'`, 1),
-		"duplicate id":  strings.Replace(rules, "id: green-default", "id: red-danger", 1),
-		"empty domain":  strings.Replace(rules, `specific_danger: ["yes", "no"]`, `specific_danger: []`, 1),
-		"no version":    strings.Replace(rules, `version: "tool1-test-1"`, `version: ""`, 1),
-		"unknown key":   strings.Replace(rules, "protocol_status: pending", "protocol_status: pending\nauthor: x", 1),
-		"bad status":    strings.Replace(rules, "protocol_status: pending", "protocol_status: draft", 1),
-		"missing input": strings.Replace(rules, "  age_band: [\"under_5\", \"age_5_17\", \"age_18_59\", \"age_60_plus\", \"unknown\"]\n", "", 1),
-		"syntax":        strings.Replace(rules, `when: "true"`, `when: "danger =="`, 1),
+		"gap":                gap,
+		"bad severity":       strings.Replace(rules, "severity: green", "severity: blue", 1),
+		"not boolean":        strings.Replace(rules, `when: "true"`, `when: '"true"'`, 1),
+		"unknown input":      strings.Replace(rules, `when: "true"`, `when: 'colour == "x"'`, 1),
+		"duplicate id":       strings.Replace(rules, "id: green-default", "id: red-danger", 1),
+		"empty domain":       strings.Replace(rules, `specific_danger: ["yes", "no"]`, `specific_danger: []`, 1),
+		"no version":         strings.Replace(rules, `version: "tool1-test-1"`, `version: ""`, 1),
+		"version not a code": strings.Replace(rules, `version: "tool1-test-1"`, `version: "Tool1-v1"`, 1),
+		"unknown key":        strings.Replace(rules, "protocol_status: pending", "protocol_status: pending\nauthor: x", 1),
+		"bad status":         strings.Replace(rules, "protocol_status: pending", "protocol_status: draft", 1),
+		"missing input":      strings.Replace(rules, "  age_band: [\"under_5\", \"age_5_17\", \"age_18_59\", \"age_60_plus\", \"unknown\"]\n", "", 1),
+		"syntax":             strings.Replace(rules, `when: "true"`, `when: "danger =="`, 1),
 	} {
 		k := newKey(t, "clinical-test")
 		if _, err := Load([]byte(doc), sign(t, k, doc), map[string][]byte{k.id: k.pub}); err == nil {

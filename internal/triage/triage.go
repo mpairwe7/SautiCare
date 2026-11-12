@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -56,6 +57,8 @@ var (
 	// ErrNotProductionReady reports a pending or dev-signed bundle.
 	ErrNotProductionReady = errors.New("triage: bundle not production ready")
 )
+
+var versionPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // inputNames are the CEL variables, in Domain order.
 var inputNames = []string{"danger", "category", "age_band", "specific_danger"}
@@ -183,8 +186,10 @@ func Load(doc, sigDoc []byte, trusted map[string][]byte) (*Engine, error) {
 	bad := func(format string, a ...any) (*Engine, error) {
 		return nil, fmt.Errorf("%w: "+format, append([]any{ErrBundle}, a...)...)
 	}
-	if strings.TrimSpace(b.Version) == "" || strings.ContainsAny(b.Version, "+ \t\n") {
-		return bad("version %q", b.Version)
+	// The logic version "<version>+sha256:<hex>" must pass the ledger's and
+	// the write path's format check, so the version is a lower-case code.
+	if !versionPattern.MatchString(b.Version) {
+		return bad("version %q must match %s", b.Version, versionPattern)
 	}
 	if b.ProtocolStatus != "pending" && b.ProtocolStatus != "approved" {
 		return bad("protocol_status %q", b.ProtocolStatus)

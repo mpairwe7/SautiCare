@@ -21,6 +21,7 @@ Migrations are forward-only and checksummed (ADR-0010). Each store applies `db/<
 
 * A failing migration rolls back entirely and the old schema keeps serving. Services are deployed after their migrations.
 * A checksum mismatch blocks every further migration on that store until resolved.
+* Before applying anything, the migrator checks the whole recorded history: an applied migration missing from the repository (`ErrMissingMigration`) or edited (`ErrChecksumMismatch`) stops the run with nothing applied.
 
 ## Diagnosis
 

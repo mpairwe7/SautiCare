@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -28,6 +29,10 @@ type Options struct {
 // roleLock serialises role creation across concurrent bootstraps on one server.
 const roleLock = 7347000
 
+// afterCreate is a test seam: Run calls it after CREATE DATABASE and before
+// that database's grants (export_test.go).
+var afterCreate func(db string) error
+
 // DatabaseName returns the database name of store with suffix.
 func DatabaseName(s pg.Store, suffix string) string { return "sauti_" + string(s) + suffix }
 
@@ -36,6 +41,11 @@ func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''
 // Run creates (if missing) every role and the five databases, restricting
 // CONNECT on each database to that store's roles. admin must be a superuser
 // connection to a maintenance database. It returns store → database name.
+//
+// PostgreSQL grants CONNECT to PUBLIC on a new database, so each database is
+// created with connections disabled and opened only after its grants are in
+// place: a bootstrap that fails in between leaves a database nobody can
+// connect to, never one any role can, and a rerun completes it.
 func Run(ctx context.Context, admin *pgx.Conn, o Options) (map[pg.Store]string, error) {
 	if o.Env != "dev" && o.Env != "test" {
 		return nil, ErrProductionForbidden
@@ -46,7 +56,12 @@ func Run(ctx context.Context, admin *pgx.Conn, o Options) (map[pg.Store]string, 
 	if _, err := admin.Exec(ctx, "SELECT pg_advisory_lock($1)", roleLock); err != nil {
 		return nil, err
 	}
-	defer func() { _, _ = admin.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", roleLock) }()
+	defer func() {
+		// A fresh, bounded context: unlock even if ctx ended, never hang.
+		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_, _ = admin.Exec(uctx, "SELECT pg_advisory_unlock($1)", roleLock)
+	}()
 
 	for _, s := range pg.Stores() {
 		for _, role := range append([]string{s.Owner()}, s.RuntimeRoles()...) {
@@ -64,9 +79,14 @@ func Run(ctx context.Context, admin *pgx.Conn, o Options) (map[pg.Store]string, 
 		}
 		ident := pgx.Identifier{db}.Sanitize()
 		if !exists {
-			if _, err := admin.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s OWNER %s ENCODING 'UTF8' TEMPLATE template0",
+			if _, err := admin.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s OWNER %s ENCODING 'UTF8' TEMPLATE template0 ALLOW_CONNECTIONS false",
 				ident, pgx.Identifier{s.Owner()}.Sanitize())); err != nil {
 				return nil, fmt.Errorf("bootstrap: create %s: %w", db, err)
+			}
+			if afterCreate != nil {
+				if err := afterCreate(db); err != nil {
+					return nil, err
+				}
 			}
 		}
 		roles := []string{s.Owner()}
@@ -79,6 +99,7 @@ func Run(ctx context.Context, admin *pgx.Conn, o Options) (map[pg.Store]string, 
 			"REVOKE ALL ON DATABASE " + ident + " FROM PUBLIC",
 			"GRANT CONNECT ON DATABASE " + ident + " TO " + strings.Join(quoted, ", "),
 			"GRANT CREATE, TEMPORARY ON DATABASE " + ident + " TO " + pgx.Identifier{s.Owner()}.Sanitize(),
+			"ALTER DATABASE " + ident + " WITH ALLOW_CONNECTIONS true", // only once the grants are in place
 		}
 		for _, q := range stmts {
 			if _, err := admin.Exec(ctx, q); err != nil {

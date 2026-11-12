@@ -126,9 +126,8 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("relay: claim: %w", err)
 	}
-	// Ledger order is outbox ID (uuidv7, time) order: across batches by the
-	// single active relay (pg.RunAsLeader) and op.claim_outbox's ORDER BY id,
-	// within a batch by sorting here so no adapter can reorder rows.
+	// Within a batch, append in outbox-ID (creation) order so no adapter can
+	// reorder rows; across batches the order is delivery order (see Outbox).
 	rows := slices.Clone(batch.Rows())
 	slices.SortFunc(rows, func(a, b OutboxRow) int { return a.ID.Compare(b.ID) })
 	if len(rows) == 0 {

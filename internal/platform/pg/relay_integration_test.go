@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -141,18 +142,20 @@ func TestAuditEntryNeverCarriesPayloadContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	drain(t, e.relay)
-	rows, err := c.Owner(t, pg.StoreAudit).Query(ctx, "SELECT e::text FROM audit.entries e")
+	rows, err := c.Owner(t, pg.StoreAudit).Query(ctx, "SELECT e.seq, e::text FROM audit.entries e")
 	if err != nil {
 		t.Fatal(err)
 	}
 	n := 0
 	for rows.Next() {
+		var seq int64
 		var s string
-		if err := rows.Scan(&s); err != nil {
+		if err := rows.Scan(&seq, &s); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(s, "772123456") {
-			t.Fatalf("audit row contains the number: %s", s)
+			// Never print the row: it is the leak under test.
+			t.Fatalf("audit entry seq %d contains the caller's phone number", seq)
 		}
 		n++
 	}
@@ -169,7 +172,6 @@ func TestSingleActiveRelayLeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
 	var active, maxActive atomic.Int32
 	run := func(ctx context.Context) error {
 		n := active.Add(1)
@@ -185,7 +187,13 @@ func TestSingleActiveRelayLeader(t *testing.T) {
 	}
 	ctx1, stop1 := context.WithCancel(ctx)
 	ctx2, stop2 := context.WithCancel(ctx)
-	defer stop2()
+	// Stop both candidates before closing their pool, on every exit path:
+	// pgxpool.Pool.Close waits for acquired connections to be released.
+	defer func() {
+		stop1()
+		stop2()
+		p.Close()
+	}()
 	done1 := make(chan error, 1)
 	done2 := make(chan error, 1)
 	go func() { done1 <- pg.RunAsLeader(ctx1, p, 7347999, 100*time.Millisecond, run) }()
@@ -219,7 +227,12 @@ func TestRelayLeaderRecampaignsAfterLockLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	// Stop the candidate before closing its pool, on every exit path:
+	// pgxpool.Pool.Close waits for acquired connections to be released.
+	defer func() {
+		cancel()
+		p.Close()
+	}()
 	const key = 7347998
 	var runs atomic.Int32
 	returned := make(chan error, 1)
@@ -263,5 +276,58 @@ func TestRelayLeaderRecampaignsAfterLockLoss(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunAsLeader did not return after shutdown")
+	}
+}
+
+// CodeRabbit PR #3: if the unlock after fn fails, the lock connection is
+// gone and the session lock with it. That is lost leadership: RunAsLeader
+// must campaign again, not return while the process lives.
+func TestRelayLeaderRecampaignsWhenUnlockFails(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	p, err := pg.Connect(ctx, c.DSN(pg.StoreOperational, "op_relay"), "test", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned := make(chan error, 1)
+	defer func() {
+		cancel() // stop the candidate before closing its pool, on every exit path
+		select {
+		case <-returned:
+		case <-time.After(10 * time.Second):
+		}
+		p.Close()
+	}()
+	super := c.Superuser(t, pg.StoreOperational)
+	const key = 7347997
+	var runs atomic.Int32
+	// The ping interval (1 h) never elapses: only the failed unlock can
+	// reveal that the lock session died.
+	go func() {
+		returned <- pg.RunAsLeader(ctx, p, key, time.Hour, func(lctx context.Context) error {
+			if runs.Add(1) > 1 {
+				<-lctx.Done()
+				return lctx.Err()
+			}
+			var killed bool
+			if err := super.QueryRow(lctx, `SELECT pg_terminate_backend(pid, 5000) FROM pg_locks
+				WHERE locktype = 'advisory' AND objid = $1 AND objsubid = 1 AND granted
+				  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`, key).Scan(&killed); err != nil || !killed {
+				return fmt.Errorf("terminate lock holder: %w (killed=%v)", err, killed)
+			}
+			return nil // fn finishes; the unlock that follows fails
+		})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for runs.Load() < 2 {
+		select {
+		case err := <-returned:
+			t.Fatalf("RunAsLeader returned (%v) after a failed unlock instead of campaigning again", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("leadership not regained after a failed unlock (runs = %d)", runs.Load())
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

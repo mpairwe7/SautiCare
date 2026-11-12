@@ -20,7 +20,7 @@ func TestVerifyProjectionsDetectsDrift(t *testing.T) {
 	ctx := context.Background()
 	for range 3 {
 		o, _ := s.OpenIncident(ctx, openParams(t))
-		appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"yellow"}`, "tr-test")
+		appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"yellow"}`, testLogic)
 	}
 	ro := storeAs(t, c, "op_readonly")
 	checked, drift, err := opstore.VerifyProjections(ctx, ro)

@@ -3,9 +3,10 @@
 // Each store embeds its migrations as migrations/NNNN_name.sql. A migration
 // runs once, in its own transaction, under a session advisory lock so
 // concurrent deploys serialise. The sha256 of every applied file is recorded;
-// if an applied file is later edited the migrator refuses to run, because the
-// database would no longer match what its history says it ran. Problems are
-// fixed forward with a new migration — there are no down migrations.
+// if an applied file is later edited or removed the migrator refuses to run,
+// before applying anything, because the database would no longer match what
+// its history says it ran. Problems are fixed forward with a new migration —
+// there are no down migrations.
 package migrate
 
 import (
@@ -15,16 +16,21 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
 // ErrChecksumMismatch reports an applied migration whose file has changed.
 var ErrChecksumMismatch = errors.New("migrate: applied migration file has changed")
+
+// ErrMissingMigration reports an applied migration whose file is gone.
+var ErrMissingMigration = errors.New("migrate: applied migration file is missing")
 
 var fileName = regexp.MustCompile(`^[0-9]{4}_[a-z0-9_]+\.sql$`)
 
@@ -78,8 +84,11 @@ func Run(ctx context.Context, conn *pgx.Conn, store string, fsys fs.FS) ([]strin
 		return nil, fmt.Errorf("migrate: lock: %w", err)
 	}
 	defer func() {
-		// Unlock on a fresh context so a cancelled ctx cannot leak the lock.
-		_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock(hashtext($1))", lockKey)
+		// Unlock on a fresh, bounded context so a cancelled ctx cannot leak
+		// the lock and a stalled connection cannot hang the migrator.
+		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(uctx, "SELECT pg_advisory_unlock(hashtext($1))", lockKey)
 	}()
 	if _, err := conn.Exec(ctx, ledgerDDL); err != nil {
 		return nil, fmt.Errorf("migrate: ledger: %w", err)
@@ -102,12 +111,26 @@ func Run(ctx context.Context, conn *pgx.Conn, store string, fsys fs.FS) ([]strin
 		return nil, err
 	}
 
+	// Check the whole recorded history against the files before applying
+	// anything: a pending file must never run when an applied one is gone
+	// or has changed.
+	shaOf := make(map[string]string, len(files))
+	for _, f := range files {
+		shaOf[f.version] = f.sha
+	}
+	for _, v := range slices.Sorted(maps.Keys(applied)) {
+		sha, ok := shaOf[v]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s/%s", ErrMissingMigration, store, v)
+		}
+		if sha != applied[v] {
+			return nil, fmt.Errorf("%w: %s/%s", ErrChecksumMismatch, store, v)
+		}
+	}
+
 	var done []string
 	for _, f := range files {
-		if sha, ok := applied[f.version]; ok {
-			if sha != f.sha {
-				return done, fmt.Errorf("%w: %s/%s", ErrChecksumMismatch, store, f.version)
-			}
+		if _, ok := applied[f.version]; ok {
 			continue
 		}
 		if err := apply(ctx, conn, f); err != nil {

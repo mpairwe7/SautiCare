@@ -15,7 +15,7 @@
 ## Triggers and detection
 
 * Monitoring query (role `op_readonly`): `SELECT op.default_partition_rows();` (alert when > 0).
-* Daily maintenance runs `op.ensure_event_partitions(3)` as the owner (retention-agent, M6).
+* The active outbox-relay (leader) runs `op.ensure_event_partitions(3)` at start and every 24 h as `op_relay`, and logs `event partitions ensured` with the number created. A logged failure retries at the next interval.
 
 ## Impact
 

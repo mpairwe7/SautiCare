@@ -107,6 +107,17 @@ func (q *Queries) DefaultPartitionRows(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+const ensureEventPartitions = `-- name: EnsureEventPartitions :one
+SELECT op.ensure_event_partitions($1::int)::int AS created
+`
+
+func (q *Queries) EnsureEventPartitions(ctx context.Context, monthsAhead int32) (int32, error) {
+	row := q.db.QueryRow(ctx, ensureEventPartitions, monthsAhead)
+	var created int32
+	err := row.Scan(&created)
+	return created, err
+}
+
 const findResumable = `-- name: FindResumable :many
 SELECT i.id FROM op.sessions s JOIN op.incidents i ON i.id = s.incident_id
 WHERE s.phone_mac = ANY ($1::bytea[])

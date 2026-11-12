@@ -43,6 +43,9 @@ SELECT op.mark_outbox_delivered(sqlc.arg(ids)::uuid[])::int AS marked;
 -- name: DefaultPartitionRows :one
 SELECT op.default_partition_rows()::bigint AS n;
 
+-- name: EnsureEventPartitions :one
+SELECT op.ensure_event_partitions(sqlc.arg(months_ahead)::int)::int AS created;
+
 -- name: LookupUSSDStep :many
 SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
 WHERE provider = sqlc.arg(provider)::text AND provider_session_id = sqlc.arg(provider_session_id)::text

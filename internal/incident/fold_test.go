@@ -37,7 +37,7 @@ func FixtureLifecycle() []Event {
 		ev(2, EvScreenAnswered, `{"screen":2,"field":"danger","value":"yes"}`),
 		func() Event {
 			e := ev(3, EvClassified, `{"severity":"red","category":"trauma"}`)
-			e.LogicVersion = "tr-test+sha256:00"
+			e.LogicVersion = "tr-test+sha256:0123456789ab"
 			return e
 		}(),
 		ev(4, EvDispatchReady, ""),
@@ -70,7 +70,7 @@ func TestFoldFixtureLifecycle(t *testing.T) {
 	if p.Version != 10 || p.Reference != fixtureRef || p.Channel != "ussd_at" {
 		t.Fatalf("projection = %+v", p)
 	}
-	if p.Severity != SevRed || p.LogicVersion != "tr-test+sha256:00" {
+	if p.Severity != SevRed || p.LogicVersion != "tr-test+sha256:0123456789ab" {
 		t.Fatalf("severity/logic = %s/%s", p.Severity, p.LogicVersion)
 	}
 	// T1..T7 come from session.started, dispatch_ready, alert, accepted,
@@ -183,6 +183,22 @@ func TestFlagsEscalationAndMerge(t *testing.T) {
 	}
 	if len(p.Flags) != 1 || p.Flags[0] != "needs_location_callback" {
 		t.Fatalf("flags = %v", p.Flags)
+	}
+}
+
+// CodeRabbit PR #3: an incident cannot merge into itself; it would leave
+// the workflow with no surviving incident. The SQL write path agrees.
+func TestApplyRejectsSelfMerge(t *testing.T) {
+	p, err := Fold(FixtureLifecycle()[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Apply(p, ev(2, EvMerged, `{"into":"`+fixtureID.String()+`"}`))
+	if !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("self-merge: err = %v, want ErrIllegalTransition", err)
+	}
+	if got.State != StateIntake || got.MergedInto != nil || got.Version != 1 {
+		t.Fatalf("projection changed by a rejected self-merge: %+v", got)
 	}
 }
 
