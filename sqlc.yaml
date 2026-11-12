@@ -1,0 +1,23 @@
+# sqlc v1.31.1 (pinned binary, scripts/tools/install-sqlc.sh). Generated code
+# is committed; CI fails if it is stale (scripts/ci/sqlc-diff.sh).
+# PG18-only DDL that sqlc cannot parse lives in DO $$ EXECUTE $$ blocks (ADR-0011).
+version: "2"
+sql:
+  - engine: postgresql
+    schema: db/audit/migrations
+    queries: db/audit/queries
+    gen:
+      go:
+        package: auditdb
+        out: internal/platform/pg/auditstore/auditdb
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+  - engine: postgresql
+    schema: db/operational/migrations
+    queries: db/operational/queries
+    gen:
+      go:
+        package: opdb
+        out: internal/platform/pg/opstore/opdb
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true

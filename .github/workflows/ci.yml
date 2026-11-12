@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  fmt-arch:
-    name: format, vet, boundaries
+  fmt-arch-sqlc:
+    name: format, vet, boundaries, sqlc
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,6 +27,7 @@ jobs:
           go-version-file: go.mod
       - run: scripts/ci/fmt.sh
       - run: scripts/ci/arch.sh
+      - run: scripts/ci/sqlc-diff.sh
 
   lint:
     name: golangci-lint
@@ -51,6 +52,30 @@ jobs:
       - run: scripts/ci/unit.sh
         env:
           CGO_ENABLED: "1"
+
+  integration:
+    name: integration + e2e (PostgreSQL 18.6)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+        env:
+          # Throwaway per-run credentials (no literal secrets in the repository).
+          POSTGRES_PASSWORD: pg-${{ github.run_id }}-${{ github.run_attempt }}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      SAUTI_TEST_PG_DSN: postgres://postgres:pg-${{ github.run_id }}-${{ github.run_attempt }}@localhost:5432/postgres?sslmode=disable
+      SAUTI_TEST_ROLE_PASSWORD: roles-${{ github.run_id }}-${{ github.run_attempt }}
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: scripts/ci/integration.sh
 
   fuzz-smoke:
     name: fuzz smoke
