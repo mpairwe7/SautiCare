@@ -122,3 +122,46 @@ func TestMergedAcceptsOnlyItsCallersAnswers(t *testing.T) {
 		t.Fatalf("callback answer on a merged incident: %+v %v", q, err)
 	}
 }
+
+// C2: a call merged into a less urgent survivor raises the survivor's
+// severity (it can only rise). severity_raised needs exactly a known
+// severity, strictly above the current one, and the merged call it came
+// from; it leaves the logic version alone and is refused on a merged or
+// closed incident.
+func TestSeverityRaised(t *testing.T) {
+	from := uuid.NewV7()
+	green, err := Fold([]Event{started(), func() Event {
+		e := ev(2, EvClassified, `{"severity":"green"}`)
+		e.LogicVersion = "tool1-test+sha256:000000000000"
+		return e
+	}(), ev(3, EvDispatchReady, `{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	red, err := Apply(green, ev(4, EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, from)))
+	if err != nil || red.Severity != SevRed || red.LogicVersion != green.LogicVersion || red.State != StateDispatching {
+		t.Fatalf("raise to red: %+v %v", red, err)
+	}
+	for _, bad := range []string{
+		fmt.Sprintf(`{"severity":"green","from":%q}`, from),  // not higher
+		fmt.Sprintf(`{"severity":"purple","from":%q}`, from), // unknown
+		`{"severity":"red"}`,                                   // no source
+		`{"severity":"red","from":"x"}`,                        // not an ID
+		fmt.Sprintf(`{"severity":"red","from":%q}`, fixtureID), // itself
+		fmt.Sprintf(`{"severity":"red","from":%q,"why":"x"}`, from),
+	} {
+		if _, err := Apply(green, ev(4, EvSeverityRaised, bad)); !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("%s: err = %v", bad, err)
+		}
+	}
+	if _, err := Apply(red, ev(5, EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, from))); !errors.Is(err, ErrIllegalTransition) {
+		t.Errorf("raise to the same severity: %v", err)
+	}
+	merged, _ := Fold([]Event{started(), ev(2, EvMerged, fmt.Sprintf(`{"into":%q}`, from))})
+	closed, _ := Fold([]Event{started(), ev(2, EvClosed, `{}`)})
+	for _, p := range []Projection{merged, closed} {
+		if _, err := Apply(p, ev(3, EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, uuid.NewV7()))); !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("raise in state %s: %v", p.State, err)
+		}
+	}
+}

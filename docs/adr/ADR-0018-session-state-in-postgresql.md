@@ -27,6 +27,11 @@ USSD is stateless between callbacks, so Tool 1 session state must live on the se
 
 Chosen option: **PostgreSQL only**. The next screen is a pure function of the incident projection (`intake.Machine.Next`); the prompt last shown and the input consumed are stored with each idempotent USSD step. A callback costs five short statements on one connection pool, well inside the 800 ms budget at pilot volume. Valkey stays in the architecture for later needs and is added behind the existing ports only if the k6 load test (M7: 200 concurrent sessions) shows PostgreSQL missing the p99 target.
 
+Because the projection is the session state, partial failures are repaired from it (final review C1):
+- An answer and what it implies by itself (the classification triple at screen 5; the out-of-area flag and closure) are one transaction (`incident.Service.AppendBatch`).
+- What the answers imply but the log lacks (a classification, T2) is recorded by a projection-driven catch-up after every applied answer and whenever a session starts or resumes, with incident-scoped idempotency keys, so a retried callback or a redial on either channel converges.
+- The closing screen is never shown without T2 (`intake.ErrNotDispatched`); a finished Tool 1 without T2 stays resumable and is swept as idle.
+
 ## Consequences
 
 * Good: no cache coherence problem; a resumed session on either channel reads the same truth; one less dependency on the dispatch path.
@@ -34,4 +39,4 @@ Chosen option: **PostgreSQL only**. The next screen is a pure function of the in
 
 ## Confirmation
 
-`internal/intake/service_test.go::TestUSSDResumesWithinWindow`, `::TestUSSDRetryWritesOneEvent`; `tests/e2e/m1_intake_test.go::TestScenario5RedialResumesAtScreen6`.
+`internal/intake/service_test.go::TestUSSDResumesWithinWindow`, `::TestUSSDRetryWritesOneEvent`; `internal/intake/atomicity_test.go::TestEveryWriteFailureConverges`, `::TestResumeClassifiesAnIncidentThatLacksIt`, `::TestCompleteWithoutT2IsAnError`; `internal/platform/pg/opstore/batch_integration_test.go::TestAppendBatchIsAllOrNothing`; `tests/e2e/m1_intake_test.go::TestScenario5RedialResumesAtScreen6`.

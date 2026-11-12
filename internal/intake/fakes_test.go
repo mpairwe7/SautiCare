@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"sync"
 	"testing"
@@ -107,6 +108,27 @@ func (m *memIncidents) Append(_ context.Context, a incident.AppendParams) (incid
 	return incident.Appended{Event: e}, err
 }
 
+// AppendBatch applies every event or none, like the store's transaction.
+func (m *memIncidents) AppendBatch(_ context.Context, ps []incident.AppendParams) ([]incident.Appended, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	events, keys, activity := maps.Clone(m.events), maps.Clone(m.keys), maps.Clone(m.activity)
+	out := make([]incident.Appended, 0, len(ps))
+	for _, a := range ps {
+		var e incident.Event
+		err := errors.New("no idempotency key")
+		if a.IdemKey != "" {
+			e, err = m.appendLocked(a.IncidentID, a.Type, a.Payload, a.IdemKey, a.LogicVersion)
+		}
+		if err != nil {
+			m.events, m.keys, m.activity = events, keys, activity
+			return nil, err
+		}
+		out = append(out, incident.Appended{Event: e})
+	}
+	return out, nil
+}
+
 func (m *memIncidents) StoreIdentifier(_ context.Context, inc uuid.UUID, kind string, plaintext []byte, idem string) (uuid.UUID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -137,7 +159,7 @@ func (m *memIncidents) FindResumable(_ context.Context, macs []crypto.MAC, windo
 			match = match || string(mac.Sum) == k
 		}
 		p, _ := incident.Fold(m.events[id])
-		if !match || p.State.Terminal() || p.LastScreen >= 8 || m.now.Sub(m.activity[id]) > window {
+		if !match || p.State.Terminal() || (p.LastScreen >= 8 && p.T[2] != nil) || m.now.Sub(m.activity[id]) > window {
 			continue
 		}
 		if !found || m.activity[id].After(m.activity[best]) {
@@ -196,40 +218,61 @@ func repoTriage(t *testing.T) *triage.Engine {
 func plainSum(s string) []byte { h := sha256.Sum256([]byte(s)); return h[:] }
 
 // DispatchOrMerge applies the dedup rule over the in-memory incidents, then
-// appends dispatch_ready (and the merge pair) like the store adapter.
-func (m *memIncidents) DispatchOrMerge(_ context.Context, r DispatchRequest) (DispatchOutcome, error) {
+// appends dispatch_ready (and the merge events) like the store adapter: all
+// of them or none.
+func (m *memIncidents) DispatchOrMerge(_ context.Context, r DispatchRequest) (out DispatchOutcome, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if e, ok := m.keys[r.IncidentID.String()+"|"+r.IdemKey]; ok {
-		_ = e
+	if _, ok := m.keys[r.IncidentID.String()+"|"+r.IdemKey]; ok {
 		p, _ := incident.Fold(m.events[r.IncidentID])
 		if p.MergedInto != nil {
 			return DispatchOutcome{Merged: true, Survivor: *p.MergedInto}, nil
 		}
 		return DispatchOutcome{}, nil
 	}
+	events, keys, activity := maps.Clone(m.events), maps.Clone(m.keys), maps.Clone(m.activity)
+	defer func() {
+		if err != nil {
+			m.events, m.keys, m.activity = events, keys, activity
+		}
+	}()
 	var cands []Candidate
 	for id, evs := range m.events {
 		p, err := incident.Fold(evs)
 		if err != nil || p.T[2] == nil || p.Zone == nil || p.State.Terminal() {
 			continue
 		}
-		cands = append(cands, Candidate{ID: id, Category: p.Category, Zone: *p.Zone, T1: *p.T[1], T2: *p.T[2]})
+		cands = append(cands, Candidate{ID: id, Category: p.Category, Zone: *p.Zone, LocationQuality: p.LocationQuality,
+			Severity: p.Severity, Escalated: p.Escalated, T1: *p.T[1], T2: *p.T[2]})
 	}
 	if _, err := m.appendLocked(r.IncidentID, incident.EvDispatchReady, r.Payload, r.IdemKey, ""); err != nil {
 		return DispatchOutcome{}, err
 	}
-	survivor, ok := r.Rule.Survivor(r.IncidentID, r.Category, r.Zone, r.T1, cands)
+	survivor, ok := r.Rule.Survivor(r.Call(), cands)
 	if !ok {
 		return DispatchOutcome{}, nil
 	}
-	into, _ := json.Marshal(map[string]string{"into": survivor.String()})
+	into, _ := json.Marshal(map[string]string{"into": survivor.ID.String()})
 	if _, err := m.appendLocked(r.IncidentID, incident.EvMerged, into, r.IdemKey+":merge", ""); err != nil {
 		return DispatchOutcome{}, err
 	}
 	abs, _ := json.Marshal(map[string]string{"from": r.IncidentID.String(), "t1": r.T1.UTC().Format("2006-01-02T15:04:05.999999Z07:00")})
-	if _, err := m.appendLocked(survivor, incident.EvMergeAbsorbed, abs, "dedup:absorb:"+r.IncidentID.String(), ""); err != nil {
+	if _, err := m.appendLocked(survivor.ID, incident.EvMergeAbsorbed, abs, "dedup:absorb:"+r.IncidentID.String(), ""); err != nil {
 		return DispatchOutcome{}, err
 	}
-	return DispatchOutcome{Merged: true, Survivor: survivor}, nil
+	cons, err := Consequences(r.Call(), survivor)
+	if err != nil {
+		return DispatchOutcome{}, err
+	}
+	if cons.Raise != nil {
+		if _, err := m.appendLocked(survivor.ID, incident.EvSeverityRaised, cons.Raise, "dedup:raise:"+r.IncidentID.String(), ""); err != nil {
+			return DispatchOutcome{}, err
+		}
+	}
+	if cons.Escalate != nil {
+		if _, err := m.appendLocked(survivor.ID, incident.EvEscalated, cons.Escalate, "dedup:escalate:"+r.IncidentID.String(), ""); err != nil {
+			return DispatchOutcome{}, err
+		}
+	}
+	return DispatchOutcome{Merged: true, Survivor: survivor.ID}, nil
 }

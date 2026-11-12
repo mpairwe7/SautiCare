@@ -97,7 +97,7 @@ func (q *Queries) ClaimOutbox(ctx context.Context, arg ClaimOutboxParams) ([]Cla
 }
 
 const dedupCandidates = `-- name: DedupCandidates :many
-SELECT id, category, zone_col, zone_row, t1, t2 FROM op.incidents
+SELECT id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2 FROM op.incidents
 WHERE category = $1::text AND t2 IS NOT NULL AND state NOT IN ('closed', 'merged')
   AND zone_col BETWEEN $2::int - $3::int AND $2::int + $3::int
   AND zone_row BETWEEN $4::int - $3::int AND $4::int + $3::int
@@ -117,12 +117,15 @@ type DedupCandidatesParams struct {
 }
 
 type DedupCandidatesRow struct {
-	ID       pgtype.UUID
-	Category *string
-	ZoneCol  *int32
-	ZoneRow  *int32
-	T1       pgtype.Timestamptz
-	T2       pgtype.Timestamptz
+	ID              pgtype.UUID
+	Category        *string
+	ZoneCol         *int32
+	ZoneRow         *int32
+	LocationQuality *string
+	Severity        *string
+	Escalated       bool
+	T1              pgtype.Timestamptz
+	T2              pgtype.Timestamptz
 }
 
 func (q *Queries) DedupCandidates(ctx context.Context, arg DedupCandidatesParams) ([]DedupCandidatesRow, error) {
@@ -147,6 +150,9 @@ func (q *Queries) DedupCandidates(ctx context.Context, arg DedupCandidatesParams
 			&i.Category,
 			&i.ZoneCol,
 			&i.ZoneRow,
+			&i.LocationQuality,
+			&i.Severity,
+			&i.Escalated,
 			&i.T1,
 			&i.T2,
 		); err != nil {
@@ -185,7 +191,7 @@ func (q *Queries) EnsureEventPartitions(ctx context.Context, monthsAhead int32) 
 const findResumable = `-- name: FindResumable :many
 SELECT i.id FROM op.sessions s JOIN op.incidents i ON i.id = s.incident_id
 WHERE s.phone_mac = ANY ($1::bytea[])
-  AND i.state NOT IN ('closed', 'merged') AND i.last_screen < 8
+  AND i.state NOT IN ('closed', 'merged') AND (i.last_screen < 8 OR i.t2 IS NULL)
   AND i.updated_at >= clock_timestamp() - $2::int * interval '1 second'
 ORDER BY i.updated_at DESC
 LIMIT 1
@@ -398,8 +404,8 @@ func (q *Queries) ListEvents(ctx context.Context, incidentID pgtype.UUID) ([]Lis
 }
 
 const listIdle = `-- name: ListIdle :many
-SELECT id, danger, category, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
-WHERE state NOT IN ('closed', 'merged') AND last_screen < 8
+SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
+WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - $1::int * interval '1 second'
   AND NOT ('abandoned' = ANY (flags))
 ORDER BY updated_at
@@ -410,6 +416,7 @@ type ListIdleRow struct {
 	ID         pgtype.UUID
 	Danger     *string
 	Category   *string
+	Severity   *string
 	Dispatched bool
 }
 
@@ -426,6 +433,7 @@ func (q *Queries) ListIdle(ctx context.Context, idleSeconds int32) ([]ListIdleRo
 			&i.ID,
 			&i.Danger,
 			&i.Category,
+			&i.Severity,
 			&i.Dispatched,
 		); err != nil {
 			return nil, err

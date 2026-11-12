@@ -27,10 +27,15 @@ threats:
     mitigations:
       - The incident exists from the first screen; replies are idempotent per session and input
       - Internal errors still answer the caller and give the free voice line
+      - An answer and its consequences (classification, rule-error flag and escalation, out-of-area closure) are one transaction; a retried callback or a redial on either channel records a missing classification or T2 before anything else; the closing "help is coming" screen is never shown without T2
       - Second USSD route (UCC code) and second SIP carrier (M7)
     verified_by:
       - internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine
       - internal/platform/pg/intake_integration_test.go::TestRetriedCallbackReturnsSameScreenNoSecondEvent
+      - internal/intake/atomicity_test.go::TestEveryWriteFailureConverges
+      - internal/intake/atomicity_test.go::TestRedialAfterLostT2Dispatches
+      - internal/intake/atomicity_test.go::TestCompleteWithoutT2IsAnError
+      - internal/platform/pg/opstore/batch_integration_test.go::TestAppendBatchIsAllOrNothing
       - "planned:M7 second-route failover scenario"
 
   - id: T-003
@@ -291,14 +296,23 @@ threats:
     title: Distinct emergencies merged, or a merge used to suppress a call
     stride: Denial of service
     asset: dispatch of each emergency
-    hard_constraints: [7, 14]
+    hard_constraints: [3, 7, 14]
     mitigations:
       - Merge only by the fixed rule (category, one zone, 15 minutes) at T2, under an advisory lock; never discards a call
       - Every merge is two events in the log and the ledger; a coordinator split (console role only, staff identity) revives the call
       - T1 recomputed exactly on a split, so the study outcome is not distorted
+      - A merge carries the call's higher severity (incident.severity_raised) and its escalation to the survivor, so a red or escalated call is never hidden in a green incident
+      - Calls located only to their ward are never merged (both are dispatched)
+      - The database refuses staff actions, splits and unmerges from every role but the console
     verified_by:
       - internal/intake/dedup_test.go::TestNoMergeAcrossCategories
       - internal/intake/dedup_test.go::TestNoMergeBeyondOneZone
+      - internal/intake/dedup_test.go::TestNoMergeAtWardLevel
+      - internal/intake/merge_test.go::TestMergedRedCallRaisesGreenSurvivor
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestMergeCarriesSeverityAndEscalation
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestWardLevelCallsAreNotMerged
+      - internal/platform/pg/opstore/merge_integration_test.go::TestOnlyTheConsoleRecordsStaffActions
+      - internal/platform/pg/opstore/merge_integration_test.go::TestSeverityRaisedParity
       - internal/platform/pg/opstore/dedup_integration_test.go::TestConcurrentCompletionsOneSurvivor
       - internal/platform/pg/opstore/dedup_integration_test.go::TestSplitIncident
       - tests/e2e/m1_dedup_test.go::TestScenario4ThreeBystandersOneIncident

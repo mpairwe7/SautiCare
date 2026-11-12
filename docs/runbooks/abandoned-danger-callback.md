@@ -1,25 +1,26 @@
-# Runbook: Abandoned session after a danger "yes"
+# Runbook: Abandoned session after a danger "yes" or a red classification
 
 | Field | Value |
 |---|---|
 | Owner | Coordinator on duty (clinical call-back) with the Medical Director |
 | Severity | SEV-1 (a person may be in danger with no location) |
-| Alert / trigger | `incident.escalated` with reason `abandoned_after_danger_yes` |
+| Alert / trigger | `incident.escalated` with reason `abandoned_after_danger_yes` or `abandoned_red_before_dispatch` |
 | Last reviewed: | 2026-11-12 |
 | Last drilled | not yet drilled |
 
 ## Summary
-A caller answered yes at screen 2 (heavy bleeding, unconscious or not breathing normally), then the session went silent for `abandon_after` before a location was given. The Guide (§4) calls this the most dangerous partial record. The coordinator calls the caller back at once.
+A caller answered yes at screen 2 (heavy bleeding, unconscious or not breathing normally), or was classified red by the category's danger question at screen 5 whatever they said at screen 2, then the session went silent for `abandon_after` before dispatch began (no T2). The Guide (§4) calls this the most dangerous partial record. The coordinator calls the caller back at once.
 
 ## Triggers and detection
 intake-gw's abandonment sweeper (one leader across instances) flags the incident `abandoned` and escalates it. Until the console (M5) and the escalation voice call (M2) exist, the on-call engineer watches for the event.
 
 ## Impact
-No dispatch has started, because no location was given. Every minute counts.
+No dispatch has started: no location was given, or (rarely) the request that would have recorded T2 failed and the caller did not redial. Every minute counts.
 
 ## Diagnosis
 1. Find the incident (read-only role): `SELECT id, reference, t1 FROM op.incidents WHERE escalated AND 'abandoned' = ANY (flags) AND t2 IS NULL ORDER BY t1 DESC;`
-2. If the caller redialled within the resume window, the same incident continues and reaches dispatch on its own. Check whether `last_screen` has advanced.
+2. If the caller redialled within the resume window, the same incident continues and reaches dispatch on its own (a redial first records any T2 a failed request missed). Check whether `last_screen` has advanced or `t2` is set.
+3. `last_screen = 8` with `t2` empty means Tool 1 finished but T2 was not recorded: the ward and landmark are on the incident; dispatch from them.
 
 ## Mitigation
 1. Call back through the audited reveal (M5). Never copy a number into chat or a messaging app (rule 3.6).
@@ -33,4 +34,4 @@ Medical Director by voice if the caller is unreachable within 5 minutes.
 The incident reaches `dispatching` (T2 set), or the attempts are recorded.
 
 ## References
-ADR-0018; `docs/reference/tool1-flow.md`; Build Prompt §10.3; Engineering Guide §4.
+ADR-0018; `docs/reference/tool1-flow.md`; `internal/intake/sweeper.go`; Build Prompt §10.3; Engineering Guide §4.

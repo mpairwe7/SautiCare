@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"testing"
 	"time"
 	"uuid"
 
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/pg/pgtest"
 )
@@ -43,15 +45,8 @@ func TestMergeSplitParity(t *testing.T) {
 	if err != nil || !p.T[1].Equal(early) || len(p.Absorbed) != 1 {
 		t.Fatalf("after absorb: %+v %v", p, err)
 	}
-	staff := uuid.NewV7()
-	if _, err := s.Append(ctx, incident.AppendParams{IncidentID: survivor.IncidentID, Type: incident.EvSplit,
-		Payload: json.RawMessage(fmt.Sprintf(`{"from":%q}`, member.IncidentID)), ActorKind: incident.ActorStaff,
-		StaffID: &staff, IdemKey: "split-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Append(ctx, incident.AppendParams{IncidentID: member.IncidentID, Type: incident.EvUnmerged,
-		Payload: json.RawMessage(fmt.Sprintf(`{"from":%q}`, survivor.IncidentID)), ActorKind: incident.ActorStaff,
-		StaffID: &staff, IdemKey: "unmerge-1"}); err != nil {
+	// Only the console splits (I6): split and unmerged through op.split_incident.
+	if err := storeAs(t, c, "op_console").SplitIncident(ctx, survivor.IncidentID, member.IncidentID, uuid.NewV7()); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []uuid.UUID{survivor.IncidentID, member.IncidentID} {
@@ -78,6 +73,115 @@ func TestMergeSplitParity(t *testing.T) {
 	}
 }
 
+// storeAsSuperuser connects to the operational store as the test server's
+// superuser, a member of every role (tests of checks behind a role gate).
+func storeAsSuperuser(t *testing.T, c *pgtest.TestCluster) *opstore.Store {
+	t.Helper()
+	u, err := url.Parse(pgtest.AdminURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + c.Database(pg.StoreOperational)
+	pool, err := pg.Connect(context.Background(), u.String(), "test-superuser", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return opstore.New(pool)
+}
+
+// I6: "only a coordinator splits" is enforced by the database. Intake (and
+// any role but the console) is refused a staff actor, incident.split and
+// incident.unmerged on the generic append, whatever the payload; the
+// console splits through op.split_incident.
+func TestOnlyTheConsoleRecordsStaffActions(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	survivor, member := dispatchedIncident(t, s), dispatchedIncident(t, s)
+	appendEv(t, s, member.IncidentID, incident.EvMerged, fmt.Sprintf(`{"into":%q}`, survivor.IncidentID), "")
+	appendEv(t, s, survivor.IncidentID, incident.EvMergeAbsorbed,
+		fmt.Sprintf(`{"from":%q,"t1":%q}`, member.IncidentID, member.T1.UTC().Format(time.RFC3339Nano)), "")
+	staff := uuid.NewV7()
+	for i, p := range []incident.AppendParams{
+		{IncidentID: survivor.IncidentID, Type: incident.EvSplit, Payload: json.RawMessage(fmt.Sprintf(`{"from":%q}`, member.IncidentID)),
+			ActorKind: incident.ActorStaff, StaffID: &staff},
+		{IncidentID: survivor.IncidentID, Type: incident.EvSplit, Payload: json.RawMessage(fmt.Sprintf(`{"from":%q}`, member.IncidentID)),
+			ActorKind: incident.ActorSystem},
+		{IncidentID: member.IncidentID, Type: incident.EvUnmerged, Payload: json.RawMessage(fmt.Sprintf(`{"from":%q}`, survivor.IncidentID)),
+			ActorKind: incident.ActorStaff, StaffID: &staff},
+		{IncidentID: member.IncidentID, Type: incident.EvUnmerged, Payload: json.RawMessage(fmt.Sprintf(`{"from":%q}`, survivor.IncidentID)),
+			ActorKind: incident.ActorSystem},
+		{IncidentID: survivor.IncidentID, Type: incident.EvFlagged, Payload: json.RawMessage(`{"flag":"reviewed"}`),
+			ActorKind: incident.ActorStaff, StaffID: &staff},
+	} {
+		p.IdemKey = fmt.Sprintf("forged-%d", i)
+		if _, err := s.Append(ctx, p); !errors.Is(err, incident.ErrIllegalTransition) {
+			t.Errorf("op_intake appended %s as %s: %v", p.Type, p.ActorKind, err)
+		}
+	}
+	if mp, _ := s.Projection(ctx, member.IncidentID); mp.State != incident.StateMerged {
+		t.Fatalf("member revived by intake: %+v", mp)
+	}
+	if err := storeAs(t, c, "op_console").SplitIncident(ctx, survivor.IncidentID, member.IncidentID, staff); err != nil {
+		t.Fatalf("console split: %v", err)
+	}
+	if mp, _ := s.Projection(ctx, member.IncidentID); mp.State != incident.StateDispatching {
+		t.Fatalf("member after the console split: %+v", mp)
+	}
+}
+
+// C2: the SQL write path projects severity_raised exactly as Apply does
+// (severity only, not the logic version) and refuses what Apply refuses.
+func TestSeverityRaisedParity(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	o, err := s.OpenIncident(ctx, openParams(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"green"}`, "tool1-test+sha256:000000000000")
+	appendEv(t, s, o.IncidentID, incident.EvDispatchReady, `{"zone":{"col":902,"row":84},"location_quality":"landmark"}`, "")
+	from := uuid.NewV7()
+	for i, bad := range []string{
+		fmt.Sprintf(`{"severity":"green","from":%q}`, from),
+		fmt.Sprintf(`{"severity":"purple","from":%q}`, from),
+		`{"severity":"red"}`,
+		`{"severity":"red","from":"x"}`,
+		fmt.Sprintf(`{"severity":"red","from":%q}`, o.IncidentID),
+		fmt.Sprintf(`{"severity":"red","from":%q,"why":"x"}`, from),
+		fmt.Sprintf(`{"severity":3,"from":%q}`, from),
+	} {
+		if _, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvSeverityRaised,
+			Payload: json.RawMessage(bad), ActorKind: incident.ActorSystem, IdemKey: fmt.Sprintf("bad-%d", i)}); !errors.Is(err, incident.ErrIllegalTransition) {
+			t.Errorf("%s: err = %v", bad, err)
+		}
+	}
+	appendEv(t, s, o.IncidentID, incident.EvSeverityRaised, fmt.Sprintf(`{"severity":"yellow","from":%q}`, from), "")
+	appendEv(t, s, o.IncidentID, incident.EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, uuid.NewV7()), "")
+	evs, err := s.Events(ctx, o.IncidentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := incident.Fold(evs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Projection(ctx, o.IncidentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := incident.Diff(got, want); d != "" || got.Severity != incident.SevRed || got.LogicVersion != "tool1-test+sha256:000000000000" {
+		t.Fatalf("projection %+v; diff from Fold: %s", got, d)
+	}
+	if _, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvSeverityRaised,
+		Payload: json.RawMessage(fmt.Sprintf(`{"severity":"red","from":%q}`, from)), ActorKind: incident.ActorSystem,
+		IdemKey: "same"}); !errors.Is(err, incident.ErrIllegalTransition) {
+		t.Errorf("raise to the current severity: %v", err)
+	}
+}
+
 // Whatever Apply refuses for merge, split and unmerge, the database refuses.
 func TestSQLRejectsInvalidMergeSplit(t *testing.T) {
 	c := pgtest.Cluster(t)
@@ -85,12 +189,16 @@ func TestSQLRejectsInvalidMergeSplit(t *testing.T) {
 	ctx := context.Background()
 	survivor, member := dispatchedIncident(t, s), dispatchedIncident(t, s)
 	staff := uuid.NewV7()
+	// Staff events reach the generic append only from a console session
+	// (I6); a superuser stands in for it to reach the content checks below.
+	privileged := storeAsSuperuser(t, c)
 	try := func(id uuid.UUID, typ incident.EventType, payload, actor string, key string) error {
 		p := incident.AppendParams{IncidentID: id, Type: typ, Payload: json.RawMessage(payload), ActorKind: actor, IdemKey: key}
+		via := s
 		if actor == incident.ActorStaff {
-			p.StaffID = &staff
+			p.StaffID, via = &staff, privileged
 		}
-		_, err := s.Append(ctx, p)
+		_, err := via.Append(ctx, p)
 		return err
 	}
 	cases := []struct {

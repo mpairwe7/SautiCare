@@ -71,11 +71,19 @@ func TestFindResumable(t *testing.T) {
 	if _, ok, _ := s.FindResumable(ctx, []crypto.MAC{op.PhoneMAC}, 10*time.Minute); ok {
 		t.Fatal("resumed after the window")
 	}
+	// Tool 1 finished but T2 never recorded (a request failed in between):
+	// the redial resumes it, so T2 is recorded (C1).
 	if _, err := owner.Exec(ctx, "UPDATE op.incidents SET updated_at = clock_timestamp(), last_screen = 8 WHERE id = $1", o.IncidentID); err != nil {
 		t.Fatal(err)
 	}
+	if id, ok, _ := s.FindResumable(ctx, []crypto.MAC{op.PhoneMAC}, 10*time.Minute); !ok || id != o.IncidentID {
+		t.Fatal("a finished Tool 1 without T2 is not resumable")
+	}
+	if _, err := owner.Exec(ctx, "UPDATE op.incidents SET t2 = clock_timestamp() WHERE id = $1", o.IncidentID); err != nil {
+		t.Fatal(err)
+	}
 	if _, ok, _ := s.FindResumable(ctx, []crypto.MAC{op.PhoneMAC}, 10*time.Minute); ok {
-		t.Fatal("resumed a completed Tool 1")
+		t.Fatal("resumed a completed, dispatched Tool 1")
 	}
 	if _, err := owner.Exec(ctx, "UPDATE op.incidents SET last_screen = 3, state = 'closed' WHERE id = $1", o.IncidentID); err != nil {
 		t.Fatal(err)

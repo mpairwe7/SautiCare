@@ -10,20 +10,22 @@ import (
 	"sautihealth.com/sauti/internal/incident"
 )
 
-// Flags and escalation reason written by the sweeper (Build Prompt §10.3).
+// Flags and escalation reasons written by the sweeper (Build Prompt §10.3).
 const (
-	FlagAbandoned               = "abandoned"
-	FlagAbandonedBeforeCategory = "abandoned_before_category"
-	ReasonAbandonedDangerYes    = "abandoned_after_danger_yes"
+	FlagAbandoned                    = "abandoned"
+	FlagAbandonedBeforeCategory      = "abandoned_before_category"
+	ReasonAbandonedDangerYes         = "abandoned_after_danger_yes"
+	ReasonAbandonedRedBeforeDispatch = "abandoned_red_before_dispatch"
 )
 
-// Idle is an unfinished, open incident with no event for the idle time and
-// no abandoned flag yet.
+// Idle is an open incident whose Tool 1 is unfinished (or finished without
+// T2), with no event for the idle time and no abandoned flag yet.
 type Idle struct {
 	ID         uuid.UUID
 	Danger     string
 	Category   string
-	Dispatched bool // T2 recorded: dispatch is already under way
+	Severity   incident.Severity // "" until classified
+	Dispatched bool              // T2 recorded: dispatch is already under way
 }
 
 // IdleReader lists idle incidents (the operational store adapter).
@@ -38,7 +40,8 @@ type Appender interface {
 
 // Sweeper flags abandoned Tool 1 sessions. Every abandoned session is kept
 // and flagged; one abandoned before a category is flagged as such; and one
-// abandoned after a yes at screen 2 before dispatch began is escalated at
+// abandoned before dispatch began after a yes at screen 2, or after it was
+// classified red (a yes at screen 5 whatever screen 2 said), is escalated at
 // once, so the coordinator calls back (Build Prompt §10.3; Guide §4). The
 // escalation is delivered by the Escalate port (M2).
 type Sweeper struct {
@@ -82,14 +85,28 @@ func (s *Sweeper) RunOnce(ctx context.Context) (int, error) {
 				return 0, err
 			}
 		}
-		if in.Danger == "yes" && !in.Dispatched {
-			if err := s.system(ctx, in.ID, incident.EvEscalated, map[string]string{"reason": ReasonAbandonedDangerYes},
-				key+"escalate"); err != nil {
+		if reason := escalation(in); reason != "" {
+			if err := s.system(ctx, in.ID, incident.EvEscalated, map[string]string{"reason": reason}, key+"escalate"); err != nil {
 				return 0, err
 			}
 		}
 	}
 	return len(idle), nil
+}
+
+// escalation is the reason an abandoned incident goes to a coordinator at
+// once, or "" if it does not: not dispatched, and either a danger yes or a
+// red classification.
+func escalation(in Idle) string {
+	switch {
+	case in.Dispatched:
+		return ""
+	case in.Danger == "yes":
+		return ReasonAbandonedDangerYes
+	case in.Severity == incident.SevRed:
+		return ReasonAbandonedRedBeforeDispatch
+	}
+	return ""
 }
 
 // Run sweeps every interval until ctx ends (run under leadership).

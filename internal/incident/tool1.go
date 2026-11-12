@@ -262,6 +262,26 @@ func parseAbsorbed(raw json.RawMessage) (uuid.UUID, time.Time, error) {
 	return id, t1.UTC(), nil
 }
 
+// parseSeverityRaised validates a severity_raised payload: exactly a known
+// severity and the incident ID of the merged call that carried it.
+func parseSeverityRaised(raw json.RawMessage) (Severity, uuid.UUID, error) {
+	bad := fmt.Errorf("%w: severity_raised needs exactly \"severity\" (red, yellow or green) and \"from\" (incident ID)", ErrIllegalTransition)
+	m, err := strictKeys(raw, "severity", "from")
+	if err != nil {
+		return "", uuid.UUID{}, bad
+	}
+	s, ok := jsonString(m["severity"])
+	f, okF := jsonString(m["from"])
+	if !ok || !okF || Severity(s).Rank() == 0 || !uuidText.MatchString(f) {
+		return "", uuid.UUID{}, bad
+	}
+	from, err := uuid.Parse(f)
+	if err != nil {
+		return "", uuid.UUID{}, bad
+	}
+	return Severity(s), from, nil
+}
+
 // earliestT1 is the incident's T1: its own first call or the earliest call
 // merged into it.
 func earliestT1(own time.Time, absorbed map[uuid.UUID]time.Time) *time.Time {

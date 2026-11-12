@@ -46,7 +46,9 @@ func (s *Store) ResumeSession(ctx context.Context, p incident.ResumeParams) (inc
 
 // FindResumable returns the most recently active unfinished, open incident
 // of a caller (any of macs: current and previous key period) whose last
-// activity is within window of the database clock.
+// activity is within window of the database clock. Tool 1 counts as
+// unfinished until T2 is recorded too, so a redial after a failed final
+// request records it (intake catch-up).
 func (s *Store) FindResumable(ctx context.Context, macs []crypto.MAC, window time.Duration) (uuid.UUID, bool, error) {
 	if len(macs) == 0 {
 		return uuid.UUID{}, false, nil
@@ -69,8 +71,9 @@ func (s *Store) FindResumable(ctx context.Context, macs []crypto.MAC, window tim
 	return uuid.UUID(ids[0].Bytes), true, nil
 }
 
-// ListIdle implements intake.IdleReader: open, unfinished incidents with no
-// event for idleFor and no abandoned flag, oldest first (at most 500 a sweep).
+// ListIdle implements intake.IdleReader: open incidents with Tool 1
+// unfinished (or finished without T2), no event for idleFor and no abandoned
+// flag, oldest first (at most 500 a sweep).
 func (s *Store) ListIdle(ctx context.Context, idleFor time.Duration) ([]intake.Idle, error) {
 	secs := idleFor.Seconds()
 	if secs <= 0 || secs > math.MaxInt32 {
@@ -82,7 +85,8 @@ func (s *Store) ListIdle(ctx context.Context, idleFor time.Duration) ([]intake.I
 	}
 	out := make([]intake.Idle, len(rows))
 	for i, r := range rows {
-		out[i] = intake.Idle{ID: uuid.UUID(r.ID.Bytes), Danger: deref(r.Danger), Category: deref(r.Category), Dispatched: r.Dispatched}
+		out[i] = intake.Idle{ID: uuid.UUID(r.ID.Bytes), Danger: deref(r.Danger), Category: deref(r.Category),
+			Severity: incident.Severity(deref(r.Severity)), Dispatched: r.Dispatched}
 	}
 	return out, nil
 }

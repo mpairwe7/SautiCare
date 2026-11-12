@@ -24,6 +24,8 @@ risks:
       - internal/triage/triage_test.go::TestRuleTableFromBuildPrompt
       - internal/triage/triage_test.go::TestRuntimeErrorIsRed
       - internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated
+      - internal/intake/atomicity_test.go::TestRuleErrorFlagAndEscalationSurviveAFailure
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestMergeCarriesSeverityAndEscalation
       - tests/e2e/m1_intake_test.go::TestScenario3PoisoningIsYellow
   - id: AIR-002
     title: Logic version not recorded, so a mid-study amendment corrupts the dataset

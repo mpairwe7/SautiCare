@@ -315,7 +315,8 @@ func TestAppendDuplicateReturnsOriginalEventAndItsState(t *testing.T) {
 	ctx := context.Background()
 	o, _ := s.OpenIncident(ctx, openParams(t))
 	staff := uuid.NewV7()
-	first, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvClassified,
+	// A staff actor is the console's (I6); a superuser stands in for it.
+	first, err := storeAsSuperuser(t, c).Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvClassified,
 		Payload: json.RawMessage(`{"severity":"yellow"}`), ActorKind: incident.ActorStaff, StaffID: &staff,
 		IdemKey: "k-classify", LogicVersion: testLogic})
 	if err != nil {
