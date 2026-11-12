@@ -126,19 +126,20 @@ func TestMergedAcceptsOnlyItsCallersAnswers(t *testing.T) {
 // C2: a call merged into a less urgent survivor raises the survivor's
 // severity (it can only rise). severity_raised needs exactly a known
 // severity, strictly above the current one, and the merged call it came
-// from; it leaves the logic version alone and is refused on a merged or
-// closed incident.
+// from, which must be in the survivor's absorbed set (a call never absorbed,
+// or already split off, raises nothing); it leaves the logic version alone
+// and is refused on a merged or closed incident.
 func TestSeverityRaised(t *testing.T) {
 	from := uuid.NewV7()
 	green, err := Fold([]Event{started(), func() Event {
 		e := ev(2, EvClassified, `{"severity":"green"}`)
 		e.LogicVersion = "tool1-test+sha256:000000000000"
 		return e
-	}(), ev(3, EvDispatchReady, `{}`)})
+	}(), ev(3, EvDispatchReady, `{}`), absorbed(4, from, t0)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	red, err := Apply(green, ev(4, EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, from)))
+	red, err := Apply(green, ev(5, EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, from)))
 	if err != nil || red.Severity != SevRed || red.LogicVersion != green.LogicVersion || red.State != StateDispatching {
 		t.Fatalf("raise to red: %+v %v", red, err)
 	}
@@ -149,13 +150,23 @@ func TestSeverityRaised(t *testing.T) {
 		`{"severity":"red","from":"x"}`,                        // not an ID
 		fmt.Sprintf(`{"severity":"red","from":%q}`, fixtureID), // itself
 		fmt.Sprintf(`{"severity":"red","from":%q,"why":"x"}`, from),
+		fmt.Sprintf(`{"severity":"red","from":%q}`, uuid.NewV7()), // never absorbed
 	} {
-		if _, err := Apply(green, ev(4, EvSeverityRaised, bad)); !errors.Is(err, ErrIllegalTransition) {
+		if _, err := Apply(green, ev(5, EvSeverityRaised, bad)); !errors.Is(err, ErrIllegalTransition) {
 			t.Errorf("%s: err = %v", bad, err)
 		}
 	}
-	if _, err := Apply(red, ev(5, EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, from))); !errors.Is(err, ErrIllegalTransition) {
+	if _, err := Apply(red, ev(6, EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, from))); !errors.Is(err, ErrIllegalTransition) {
 		t.Errorf("raise to the same severity: %v", err)
+	}
+	split := ev(5, EvSplit, fmt.Sprintf(`{"from":%q}`, from))
+	split.ActorKind = ActorStaff
+	gone, err := Apply(green, split)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(gone, ev(6, EvSeverityRaised, fmt.Sprintf(`{"severity":"red","from":%q}`, from))); !errors.Is(err, ErrIllegalTransition) {
+		t.Errorf("raise from a call already split off: %v", err)
 	}
 	merged, _ := Fold([]Event{started(), ev(2, EvMerged, fmt.Sprintf(`{"into":%q}`, from))})
 	closed, _ := Fold([]Event{started(), ev(2, EvClosed, `{}`)})
