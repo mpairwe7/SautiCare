@@ -122,6 +122,38 @@ $$;
 CREATE INDEX incidents_dedup ON op.incidents (category, t1)
     WHERE t2 IS NOT NULL AND state NOT IN ('closed', 'merged');
 
+-- The merge candidates are read and locked in one statement. A candidate
+-- chosen from an unlocked read could close, merge, or lose an absorbed call
+-- to a split (its T1 moving later) before the merge is recorded: the merge
+-- then failed and rolled T2 back, or joined a survivor no longer within the
+-- window. FOR SHARE makes the read wait for any transaction changing a
+-- candidate and re-evaluates the conditions on the row it committed
+-- (READ COMMITTED), so the rule decides on current rows, which then cannot
+-- change until the merge commits. FOR SHARE needs UPDATE on op.incidents,
+-- which no runtime role has; this function, SECURITY DEFINER, is the only
+-- way the intake roles lock incidents outside the append. The caller holds
+-- the dedup advisory lock (opstore.DispatchOrMerge).
+CREATE FUNCTION op.dedup_candidates(p_category text, p_col int, p_row int, p_dist int, p_t1 timestamptz,
+                                    p_window_seconds int, p_id uuid)
+RETURNS TABLE (id uuid, category text, zone_col int, zone_row int, location_quality text, severity text,
+               escalated boolean, t1 timestamptz, t2 timestamptz)
+LANGUAGE sql VOLATILE SECURITY DEFINER
+SET search_path = op, pg_temp
+AS $$
+    SELECT i.id, i.category, i.zone_col, i.zone_row, i.location_quality, i.severity, i.escalated, i.t1, i.t2
+      FROM op.incidents i
+     WHERE i.category = p_category AND i.t2 IS NOT NULL AND i.state NOT IN ('closed', 'merged')
+       AND i.zone_col BETWEEN p_col - p_dist AND p_col + p_dist
+       AND i.zone_row BETWEEN p_row - p_dist AND p_row + p_dist
+       AND i.t1 BETWEEN p_t1 - p_window_seconds * interval '1 second' AND p_t1 + p_window_seconds * interval '1 second'
+       AND i.id <> p_id
+       FOR SHARE
+$$;
+
+-- Intake runs the dedup decision; the IVR controller runs the same intake
+-- path (granted ahead of its milestone, like 0007-0009).
+GRANT EXECUTE ON FUNCTION op.dedup_candidates(text, int, int, int, timestamptz, int, uuid) TO op_intake, op_ivr;
+
 -- The replaced functions keep their existing grants: the helpers none to
 -- runtime roles (only op.append_incident_event, SECURITY DEFINER, calls
 -- them), op.split_incident EXECUTE to op_console only.

@@ -5,7 +5,6 @@ package opstore_test
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -237,38 +236,28 @@ func TestSplitIncident(t *testing.T) {
 	}
 }
 
-// dedupCandidatesSQL is the DedupCandidates query as sqlc compiles it, read
-// from db/operational/queries/incidents.sql, with each sqlc.arg replaced by
-// the given literal.
-func dedupCandidatesSQL(t *testing.T, args map[string]string) string {
-	t.Helper()
-	b, err := os.ReadFile("../../../../db/operational/queries/incidents.sql")
-	if err != nil {
+// Every dispatch decision reads the candidates under the dedup lock, so the
+// read must not scan every retained incident: the planner can answer the
+// body of op.dedup_candidates from the partial index of incidents already
+// dispatching (incidents_dedup).
+func TestDedupCandidatesUseAnIndex(t *testing.T) {
+	c := pgtest.Cluster(t)
+	conn := c.Owner(t, pg.StoreOperational)
+	ctx := context.Background()
+	var body string
+	if err := conn.QueryRow(ctx, `SELECT prosrc FROM pg_proc
+		WHERE oid = 'op.dedup_candidates(text, int, int, int, timestamptz, int, uuid)'::regprocedure`).Scan(&body); err != nil {
 		t.Fatal(err)
 	}
-	_, q, ok := strings.Cut(string(b), "-- name: DedupCandidates :many\n")
-	if !ok {
-		t.Fatal("DedupCandidates not found in incidents.sql")
-	}
-	q, _, _ = strings.Cut(q, ";")
-	return regexp.MustCompile(`sqlc\.arg\((\w+)\)`).ReplaceAllStringFunc(q, func(m string) string {
-		v, ok := args[m[len("sqlc.arg("):len(m)-1]]
+	args := map[string]string{"p_category": "'trauma'", "p_col": "902", "p_row": "84", "p_dist": "1",
+		"p_t1": "now()", "p_window_seconds": "900", "p_id": "'" + uuid.NewV7().String() + "'::uuid"}
+	q := regexp.MustCompile(`\bp_\w+\b`).ReplaceAllStringFunc(body, func(m string) string {
+		v, ok := args[m]
 		if !ok {
 			t.Fatalf("no literal for %s", m)
 		}
 		return v
 	})
-}
-
-// Every dispatch decision reads the candidates under the dedup lock, so the
-// read must not scan every retained incident: the planner can answer it from
-// the partial index of incidents already dispatching (incidents_dedup).
-func TestDedupCandidatesUseAnIndex(t *testing.T) {
-	c := pgtest.Cluster(t)
-	conn := c.Owner(t, pg.StoreOperational)
-	ctx := context.Background()
-	q := dedupCandidatesSQL(t, map[string]string{"category": "'trauma'", "col": "902", "dist": "1", "row_index": "84",
-		"t1": "now()", "window_seconds": "900", "id": "'" + uuid.NewV7().String() + "'"})
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +274,150 @@ func TestDedupCandidatesUseAnIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text := strings.Join(plan, "\n"); !strings.Contains(text, "incidents_dedup") {
-		t.Fatalf("DedupCandidates does not use incidents_dedup:\n%s", text)
+	if text := strings.Join(plan, "\n"); !strings.Contains(text, "incidents_dedup") || !strings.Contains(text, "LockRows") {
+		t.Fatalf("op.dedup_candidates does not lock rows read from incidents_dedup:\n%s", text)
+	}
+}
+
+type dispatchResult struct {
+	out intake.DispatchOutcome
+	err error
+}
+
+// dispatchBlocked runs DispatchOrMerge for o while another transaction
+// holds a lock it needs, then runs release (which commits that
+// transaction) once the call is waiting on the lock, and returns the result.
+func dispatchBlocked(t *testing.T, c *pgtest.TestCluster, s *opstore.Store, o incident.Opened, rule intake.DedupRule, release func()) dispatchResult {
+	t.Helper()
+	payload, _ := json.Marshal(map[string]any{"zone": map[string]int{"col": 902, "row": 84}, "location_quality": incident.QualityLandmark})
+	done := make(chan dispatchResult, 1)
+	go func() {
+		out, err := s.DispatchOrMerge(context.Background(), intake.DispatchRequest{IncidentID: o.IncidentID, Payload: payload,
+			IdemKey: "dr:" + o.IncidentID.String(), Category: "trauma", Severity: incident.SevRed, LocationQuality: incident.QualityLandmark,
+			Zone: incident.Zone{Col: 902, Row: 84}, T1: o.T1, Rule: rule})
+		done <- dispatchResult{out, err}
+	}()
+	su := c.Superuser(t, pg.StoreOperational)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var waiting int
+		if err := su.QueryRow(context.Background(), `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		select {
+		case r := <-done:
+			t.Fatalf("the dispatch finished without waiting for the concurrent transaction: %+v %v", r.out, r.err)
+		case <-time.After(10 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the dispatch never waited for the concurrent transaction")
+		}
+	}
+	release()
+	select {
+	case r := <-done:
+		return r
+	case <-time.After(30 * time.Second):
+		t.Fatal("the dispatch did not finish after the concurrent transaction committed")
+	}
+	return dispatchResult{}
+}
+
+// beginAs opens a transaction as role on the operational store.
+func beginAs(t *testing.T, c *pgtest.TestCluster, role string) pgx.Tx {
+	t.Helper()
+	conn, err := pgx.Connect(context.Background(), c.DSN(pg.StoreOperational, role))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	tx, err := conn.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	return tx
+}
+
+// The survivor closes between the candidate read and the merge. The dispatch
+// must not fail (rolling T2 back and leaving the call undispatched): the
+// candidates are read FOR SHARE, so the read waits for the closure and then
+// sees the survivor closed, and the call is dispatched on its own.
+func TestDispatchOrMergeWhileTheSurvivorCloses(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	survivor, call := triaged(t, s, "trauma"), triaged(t, s, "trauma")
+	if out, err := dispatch(s, survivor, "trauma", 902); err != nil || out.Merged {
+		t.Fatalf("survivor dispatch: %+v %v", out, err)
+	}
+	closing := beginAs(t, c, "op_intake")
+	if _, err := closing.Exec(ctx, `SELECT * FROM op.append_incident_event($1::uuid, 0, 'incident.closed', '{"reason":"resolved"}',
+		'system', NULL, 'close-race', NULL)`, survivor.IncidentID.String()); err != nil {
+		t.Fatal(err)
+	}
+	r := dispatchBlocked(t, c, s, call, dedupRule, func() {
+		if err := closing.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if r.err != nil || r.out.Merged {
+		t.Fatalf("dispatch while the survivor closed: %+v %v", r.out, r.err)
+	}
+	if p, err := s.Projection(ctx, call.IncidentID); err != nil || p.State != incident.StateDispatching || p.T[2] == nil || p.MergedInto != nil {
+		t.Fatalf("the call after the dispatch: %+v %v", p, err)
+	}
+}
+
+// A coordinator splits a call off the survivor between the candidate read
+// and the merge, moving the survivor's T1 later, outside the window. The new
+// call must not merge on the T1 the survivor had before the split: the
+// candidates are read FOR SHARE, so the read waits for the split and the
+// rule sees the survivor's current T1.
+func TestDispatchOrMergeWhileASplitMovesT1(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	wrong, call := triaged(t, s, "trauma"), triaged(t, s, "trauma") // wrongly merged; the new call moments later
+	time.Sleep(400 * time.Millisecond)
+	survivor := triaged(t, s, "trauma")
+	rule := intake.DedupRule{Window: survivor.T1.Sub(call.T1) / 2, MaxZoneDistance: 1}
+	if gap := call.T1.Sub(wrong.T1); gap >= rule.Window {
+		t.Fatalf("setup: the first calls are %v apart, window %v", gap, rule.Window)
+	}
+	payload := func(col int) json.RawMessage {
+		b, _ := json.Marshal(map[string]any{"zone": map[string]int{"col": col, "row": 84}, "location_quality": incident.QualityLandmark})
+		return b
+	}
+	for _, d := range []struct {
+		o   incident.Opened
+		col int
+	}{{survivor, 902}, {wrong, 300}} { // the wrong call is elsewhere: the merge was a mistake
+		if out, err := s.DispatchOrMerge(ctx, intake.DispatchRequest{IncidentID: d.o.IncidentID, Payload: payload(d.col),
+			IdemKey: "dr:" + d.o.IncidentID.String(), Category: "trauma", Severity: incident.SevRed, LocationQuality: incident.QualityLandmark,
+			Zone: incident.Zone{Col: d.col, Row: 84}, T1: d.o.T1, Rule: rule}); err != nil || out.Merged {
+			t.Fatalf("dispatch: %+v %v", out, err)
+		}
+	}
+	absorb(t, s, survivor, wrong) // the survivor's T1 is now the wrong call's
+	splitting := beginAs(t, c, "op_console")
+	if _, err := splitting.Exec(ctx, "SELECT op.split_incident($1::uuid, $2::uuid, $3::uuid)",
+		survivor.IncidentID.String(), wrong.IncidentID.String(), uuid.NewV7().String()); err != nil {
+		t.Fatal(err)
+	}
+	r := dispatchBlocked(t, c, s, call, rule, func() {
+		if err := splitting.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if r.err != nil || r.out.Merged {
+		t.Fatalf("the call merged on the survivor's T1 from before the split: %+v %v", r.out, r.err)
+	}
+	if _, drift, err := opstore.VerifyProjections(ctx, storeAs(t, c, "op_readonly")); err != nil || len(drift) != 0 {
+		t.Fatalf("drift %v %v", drift, err)
 	}
 }

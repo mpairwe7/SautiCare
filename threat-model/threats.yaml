@@ -305,6 +305,7 @@ threats:
       - Calls located only to their ward are never merged (both are dispatched)
       - The database refuses staff actions, splits and unmerges from every role but the console
       - The database accepts merge_absorbed and severity_raised only for a call merged into the survivor, with that call's stored T1 and its own severity (no forged T1, no unrelated call)
+      - Merge candidates are read and locked FOR SHARE, so a survivor closing or split concurrently is seen before the decision (no failed dispatch, no merge outside the window)
     verified_by:
       - internal/intake/dedup_test.go::TestNoMergeAcrossCategories
       - internal/intake/dedup_test.go::TestNoMergeBeyondOneZone
@@ -318,4 +319,6 @@ threats:
       - internal/platform/pg/opstore/merge_integration_test.go::TestSplitAfterARemerge
       - internal/platform/pg/opstore/dedup_integration_test.go::TestConcurrentCompletionsOneSurvivor
       - internal/platform/pg/opstore/dedup_integration_test.go::TestSplitIncident
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestDispatchOrMergeWhileTheSurvivorCloses
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestDispatchOrMergeWhileASplitMovesT1
       - tests/e2e/m1_dedup_test.go::TestScenario4ThreeBystandersOneIncident
