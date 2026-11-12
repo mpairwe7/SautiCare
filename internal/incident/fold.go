@@ -67,6 +67,9 @@ func Apply(p Projection, e Event) (Projection, error) {
 		if err != nil {
 			return p, fmt.Errorf("%w: merge target: %w", ErrIllegalTransition, err)
 		}
+		if into == p.ID {
+			return p, fmt.Errorf("%w: an incident cannot merge into itself", ErrIllegalTransition)
+		}
 		next.MergedInto = &into
 	}
 	if i, ok := tIndex[e.Type]; ok && next.T[i] == nil {

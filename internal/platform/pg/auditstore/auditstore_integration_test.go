@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,7 +54,7 @@ func req(i int) audit.AppendRequest {
 		PayloadSHA256: sha256.Sum256([]byte(fmt.Sprint(i))),
 	}
 	if i%3 == 0 {
-		r.LogicVersion = "tr-test+sha256:01"
+		r.LogicVersion = "tr-test+sha256:0123456789ab"
 	}
 	return r
 }
@@ -182,6 +183,29 @@ func TestAppenderCannotUpdateOrDelete(t *testing.T) {
 	} {
 		if _, err := conn.Exec(ctx, q); pgCode(err) != "42501" {
 			t.Errorf("%q as audit_appender: err = %v, want 42501", q, err)
+		}
+	}
+}
+
+// CodeRabbit PR #3: logic_version is an approved identifier
+// (name+sha256:hex), never free text such as a name or a phone number.
+func TestAppendRejectsFreeTextLogicVersion(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := appenderStore(t, c, 1)
+	ctx := context.Background()
+	for _, bad := range []string{"Jane Doe +256700123456", "tr-test", "tr-test+sha256:00", "TR+sha256:0123456789ab",
+		"tr test+sha256:0123456789ab", "tr-test+sha256:0123456789AB", "tr-test+sha256:0123456789ab\n"} {
+		r := req(1)
+		r.LogicVersion = bad
+		if _, err := s.Append(ctx, r); pgCode(err) != "23514" {
+			t.Errorf("logic_version %q: err = %v, want 23514", bad, err)
+		}
+	}
+	for _, good := range []string{"", "tr-2026.11.0+sha256:0123456789ab", "tool1-pending+sha256:" + strings.Repeat("ab", 32)} {
+		r := req(1)
+		r.LogicVersion = good
+		if _, err := s.Append(ctx, r); err != nil {
+			t.Errorf("logic_version %q rejected: %v", good, err)
 		}
 	}
 }

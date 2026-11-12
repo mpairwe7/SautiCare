@@ -115,9 +115,16 @@ DECLARE
     v_sev   text;
     v_flag  text;
     v_into  uuid;
+    v_target text;
 BEGIN
     IF p_type = 'session.started' THEN
         RAISE EXCEPTION 'illegal transition: session.started is written only by open_incident'
+            USING ERRCODE = 'SA422';
+    END IF;
+    -- The same format audit.entries enforces, so a value the ledger would
+    -- reject (or free text) never enters the event log or the outbox.
+    IF p_logic_version !~ '^[a-z0-9][a-z0-9._-]{0,63}\+sha256:[0-9a-f]{12,64}$' THEN
+        RAISE EXCEPTION 'illegal transition: logic version is not an approved identifier'
             USING ERRCODE = 'SA422';
     END IF;
 
@@ -165,10 +172,25 @@ BEGIN
             RAISE EXCEPTION 'illegal transition: flag event needs a flag' USING ERRCODE = 'SA422';
         END IF;
     ELSIF p_type = 'incident.merged' THEN
-        IF coalesce(p_payload ->> 'into', '') !~ '^[0-9a-fA-F-]{36}$' THEN
-            RAISE EXCEPTION 'illegal transition: merge needs a target' USING ERRCODE = 'SA422';
+        IF coalesce(p_payload ->> 'into', '')
+           !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
+            RAISE EXCEPTION 'illegal transition: merge needs a target incident ID' USING ERRCODE = 'SA422';
         END IF;
         v_into := (p_payload ->> 'into')::uuid;
+        IF v_into = p_incident THEN
+            RAISE EXCEPTION 'illegal transition: an incident cannot merge into itself' USING ERRCODE = 'SA422';
+        END IF;
+        -- FOR SHARE: the target cannot close or merge before this commits,
+        -- and two incidents merging into each other deadlock (one aborts)
+        -- instead of both leaving the workflow.
+        SELECT i.state INTO v_target FROM op.incidents i WHERE i.id = v_into FOR SHARE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'unknown merge target %', v_into USING ERRCODE = 'SA404';
+        END IF;
+        IF v_target IN ('closed', 'merged') THEN
+            RAISE EXCEPTION 'illegal transition: merge target is in terminal state %', v_target
+                USING ERRCODE = 'SA422';
+        END IF;
     END IF;
 
     v_at := clock_timestamp();

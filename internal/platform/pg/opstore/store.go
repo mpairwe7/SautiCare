@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"uuid"
@@ -144,15 +145,36 @@ func (s *Store) Append(ctx context.Context, p incident.AppendParams) (incident.A
 	if err != nil {
 		return incident.Appended{}, mapErr(err)
 	}
+	if r.Duplicate {
+		return s.original(ctx, p.IncidentID, r.Seq)
+	}
 	return incident.Appended{
 		Event: incident.Event{
 			ID: uuid.UUID(r.EventID.Bytes), IncidentID: p.IncidentID, Seq: r.Seq, Type: p.Type,
 			RecordedAt: r.RecordedAt.Time.UTC(), ActorKind: p.ActorKind, StaffID: p.StaffID,
 			Payload: payload, IdemKey: p.IdemKey, LogicVersion: p.LogicVersion,
 		},
-		NewState:  incident.State(r.NewState),
-		Duplicate: r.Duplicate,
+		NewState: incident.State(r.NewState),
 	}, nil
+}
+
+// original answers a reused idempotency key: the event stored at seq (not
+// the retry's fields, which may differ) and the state right after it (not
+// the incident's current state, which later events may have moved on).
+// Events are append-only, so reading them after the append is consistent.
+func (s *Store) original(ctx context.Context, id uuid.UUID, seq int64) (incident.Appended, error) {
+	events, err := s.Events(ctx, id)
+	if err != nil {
+		return incident.Appended{}, err
+	}
+	if seq < 1 || seq > int64(len(events)) {
+		return incident.Appended{}, fmt.Errorf("opstore: duplicate at seq %d outside a history of %d events", seq, len(events))
+	}
+	p, err := incident.Fold(events[:seq])
+	if err != nil {
+		return incident.Appended{}, fmt.Errorf("opstore: fold history through seq %d: %w", seq, err)
+	}
+	return incident.Appended{Event: events[seq-1], NewState: p.State, Duplicate: true}, nil
 }
 
 // Events implements incident.Store: the incident's full history in order.
@@ -216,6 +238,53 @@ func (s *Store) ListIncidentIDs(ctx context.Context) ([]uuid.UUID, error) {
 // DefaultPartitionRows reports events that fell into the default partition.
 func (s *Store) DefaultPartitionRows(ctx context.Context) (int64, error) {
 	return s.q.DefaultPartitionRows(ctx)
+}
+
+// partitionTimeout bounds one partition-maintenance call, pool wait included.
+const partitionTimeout = 30 * time.Second
+
+// EnsureEventPartitions creates every missing monthly partition of
+// op.incident_events from the current month to monthsAhead months ahead and
+// returns how many it created. Events of a month without a partition land in
+// the default partition, which then blocks creating that month's partition,
+// so the relay runs this well ahead of time (runbook:
+// docs/runbooks/event-partition-maintenance.md).
+func (s *Store) EnsureEventPartitions(ctx context.Context, monthsAhead int) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, partitionTimeout)
+	defer cancel()
+	n, err := s.q.EnsureEventPartitions(ctx, int32(max(0, min(monthsAhead, 120)))) //nolint:gosec // clamped
+	if err != nil {
+		return 0, fmt.Errorf("opstore: ensure event partitions: %w", err)
+	}
+	return int(n), nil
+}
+
+// MaintainEventPartitions keeps monthsAhead monthly event partitions ahead
+// of the clock: it calls EnsureEventPartitions at once and then every
+// interval until ctx ends, logging how many partitions each run created. A
+// failed run is logged and retried at the next interval; writes never wait
+// on it (they fall back to the default partition). The outbox relay runs it
+// while it holds leadership, so one process does it at a time.
+func (s *Store) MaintainEventPartitions(ctx context.Context, monthsAhead int, every time.Duration, log *slog.Logger) error {
+	if every <= 0 {
+		return errors.New("opstore: partition maintenance interval must be positive")
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		n, err := s.EnsureEventPartitions(ctx, monthsAhead)
+		switch {
+		case err == nil:
+			log.Info("event partitions ensured", "months_ahead", monthsAhead, "created", n)
+		case ctx.Err() == nil:
+			log.Warn("event partition maintenance failed; retrying at the next interval", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
 }
 
 // Claim implements audit.Outbox: it opens a transaction and locks up to

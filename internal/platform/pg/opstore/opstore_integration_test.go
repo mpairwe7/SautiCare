@@ -3,12 +3,14 @@
 package opstore_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -28,6 +30,9 @@ import (
 )
 
 func TestMain(m *testing.M) { pgtest.Main(m) }
+
+// testLogic is a logic version in the approved format (name+sha256:hex).
+const testLogic = "tr-test+sha256:0123456789ab"
 
 func storeAs(t *testing.T, c *pgtest.TestCluster, role string) *opstore.Store {
 	t.Helper()
@@ -212,13 +217,198 @@ func TestAppendRejectsSeverityLowering(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
 	o, _ := s.OpenIncident(context.Background(), openParams(t))
-	appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"red"}`, "tr-test")
+	appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"red"}`, testLogic)
 	if _, err := c.Owner(t, pg.StoreOperational).Exec(context.Background(),
 		"INSERT INTO op.incident_transitions VALUES ('triaged', 'incident.classified', NULL)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := appendErr(s, o.IncidentID, incident.EvClassified, `{"severity":"green"}`, 0); !errors.Is(err, incident.ErrSeverityLowered) {
 		t.Fatalf("err = %v, want ErrSeverityLowered", err)
+	}
+}
+
+// CodeRabbit PR #3: the write path rejects a logic version that the audit
+// ledger would reject, so free text never reaches the event log, the
+// projection or the outbox (and can never stall the relay).
+func TestAppendRejectsFreeTextLogicVersion(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	o, _ := s.OpenIncident(ctx, openParams(t))
+	for _, bad := range []string{"Jane Doe +256700123456", "tr-test", "tr-test+sha256:00", "tr-test+sha256:0123456789AB"} {
+		_, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvClassified,
+			Payload: json.RawMessage(`{"severity":"red"}`), ActorKind: incident.ActorSystem,
+			IdemKey: uuid.NewV4().String(), LogicVersion: bad})
+		if !errors.Is(err, incident.ErrIllegalTransition) {
+			t.Errorf("logic version %q: err = %v, want ErrIllegalTransition", bad, err)
+		}
+	}
+	var events, outbox int
+	if err := c.Owner(t, pg.StoreOperational).QueryRow(ctx,
+		"SELECT (SELECT count(*) FROM op.incident_events), (SELECT count(*) FROM op.outbox)").Scan(&events, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || outbox != 1 {
+		t.Fatalf("after rejected appends: events=%d outbox=%d, want 1 and 1 (session.started only)", events, outbox)
+	}
+	if a := appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"red"}`, testLogic); a.Event.LogicVersion != testLogic {
+		t.Fatalf("conforming logic version: %+v", a.Event)
+	}
+}
+
+// CodeRabbit PR #3: a merge names a canonical UUID of another live
+// incident. A bad target fails with the documented SA422/SA404 contract —
+// never a cast (22P02) or foreign-key (23503) error — and an incident never
+// merges into itself or into a closed or merged one.
+func TestAppendValidatesMergeTarget(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	open := func() uuid.UUID {
+		t.Helper()
+		o, err := s.OpenIncident(ctx, openParams(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o.IncidentID
+	}
+	src, closed, merged, live := open(), open(), open(), open()
+	appendEv(t, s, closed, incident.EvClosed, `{"reason":"test_call"}`, "")
+	appendEv(t, s, merged, incident.EvMerged, `{"into":"`+live.String()+`"}`, "")
+	merge := func(into string) error {
+		return appendErr(s, src, incident.EvMerged, `{"into":"`+into+`"}`, 0)
+	}
+	for _, tc := range []struct {
+		into string
+		want error
+	}{
+		{src.String(), incident.ErrIllegalTransition},
+		{strings.Repeat("-", 36), incident.ErrIllegalTransition},
+		{strings.Repeat("a", 36), incident.ErrIllegalTransition},
+		{"{" + live.String() + "}", incident.ErrIllegalTransition},
+		{uuid.NewV7().String(), incident.ErrNotFound},
+		{closed.String(), incident.ErrIllegalTransition},
+		{merged.String(), incident.ErrIllegalTransition},
+	} {
+		if err := merge(tc.into); !errors.Is(err, tc.want) {
+			t.Errorf("merge into %q: err = %v, want %v", tc.into, err, tc.want)
+		}
+	}
+	if p, err := s.Projection(ctx, src); err != nil || p.State != incident.StateIntake || p.Version != 1 {
+		t.Fatalf("rejected merges changed the incident: %+v, %v", p, err)
+	}
+	if err := merge(strings.ToUpper(live.String())); err != nil {
+		t.Fatalf("merge into a live incident: %v", err)
+	}
+	if p, err := s.Projection(ctx, src); err != nil || p.State != incident.StateMerged || p.MergedInto == nil || *p.MergedInto != live {
+		t.Fatalf("after merge: %+v, %v", p, err)
+	}
+}
+
+// CodeRabbit PR #3: a reused idempotency key returns the ORIGINAL stored
+// event — its type, payload, actor and logic version — and the state right
+// after it, not the retry's fields or the incident's current state.
+func TestAppendDuplicateReturnsOriginalEventAndItsState(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	o, _ := s.OpenIncident(ctx, openParams(t))
+	staff := uuid.NewV7()
+	first, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvClassified,
+		Payload: json.RawMessage(`{"severity":"yellow"}`), ActorKind: incident.ActorStaff, StaffID: &staff,
+		IdemKey: "k-classify", LogicVersion: testLogic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEv(t, s, o.IncidentID, incident.EvDispatchReady, "", "") // the incident moves on
+	retry, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvFlagged,
+		Payload: json.RawMessage(`{"flag":"other"}`), ActorKind: incident.ActorSystem, IdemKey: "k-classify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Duplicate || !retry.Duplicate {
+		t.Fatalf("duplicate flags: first=%v retry=%v", first.Duplicate, retry.Duplicate)
+	}
+	if first.NewState != incident.StateTriaged || retry.NewState != incident.StateTriaged {
+		t.Fatalf("state after the original event: first=%s retry=%s, want %s", first.NewState, retry.NewState, incident.StateTriaged)
+	}
+	e := retry.Event
+	if e.ID != first.Event.ID || e.IncidentID != o.IncidentID || e.Seq != 2 || e.Type != incident.EvClassified ||
+		e.ActorKind != incident.ActorStaff || e.StaffID == nil || *e.StaffID != staff || e.IdemKey != "k-classify" ||
+		e.LogicVersion != testLogic || !e.RecordedAt.Equal(first.Event.RecordedAt) {
+		t.Fatalf("duplicate returned %+v, want the original %+v", e, first.Event)
+	}
+	var pl map[string]string
+	if err := json.Unmarshal(e.Payload, &pl); err != nil || len(pl) != 1 || pl["severity"] != "yellow" {
+		t.Fatalf("duplicate payload = %s, want the original {\"severity\":\"yellow\"}", e.Payload)
+	}
+}
+
+// CodeRabbit PR #3: the relay keeps monthly event partitions ahead of the
+// clock, so events never pile up in the default partition. The function is
+// SECURITY DEFINER; op_relay may call it, other runtime roles may not.
+func TestRelayEnsuresEventPartitionsAhead(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	relay := storeAs(t, c, "op_relay")
+	n, err := relay.EnsureEventPartitions(ctx, 5)
+	if err != nil || n != 2 { // the migration created this month and three ahead
+		t.Fatalf("EnsureEventPartitions(5) = %d, %v; want 2", n, err)
+	}
+	if n, err := relay.EnsureEventPartitions(ctx, 5); err != nil || n != 0 {
+		t.Fatalf("second EnsureEventPartitions(5) = %d, %v; want 0", n, err)
+	}
+	if got := monthlyPartitions(t, c.Owner(t, pg.StoreOperational)); got != 6 {
+		t.Fatalf("monthly partitions = %d, want 6", got)
+	}
+	if _, err := storeAs(t, c, "op_intake").EnsureEventPartitions(ctx, 6); pgCode(err) != "42501" {
+		t.Fatalf("op_intake EnsureEventPartitions: err = %v, want 42501", err)
+	}
+}
+
+func monthlyPartitions(t *testing.T, owner *pgx.Conn) int {
+	t.Helper()
+	var n int
+	if err := owner.QueryRow(context.Background(), `
+		SELECT count(*) FROM pg_inherits i JOIN pg_class p ON p.oid = i.inhrelid
+		WHERE i.inhparent = 'op.incident_events'::regclass AND p.relname ~ '^incident_events_y[0-9]{4}m[0-9]{2}$'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// MaintainEventPartitions runs at once and then on every tick until its
+// context ends, logging how many partitions each run created.
+func TestMaintainEventPartitionsRunsUntilCancelled(t *testing.T) {
+	c := pgtest.Cluster(t)
+	relay := storeAs(t, c, "op_relay")
+	owner := c.Owner(t, pg.StoreOperational)
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- relay.MaintainEventPartitions(ctx, 6, 50*time.Millisecond, log) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for monthlyPartitions(t, owner) != 7 {
+		if time.Now().After(deadline) {
+			t.Fatalf("partitions = %d after 10s, want 7", monthlyPartitions(t, owner))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond) // a few more ticks
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("MaintainEventPartitions = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("MaintainEventPartitions did not return after cancel")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "created=3") || !strings.Contains(out, "created=0") {
+		t.Fatalf("log does not report the partitions created per run:\n%s", out)
 	}
 }
 
@@ -288,6 +478,7 @@ func TestRuntimeRolesCannotWriteDirectly(t *testing.T) {
 		"INSERT INTO op.outbox (topic, payload) VALUES ('audit', '{}')",
 		"DELETE FROM op.event_keys",
 		"SELECT op.claim_outbox('audit', 10)",
+		"SELECT op.ensure_event_partitions(12)",
 	} {
 		if _, err := conn.Exec(ctx, q); pgCode(err) != "42501" {
 			t.Errorf("%q as op_intake: err = %v, want 42501", q, err)
@@ -324,7 +515,7 @@ func TestProjectionMatchesFold(t *testing.T) {
 	id := o.IncidentID
 	appendEv(t, s, id, incident.EvScreenAnswered, `{"screen":2,"answer":"1"}`, "")
 	appendEv(t, s, id, incident.EvFlagged, `{"flag":"test_call"}`, "")
-	appendEv(t, s, id, incident.EvClassified, `{"severity":"red","category":"trauma"}`, "tr-test+sha256:00")
+	appendEv(t, s, id, incident.EvClassified, `{"severity":"red","category":"trauma"}`, testLogic)
 	appendEv(t, s, id, incident.EvDispatchReady, "", "")
 	appendEv(t, s, id, incident.EvAlertIssued, `{"role":"vht"}`, "")
 	appendEv(t, s, id, incident.EvAlertIssued, `{"role":"transporter"}`, "")
