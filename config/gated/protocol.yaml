@@ -1,0 +1,5 @@
+# Status of protocol-authored content. "pending" until Study Protocol v2.0 and
+# Data Collection Tools 1-7 are received and the clinical copy is signed off.
+# Binaries refuse SAUTI_ENV=production while this is not "approved".
+protocol_status: pending
+protocol_version: "2.0"

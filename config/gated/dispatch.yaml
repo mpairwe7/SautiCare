@@ -1,0 +1,14 @@
+# Dispatch parameters (Build Prompt §10.4).
+# mode "protocol": dispatch stays at ring 1 and escalates to the coordinator
+# until the amendment for decisions 1, 2 and 6 is approved (Build Prompt §19).
+mode: protocol
+ring_step_metres: 500
+ring_interval: 60s
+max_radius_metres: 2500
+cascade_timeout: 90s
+red_parallel_count: 3
+forward_ack_timeout: 60s
+voice_fallback_after: 20s
+# Decision 4 is OPEN (PI and co-investigators): safe default order.
+ranking_order: [zone_distance, response_history, least_recently_dispatched]
+ranking_version: default-2026-11-12

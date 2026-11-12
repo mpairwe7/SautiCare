@@ -1,0 +1,11 @@
+# Amendment records (Build Prompt rule 3.11). Required for any change to a
+# gated path while study_window_active is true. Each record names the ethics
+# committee reference, the approval date and the sha256 of every gated file
+# at its approved content (use "deleted" for an approved deletion).
+#
+# - reference: "MakSOM-REC-XXXX/A1"
+#   approved_on: "2026-12-01"
+#   files:
+#     - path: config/gated/dispatch.yaml
+#       sha256: "<hex>"
+amendments: []

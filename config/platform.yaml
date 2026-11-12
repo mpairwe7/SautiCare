@@ -1,0 +1,4 @@
+# Ungated operational tuning. Not part of the dispatch-parameter fingerprint.
+checkpoint_interval: 5m   # audit ledger signed checkpoints (Build Prompt §4)
+outbox_batch_size: 100
+relay_poll_interval: 1s

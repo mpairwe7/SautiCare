@@ -1,0 +1,5 @@
+# Paths frozen while study_window_active is true (Build Prompt rule 3.11).
+# One glob per line; "dir/**" matches everything below dir.
+config/gated/**
+config/study.yaml
+triage-rules/**
