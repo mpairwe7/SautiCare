@@ -10,16 +10,16 @@ Validates governance/ai_risk_manifest.yaml:
     (hard constraint 1);
   * a flag-controlled entry's status matches config/gated/flags.yaml, so the
     inventory can never claim a model is off while it is switched on.
+Both YAML files are parsed with duplicate mapping keys rejected.
 Usage: python3 governance/compliance_check.py [--root .]
 """
 import argparse
 import sys
 from pathlib import Path
 
-import yaml
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from tools import strict_yaml  # noqa: E402
 from tools.freshness.pointers import is_planned, resolve  # noqa: E402
 
 NIST_FUNCTIONS = {"GOVERN", "MAP", "MEASURE", "MANAGE"}
@@ -32,8 +32,11 @@ STATUSES = {"active", "flagged-off", "planned"}
 def check(root: Path) -> list[str]:
     root = Path(root)
     errors: list[str] = []
-    manifest = yaml.safe_load((root / "governance" / "ai_risk_manifest.yaml").read_text(encoding="utf-8")) or {}
-    flags = yaml.safe_load((root / "config" / "gated" / "flags.yaml").read_text(encoding="utf-8")) or {}
+    try:
+        manifest = strict_yaml.load(root / "governance" / "ai_risk_manifest.yaml") or {}
+        flags = strict_yaml.load(root / "config" / "gated" / "flags.yaml") or {}
+    except strict_yaml.YAMLError as e:
+        return [strict_yaml.describe(e)]
 
     risks = manifest.get("risks") or []
     if not risks:
@@ -53,7 +56,10 @@ def check(root: Path) -> list[str]:
             if problem := resolve(root, ptr):
                 errors.append(f"{rid}: {problem}")
 
-    for item in manifest.get("aibom_inventory") or []:
+    inventory = manifest.get("aibom_inventory") or []
+    if not inventory:
+        errors.append("ai_risk_manifest: aibom_inventory is missing or empty")
+    for item in inventory:
         ref = item.get("bom-ref", "<no bom-ref>")
         for f in AIBOM_FIELDS:
             if not item.get(f):
@@ -79,7 +85,10 @@ def main() -> int:
     errors = check(root)
     for e in errors:
         print("GOVERNANCE:", e)
-    manifest = yaml.safe_load((root / "governance" / "ai_risk_manifest.yaml").read_text(encoding="utf-8")) or {}
+    try:
+        manifest = strict_yaml.load(root / "governance" / "ai_risk_manifest.yaml") or {}
+    except strict_yaml.YAMLError:
+        manifest = {}
     ptrs = [p for r in manifest.get("risks") or [] for p in r.get("verified_by") or []]
     planned = sum(1 for p in ptrs if is_planned(p))
     print(f"compliance_check: {len(manifest.get('risks') or [])} risks, {len(ptrs) - planned} verified pointers, "

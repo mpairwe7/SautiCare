@@ -1,6 +1,6 @@
 # Traceability matrix
 
-**Type:** Reference (Diátaxis) · **Last updated:** 2026-11-12 (M0) · **Checked by:** `python3 -m tools.freshness --check` (every test pointer must resolve)
+**Type:** Reference (Diátaxis) · **Last updated:** 2026-11-13 (M0) · **Checked by:** `python3 -m tools.freshness --check` (every test pointer must name a test function that exists)
 
 This matrix maps each policy requirement (MVP stack doc, 15 requirements), each of the 14 hard constraints (Build Prompt §3) and each of the 17 scenarios (Build Prompt §16) to the automated test or drill that proves it.
 
@@ -15,9 +15,9 @@ Policy documents are cited by section only (they are confidential, ADR-0008).
 
 | # | Requirement | Source | Status | Proof (M0) | Remaining |
 |---|---|---|---|---|---|
-| R1 | Personal data and backups stay in Uganda | ISP §4, §5.4, §9 | Verified | `internal/platform/egress/egress_test.go::TestEgressDeniesUnlistedHost` | P0: hosting, nftables, backups |
+| R1 | Personal data and backups stay in Uganda | ISP §4, §5.4, §9 | Partial | `internal/platform/egress/egress_test.go::TestEgressDeniesUnlistedHost` | P0: hosting in Uganda, the location of every approved host, nftables, backups. The allowlist test proves only that unlisted hosts are refused, not where listed hosts or backups are. |
 | R2 | Operational, analytic and linkage stores kept apart | ISP §4, §5.1–5.2 | Verified | `internal/platform/pg/bootstrap/bootstrap_integration_test.go::TestBootstrapIsolatesStores`<br>`tools/archcheck/check_test.go::TestR4OnlyPseudonymiserJoinsStores` | M6: pseudonymiser |
-| R3 | Linkage table only for PI and delegate; access logged with reason | ISP §5.1, §5.5 | Verified | `internal/platform/pg/schemas_integration_test.go::TestLinkageResolveRequiresAllowedReason`<br>`internal/platform/pg/schemas_integration_test.go::TestLinkageRolesAreNarrow` | P0/M5: identities |
+| R3 | Linkage table only for PI and delegate; access logged with reason | ISP §5.1, §5.5 | Partial | `internal/platform/pg/schemas_integration_test.go::TestLinkageResolveRequiresAllowedReason`<br>`internal/platform/pg/schemas_integration_test.go::TestLinkageRolesAreNarrow` | P0/M5: identities. The tests prove the reason check, the access log and the narrow roles, not that only the PI and the delegate can use those roles. |
 | R4 | Incident ID at first contact, no personal data, check character | ISP §5.2 | Verified | `internal/incident/damm_test.go::TestDammDetectsEverySingleDigitError`<br>`internal/platform/pg/opstore/opstore_integration_test.go::TestOpenIncidentSetsT1FromDatabase` | — |
 | R5 | Authoritative server-side timestamps | ISP §5.2 | Verified | `internal/platform/pg/opstore/opstore_integration_test.go::TestOpenIncidentSetsT1FromDatabase`<br>`internal/platform/pg/opstore/opstore_integration_test.go::TestProjectionMatchesFold` | P0: chrony NTS + GPS |
 | R6 | AES-256 at rest; keys apart from data; TLS in transit | ISP §5.3 | Partial | `internal/crypto/crypto_test.go::TestSealOpenRoundTrip`<br>`internal/crypto/crypto_test.go::TestOpenFailsWithSwappedAAD` | P0: OpenBao/HSM, TLS 1.3 + mTLS |
@@ -35,7 +35,7 @@ Policy documents are cited by section only (they are confidential, ADR-0008).
 
 | # | Constraint | Status | Proof (M0) | Remaining |
 |---|---|---|---|---|
-| 1 | Data stays in Uganda | Verified | `internal/platform/egress/egress_test.go::TestEgressDeniesRedirectToUnlistedHost` | P0 network controls |
+| 1 | Data stays in Uganda | Partial | `internal/platform/egress/egress_test.go::TestEgressDeniesRedirectToUnlistedHost` | P0: hosting, approved-host locations, network controls, backups |
 | 2 | Basic phone first | Partial | `internal/platform/africastalking/ussd_test.go::TestATParsesFormAndRendersCONEND`<br>`internal/intake/machine_test.go::TestEveryRenderedScreenFitsLimitAndGSM7`<br>`tests/e2e/m1_intake_test.go::TestScenario5ResumedSessionCompletes` | M1 Part C IVR; M2 responder channels |
 | 3 | Deterministic triage and dispatch; no model lowers severity | Partial | `internal/incident/fold_test.go::TestApplyRejectsSeverityLowering`<br>`internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering`<br>`internal/triage/triage_test.go::TestRuleTableFromBuildPrompt`<br>`internal/triage/triage_test.go::TestLoadRejectsNonTotalTable`<br>`internal/incident/merge_test.go::TestSeverityRaised`<br>`internal/platform/pg/opstore/dedup_integration_test.go::TestMergeCarriesSeverityAndEscalation` | M2 ranking |
 | 4 | Server-side time | Verified | `internal/platform/pg/opstore/opstore_integration_test.go::TestOpenIncidentSetsT1FromDatabase` | M3 attested T5 verification |
@@ -46,7 +46,7 @@ Policy documents are cited by section only (they are confidential, ADR-0008).
 | 9 | Five separate stores | Verified | `internal/platform/pg/bootstrap/bootstrap_integration_test.go::TestBootstrapIsolatesStores` | P0 separate clusters |
 | 10 | Consent flags gate the analytic export | Partial | `internal/platform/pg/schemas_integration_test.go::TestAnalyticRejectsUnconsentedRecord` | M6 pseudonymiser |
 | 11 | Amendment gate | Verified | `tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment`<br>`tools/amendgate/check_test.go::TestCheckFailsWhenHashDiffersFromAmendment`<br>`tools/amendgate/check_test.go::TestEffectiveGlobsCannotShrink`<br>`tools/amendgate/check_test.go::TestGatedSymlinkIsRejected` | M5 admin-screen enforcement |
-| 12 | No new kind of record without the DPO | Partial | `internal/platform/pg/schemas_integration_test.go::TestMediaRecordingsRequireDestroyByAndKey`<br>`internal/config/config_test.go::TestLoadRejectsUnknownField` | — |
+| 12 | No new kind of record without the DPO | Partial | `internal/platform/pg/schemas_integration_test.go::TestMediaRecordingsRequireDestroyByAndKey`<br>`internal/config/config_test.go::TestLoadRejectsUnknownField` | Open gap: no gate yet requires DPO approval of a new record category (threat T-012). M5: DPO-owned record-category register, enforced in CI |
 | 13 | No access from outside Uganda | Planned | `internal/platform/devkeys/devkeys_test.go::TestDevkeysRefuseProduction` | P0 |
 | 14 | Dispatch first, fail safe to a human | Partial | `internal/audit/relay_test.go::TestRelayCatchesUpAfterLedgerOutage`<br>`internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine`<br>`internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`<br>`internal/intake/sweeper_test.go::TestSweeperEscalatesDangerYesBeforeDispatch`<br>`internal/intake/sweeper_test.go::TestSweeperEscalatesRedBeforeDispatch`<br>`internal/intake/atomicity_test.go::TestEveryWriteFailureConverges`<br>`internal/intake/atomicity_test.go::TestRuleErrorFlagAndEscalationSurviveAFailure` | M2 escalation workflow (voice call) |
 

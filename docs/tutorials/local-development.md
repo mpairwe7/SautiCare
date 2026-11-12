@@ -48,9 +48,12 @@ With a disposable PostgreSQL 18 superuser URL in `SAUTI_TEST_PG_DSN`:
 export SAUTI_DEV_DB_PASSWORD=change-me-dev-only
 go run ./cmd/sautictl dev-bootstrap --admin-dsn "$SAUTI_TEST_PG_DSN" --migrate
 go run ./cmd/sautictl dev-keygen --dir .devkeys
-cp .env.example .env   # adjust, then: set -a; . ./.env; set +a
+cp .env.example .env   # adjust the host and port in the DSNs to your server
+set -a; . ./.env; set +a
 go run ./cmd/intake-gw &
-go run ./cmd/outbox-relay &
+SAUTI_OP_DSN="${SAUTI_OP_DSN/op_intake:/op_relay:}" SAUTI_HTTP_ADDR=127.0.0.1:9101 go run ./cmd/outbox-relay &
 ```
+
+`.env` is written for intake-gw. The relay needs its own operational role, `op_relay`, to claim and mark outbox rows (`op_intake` cannot). It also needs its own listener, because `SAUTI_HTTP_ADDR=127.0.0.1:8080` is intake-gw's callback address and a second process cannot bind it. The last line overrides both for the relay only. `127.0.0.1:9101` is the relay's default health and metrics address.
 
 Next, read `docs/explanation/architecture.md`, then the ADR index.
