@@ -45,17 +45,37 @@ func (w *FSWitness) Put(_ context.Context, name string, data []byte) error {
 	if err := os.MkdirAll(w.dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(w.dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
+	// Write and sync a temporary file first, then publish it with a hard
+	// link, which fails if the name exists (never replaces) and is atomic:
+	// ReadAll can never observe a partial note, and a failed write leaves
+	// nothing under the final name (CodeRabbit PR #2).
+	final := filepath.Join(w.dir, name)
+	tmp, err := os.CreateTemp(w.dir, ".tmp-"+name+"-*")
 	if err != nil {
 		return fmt.Errorf("witness: %w", err)
 	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("witness: %w", err)
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
+	if err := tmp.Chmod(0o400); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("witness: %w", err)
 	}
-	return f.Close()
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("witness: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("witness: %w", err)
+	}
+	if err := os.Link(tmp.Name(), final); err != nil {
+		return fmt.Errorf("witness: %w", err)
+	}
+	if d, err := os.Open(w.dir); err == nil {
+		_ = d.Sync() // persist the new directory entry
+		_ = d.Close()
+	}
+	return nil
 }

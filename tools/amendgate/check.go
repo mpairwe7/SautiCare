@@ -9,11 +9,35 @@ import (
 // DeletedMarker is the sha256 value an amendment uses to approve a deletion.
 const DeletedMarker = "deleted"
 
-// ChangedFile is a path changed between the base ref and HEAD.
+// ChangedFile is a path changed between the base ref and HEAD. SHA256 is
+// the hash of the content tracked in Git at HEAD (not of whatever a working
+// tree path resolves to).
 type ChangedFile struct {
 	Path    string
 	SHA256  string
 	Deleted bool
+	Symlink bool
+}
+
+// builtinGated is the protected minimum, applied whatever the gate list in
+// the change says: the change under review cannot unfreeze itself
+// (CodeRabbit PR #2). The gate list itself is gated.
+var builtinGated = []string{"config/gated/**", "config/study.yaml", "triage-rules/**", "governance/gated-paths.txt"}
+
+// effectiveGlobs is the union of the built-in minimum, the gate list at the
+// base ref and the gate list in the change, so a change can only widen it.
+func effectiveGlobs(base, head []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range [][]string{builtinGated, base, head} {
+		for _, g := range list {
+			if !seen[g] {
+				seen[g] = true
+				out = append(out, g)
+			}
+		}
+	}
+	return out
 }
 
 // Amendment is one approved protocol amendment (governance/amendments.yaml).
@@ -64,12 +88,18 @@ func validAmendment(a Amendment) bool {
 // approves at exactly the changed content. With the window inactive, gated
 // paths may change freely (pre-study development).
 func Check(windowActive bool, gatedGlobs []string, changed []ChangedFile, ams []Amendment) []Violation {
-	if !windowActive {
-		return nil
-	}
 	var out []Violation
 	for _, c := range changed {
 		if !gatedPath(gatedGlobs, c.Path) {
+			continue
+		}
+		// Always, window or not: a gated path must be a regular file, or the
+		// effective configuration could change without the gated path changing.
+		if c.Symlink {
+			out = append(out, Violation{Path: c.Path, Reason: "gated path is a symbolic link; gated paths must be regular files"})
+			continue
+		}
+		if !windowActive {
 			continue
 		}
 		want := c.SHA256

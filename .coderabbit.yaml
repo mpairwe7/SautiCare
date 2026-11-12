@@ -38,8 +38,11 @@ reviews:
         scenarios and, during the study window, an amendment record.
     - path: "config/**"
       instructions: >-
-        Gated configuration: while study_window_active is true any change needs a
-        matching governance/amendments.yaml record. Section 11 flags stay off.
+        config/gated/** and config/study.yaml are gated (Build Prompt rule 3.11):
+        while study_window_active is true any change needs a matching
+        governance/amendments.yaml record (tools/amendgate). config/platform.yaml
+        is deliberately ungated operational tuning (ADR-0014). Section 11 flags
+        stay off.
     - path: "internal/audit/**"
       instructions: >-
         Tamper-evident ledger: the canonical encoding must stay byte-identical to
