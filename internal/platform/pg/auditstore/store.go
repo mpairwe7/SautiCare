@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -17,6 +18,10 @@ import (
 )
 
 const pageSize = 1000
+
+// appendTimeout bounds one Append, pool acquisition included: the statement
+// timeout does not cover waiting for a connection.
+var appendTimeout = 10 * time.Second
 
 // Store implements audit.Ledger and audit.LedgerReader.
 type Store struct {
@@ -95,8 +100,12 @@ func toEntry(r row) (audit.Entry, error) {
 	return e, nil
 }
 
-// Append implements audit.Ledger. It is idempotent on EntryID.
+// Append implements audit.Ledger. It is idempotent on EntryID. Each call
+// has its own deadline (appendTimeout), so one stalled append cannot stop
+// relay progress even when the caller's context has none.
 func (s *Store) Append(ctx context.Context, r audit.AppendRequest) (audit.Entry, error) {
+	ctx, cancel := context.WithTimeout(ctx, appendTimeout)
+	defer cancel()
 	id := r.EntryID
 	got, err := s.q.AppendEntry(ctx, auditdb.AppendEntryParams{
 		EntryID:       pgUUID(&id),

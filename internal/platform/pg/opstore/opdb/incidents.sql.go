@@ -107,6 +107,17 @@ func (q *Queries) DefaultPartitionRows(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+const ensureEventPartitions = `-- name: EnsureEventPartitions :one
+SELECT op.ensure_event_partitions($1::int)::int AS created
+`
+
+func (q *Queries) EnsureEventPartitions(ctx context.Context, monthsAhead int32) (int32, error) {
+	row := q.db.QueryRow(ctx, ensureEventPartitions, monthsAhead)
+	var created int32
+	err := row.Scan(&created)
+	return created, err
+}
+
 const getIncident = `-- name: GetIncident :one
 SELECT id, reference, channel, state, version, severity, logic_version,
        t1, t2, t3, t4, t5, t6, t7, escalated, flags, merged_into

@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
@@ -64,11 +66,11 @@ const insertMEDS = `INSERT INTO analytic.meds_records
 	(study_id, parish, landmark_code, time_of_call, category, severity, responder_types,
 	 logic_version, zone_set_version, consent_status)
 	VALUES ($1, 'Bwaise I', 'LM-001', now(), 'trauma', 'red', ARRAY['vht','transporter'],
-	        'tr-test', 'zs-1', $2)`
+	        'tr-test+sha256:0123456789ab', 'zs-1', $2)`
 
 const insertWaiver = `INSERT INTO analytic.meds_records
 	(study_id, parish, time_of_call, logic_version, zone_set_version, consent_status, waiver_reason)
-	VALUES ($1, 'Bwaise II', now(), 'tr-test', 'zs-1', 'waiver', $2)`
+	VALUES ($1, 'Bwaise II', now(), 'tr-test+sha256:0123456789ab', 'zs-1', 'waiver', $2)`
 
 // Only records with consent, guardian permission/assent or a waiver may
 // enter the analytic store (Build Prompt rule 3.10; Guide §14).
@@ -109,14 +111,15 @@ func TestLinkageResolveRequiresAllowedReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := as(t, c, pg.StoreLinkage, "lk_reader")
+	staff := uuid.NewV4().String()
 	var got *uuid.UUID
-	if err := r.QueryRow(ctx, "SELECT linkage.resolve_incident($1, 'curiosity', 'staff-pi')", study).Scan(&got); err != nil {
+	if err := r.QueryRow(ctx, "SELECT linkage.resolve_incident($1, 'curiosity', $2)", study, staff).Scan(&got); err != nil {
 		t.Fatal(err)
 	}
 	if got != nil {
 		t.Fatalf("disallowed reason resolved to %v", got)
 	}
-	if err := r.QueryRow(ctx, "SELECT linkage.resolve_incident($1, 'withdrawal', 'staff-pi')", study).Scan(&got); err != nil {
+	if err := r.QueryRow(ctx, "SELECT linkage.resolve_incident($1, 'withdrawal', $2)", study, staff).Scan(&got); err != nil {
 		t.Fatal(err)
 	}
 	if got == nil || *got != inc {
@@ -186,6 +189,228 @@ func TestMediaRecordingsRequireDestroyByAndKey(t *testing.T) {
 	}
 	if _, err := w.Exec(ctx, "INSERT INTO media.recordings (key_id, consent_ref, destroy_by) VALUES ('k1', 'C-1', current_date + 400)"); code(err) != "23514" {
 		t.Errorf("destroy_by beyond 12 months: %v, want 23514", err)
+	}
+}
+
+// CodeRabbit PR #3: the retention limit is twelve calendar months from the
+// UTC creation date, not a fixed 366 days.
+func TestMediaRetentionIsTwelveCalendarMonths(t *testing.T) {
+	c := pgtest.Cluster(t)
+	owner := c.Owner(t, pg.StoreMedia) // only the owner may set created_at
+	ctx := context.Background()
+	const q = "INSERT INTO media.recordings (key_id, consent_ref, created_at, destroy_by) VALUES ('k1', 'C-1', $1, $2)"
+	for _, tc := range []struct {
+		created, destroyBy string
+		ok                 bool
+	}{
+		{"2025-01-01 12:00:00+00", "2026-01-01", true},
+		{"2025-01-01 12:00:00+00", "2026-01-02", false}, // 366 days, 12 months + 1 day
+		{"2025-01-31 23:30:00+00", "2026-01-31", true},
+		{"2025-01-31 23:30:00+00", "2026-02-01", false},
+		{"2024-02-29 08:00:00+00", "2025-02-28", true},
+		{"2024-02-29 08:00:00+00", "2025-03-01", false},
+	} {
+		_, err := owner.Exec(ctx, q, tc.created, tc.destroyBy)
+		if tc.ok && err != nil {
+			t.Errorf("created %s, destroy_by %s rejected: %v", tc.created, tc.destroyBy, err)
+		}
+		if !tc.ok && code(err) != "23514" {
+			t.Errorf("created %s, destroy_by %s: err = %v, want 23514", tc.created, tc.destroyBy, err)
+		}
+	}
+}
+
+// CodeRabbit PR #3: timestamps are set by the database (clock_timestamp());
+// no writer role may supply one and so backdate a withdrawal, an export or a
+// recording's retention clock.
+func TestWritersCannotSupplyDatabaseTimestamps(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	an := as(t, c, pg.StoreAnalytic, "an_writer")
+	lk := as(t, c, pg.StoreLinkage, "lk_writer")
+	md := as(t, c, pg.StoreMedia, "md_writer")
+	for _, tc := range []struct {
+		conn *pgx.Conn
+		q    string
+	}{
+		{an, `INSERT INTO analytic.meds_records (study_id, parish, time_of_call, logic_version, zone_set_version,
+			consent_status, exported_at) VALUES (gen_random_uuid(), 'Bwaise I', now(), 'tr-test+sha256:0123456789ab',
+			'zs-1', 'consented', now() - interval '1 year')`},
+		{an, "INSERT INTO analytic.suppression_ledger (study_id, reason, withdrawn_at) VALUES (gen_random_uuid(), 'withdrawal', now() - interval '1 year')"},
+		{lk, "INSERT INTO linkage.pairs (study_id, incident_id, created_at) VALUES (gen_random_uuid(), gen_random_uuid(), now() - interval '1 year')"},
+		{md, "INSERT INTO media.recordings (key_id, consent_ref, destroy_by, created_at) VALUES ('k1', 'C-1', current_date, now() + interval '5 years')"},
+		{md, "INSERT INTO media.recordings (key_id, consent_ref, destroy_by, transcript_checked_at) VALUES ('k1', 'C-1', current_date, now())"},
+	} {
+		if _, err := tc.conn.Exec(ctx, tc.q); code(err) != "42501" {
+			t.Errorf("%q: err = %v, want 42501", tc.q, err)
+		}
+	}
+	// Without the timestamp columns the same writers still insert.
+	for _, tc := range []struct {
+		conn *pgx.Conn
+		q    string
+	}{
+		{an, "INSERT INTO analytic.suppression_ledger (study_id, reason) VALUES (gen_random_uuid(), 'withdrawal')"},
+		{lk, "INSERT INTO linkage.pairs (study_id, incident_id) VALUES (gen_random_uuid(), gen_random_uuid())"},
+		{md, "INSERT INTO media.recordings (id, key_id, consent_ref, destroy_by) VALUES (gen_random_uuid(), 'k1', 'C-1', current_date)"},
+	} {
+		if _, err := tc.conn.Exec(ctx, tc.q); err != nil {
+			t.Errorf("%q: %v", tc.q, err)
+		}
+	}
+}
+
+// CodeRabbit PR #3: destination, first action and 24–48 h status hold codes
+// from closed lists, never free text such as a name, a phone number or an
+// address (hard constraint 8).
+func TestAnalyticCodedFieldsRejectFreeText(t *testing.T) {
+	c := pgtest.Cluster(t)
+	w := as(t, c, pg.StoreAnalytic, "an_writer")
+	ctx := context.Background()
+	for _, col := range []string{"destination", "first_action_code", "status_24_48h"} {
+		q := `INSERT INTO analytic.meds_records (study_id, parish, time_of_call, logic_version, zone_set_version,
+			consent_status, ` + col + `) VALUES ($1, 'Bwaise I', now(), 'tr-test+sha256:0123456789ab', 'zs-1', 'consented', $2)`
+		for _, bad := range []string{"Jane Doe +256700123456", "0772123456", "Mulago Hospital", "plot 4, kampala rd", "", "x" + strings.Repeat("y", 64)} {
+			if _, err := w.Exec(ctx, q, uuid.NewV4(), bad); code(err) != "23514" {
+				t.Errorf("%s = %q: err = %v, want 23514", col, bad, err)
+			}
+		}
+		for _, good := range []any{"facility.mulago_nrh", "self-transport", "a", nil} {
+			if _, err := w.Exec(ctx, q, uuid.NewV4(), good); err != nil {
+				t.Errorf("%s = %v rejected: %v", col, good, err)
+			}
+		}
+	}
+}
+
+func medsCount(t *testing.T, c *pgtest.TestCluster, id uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := as(t, c, pg.StoreAnalytic, "an_reader").QueryRow(context.Background(),
+		"SELECT count(*) FROM analytic.meds_records WHERE study_id = $1", id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// CodeRabbit PR #3: a withdrawal takes effect in the database itself. The
+// suppression-ledger entry deletes the study ID's MEDS record, and the ID can
+// never be inserted again, so a ledger replay after a restore re-applies it.
+func TestSuppressionDeletesAndBlocksMEDSRecord(t *testing.T) {
+	c := pgtest.Cluster(t)
+	w := as(t, c, pg.StoreAnalytic, "an_writer")
+	ctx := context.Background()
+	id, other := uuid.NewV4(), uuid.NewV4()
+	for _, s := range []uuid.UUID{id, other} {
+		if _, err := w.Exec(ctx, insertMEDS, s, "consented"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := w.Exec(ctx, "INSERT INTO analytic.suppression_ledger (study_id, reason) VALUES ($1, 'withdrawal')", id); err != nil {
+		t.Fatal(err)
+	}
+	if n := medsCount(t, c, id); n != 0 {
+		t.Fatalf("withdrawn study ID still has %d MEDS record(s)", n)
+	}
+	if n := medsCount(t, c, other); n != 1 {
+		t.Fatalf("suppression removed another study ID's record (count %d)", n)
+	}
+	if _, err := w.Exec(ctx, insertMEDS, id, "consented"); code(err) != "SA403" {
+		t.Fatalf("re-insert of a suppressed study ID: err = %v, want SA403", err)
+	}
+	// A replayed ledger entry for an ID restored from backup deletes it again.
+	owner := c.Owner(t, pg.StoreAnalytic)
+	restored := uuid.NewV4()
+	if _, err := w.Exec(ctx, insertMEDS, restored, "consented"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, "INSERT INTO analytic.suppression_ledger (study_id, reason) VALUES ($1, 'dsr_deletion')", restored); err != nil {
+		t.Fatal(err)
+	}
+	if n := medsCount(t, c, restored); n != 0 {
+		t.Fatalf("replayed suppression left %d record(s)", n)
+	}
+}
+
+// A MEDS insert that is still uncommitted when the withdrawal is recorded
+// must not survive it: the two serialise on the study ID.
+func TestSuppressionWinsOverConcurrentInsert(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	writer := as(t, c, pg.StoreAnalytic, "an_writer")
+	withdrawer := as(t, c, pg.StoreAnalytic, "an_writer")
+	id := uuid.NewV4()
+	tx, err := writer.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, insertMEDS, id, "consented"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := withdrawer.Exec(ctx, "INSERT INTO analytic.suppression_ledger (study_id, reason) VALUES ($1, 'withdrawal')", id)
+		done <- err
+	}()
+	time.Sleep(300 * time.Millisecond) // let the withdrawal run (or block) first
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := medsCount(t, c, id); n != 0 {
+		t.Fatalf("MEDS record committed concurrently with its withdrawal survived (count %d)", n)
+	}
+}
+
+// CodeRabbit PR #3: a NULL reason is a denied attempt, and it is logged like
+// any other (granted = NULL used to fail the insert and lose the log row).
+// The accessor must be a staff identity-provider subject (a UUID); free text
+// is denied and never stored, nor is a reason outside the lawful list.
+func TestLinkageDeniedAttemptsAreAlwaysLoggedWithoutFreeText(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	study, inc := uuid.NewV4(), uuid.NewV7()
+	if _, err := as(t, c, pg.StoreLinkage, "lk_writer").Exec(ctx,
+		"INSERT INTO linkage.pairs (study_id, incident_id) VALUES ($1, $2)", study, inc); err != nil {
+		t.Fatal(err)
+	}
+	r := as(t, c, pg.StoreLinkage, "lk_reader")
+	staff := uuid.NewV4().String()
+	for _, tc := range []struct {
+		reason, accessor any
+	}{
+		{nil, staff},
+		{"withdrawal", "Jane Doe +256700123456"},
+		{"withdrawal", nil},
+		{"Jane Doe asked", staff},
+	} {
+		var got *uuid.UUID
+		if err := r.QueryRow(ctx, "SELECT linkage.resolve_incident($1, $2, $3)", study, tc.reason, tc.accessor).Scan(&got); err != nil {
+			t.Fatalf("resolve(reason=%v, accessor=%v): %v", tc.reason, tc.accessor, err)
+		}
+		if got != nil {
+			t.Fatalf("resolve(reason=%v, accessor=%v) granted %v", tc.reason, tc.accessor, got)
+		}
+	}
+	var total, granted, leaked int
+	if err := c.Owner(t, pg.StoreLinkage).QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE granted), count(*) FILTER (WHERE l::text ~ 'Jane|256700')
+		FROM linkage.access_log l WHERE study_id = $1`, study).Scan(&total, &granted, &leaked); err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 || granted != 0 || leaked != 0 {
+		t.Fatalf("access_log total=%d granted=%d with free text=%d, want 4, 0, 0", total, granted, leaked)
+	}
+}
+
+// CodeRabbit PR #3: the access log is append-only against TRUNCATE too.
+func TestLinkageAccessLogCannotBeTruncated(t *testing.T) {
+	c := pgtest.Cluster(t)
+	if _, err := c.Owner(t, pg.StoreLinkage).Exec(context.Background(), "TRUNCATE linkage.access_log"); code(err) != "SA403" {
+		t.Fatalf("owner TRUNCATE access_log: err = %v, want SA403", err)
 	}
 }
 

@@ -16,8 +16,11 @@ TO op_intake;
 GRANT SELECT ON op.incidents, op.incident_events, op.sessions TO op_intake;
 GRANT SELECT, INSERT ON op.ussd_steps TO op_intake;
 
--- outbox-relay: the two outbox functions and nothing else.
+-- outbox-relay: the two outbox functions, and event-partition maintenance,
+-- which the leader runs ahead of the clock (SECURITY DEFINER; creates only
+-- the monthly partitions of op.incident_events).
 GRANT EXECUTE ON FUNCTION op.claim_outbox(text, int), op.mark_outbox_delivered(uuid[]) TO op_relay;
+GRANT EXECUTE ON FUNCTION op.ensure_event_partitions(int) TO op_relay;
 
 -- Read-only verification and monitoring: no access to sessions (identifiers).
 GRANT SELECT ON op.incidents, op.incident_events, op.event_keys, op.incident_transitions,

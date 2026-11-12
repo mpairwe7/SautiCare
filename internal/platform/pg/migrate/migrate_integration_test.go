@@ -65,6 +65,73 @@ func TestMigrateRefusesChangedChecksum(t *testing.T) {
 	}
 }
 
+func ledgerVersions(t *testing.T, c *pgx.Conn) []string {
+	t.Helper()
+	rows, err := c.Query(context.Background(), "SELECT version FROM public.schema_migrations ORDER BY version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func tableExists(t *testing.T, c *pgx.Conn, name string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(), "SELECT to_regclass($1) IS NOT NULL", name).Scan(&ok); err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+// CodeRabbit PR #3: an applied migration whose file is gone means fresh
+// databases would no longer get it. The migrator must refuse, and apply
+// nothing, rather than report success.
+func TestMigrateRefusesMissingAppliedFile(t *testing.T) {
+	c := conn(t, pgtest.EmptyDB(t))
+	ctx := context.Background()
+	if _, err := migrate.Run(ctx, c, "test", files()); err != nil {
+		t.Fatal(err)
+	}
+	gone := files()
+	delete(gone, "migrations/0001_a.sql")
+	gone["migrations/0003_c.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE c (z int);")}
+	applied, err := migrate.Run(ctx, c, "test", gone)
+	if !errors.Is(err, migrate.ErrMissingMigration) {
+		t.Fatalf("err = %v, want ErrMissingMigration", err)
+	}
+	if len(applied) != 0 || tableExists(t, c, "c") {
+		t.Fatalf("applied %v (table c exists: %v) despite the missing file", applied, tableExists(t, c, "c"))
+	}
+}
+
+// CodeRabbit PR #3: the whole history is checked before anything runs. A new
+// earlier-numbered file must not be applied when a later applied file has
+// been edited.
+func TestMigrateValidatesHistoryBeforeApplying(t *testing.T) {
+	c := conn(t, pgtest.EmptyDB(t))
+	ctx := context.Background()
+	if _, err := migrate.Run(ctx, c, "test", files()); err != nil {
+		t.Fatal(err)
+	}
+	changed := files()
+	changed["migrations/0000_early.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE early (x int);")}
+	changed["migrations/0002_b.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE b (y bigint);")}
+	applied, err := migrate.Run(ctx, c, "test", changed)
+	if !errors.Is(err, migrate.ErrChecksumMismatch) {
+		t.Fatalf("err = %v, want ErrChecksumMismatch", err)
+	}
+	if len(applied) != 0 || tableExists(t, c, "early") {
+		t.Fatalf("applied %v (table early exists: %v) before refusing", applied, tableExists(t, c, "early"))
+	}
+	if got := ledgerVersions(t, c); len(got) != 2 || got[0] != "0001_a" || got[1] != "0002_b" {
+		t.Fatalf("ledger = %v, want [0001_a 0002_b]", got)
+	}
+}
+
 func TestMigrateSerializesConcurrentRunners(t *testing.T) {
 	dsn := pgtest.EmptyDB(t)
 	ctx := context.Background()

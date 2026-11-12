@@ -15,7 +15,9 @@ CREATE TABLE audit.entries (
     event_type     text        NOT NULL CHECK (event_type ~ '^[a-z][a-z0-9_.]{2,63}$'),
     incident_id    uuid,
     staff_id       uuid,
-    logic_version  text        CHECK (logic_version <> '' AND length(logic_version) <= 200),
+    -- An approved logic identifier (name+sha256:hex), never free text; the
+    -- operational write path enforces the same format (op.append_incident_event).
+    logic_version  text        CHECK (logic_version ~ '^[a-z0-9][a-z0-9._-]{0,63}\+sha256:[0-9a-f]{12,64}$'),
     payload_sha256 bytea       NOT NULL CHECK (octet_length(payload_sha256) = 32),
     prev_hash      bytea       NOT NULL CHECK (octet_length(prev_hash) = 32),
     hash           bytea       NOT NULL CHECK (octet_length(hash) = 32)

@@ -93,10 +93,15 @@ type OutboxBatch interface {
 
 // Outbox is the operational store's transactional outbox (spec §6.3).
 //
-// Ordering contract: Claim returns rows in outbox ID order (uuidv7, i.e.
-// creation order) and locks them until Complete or Abort; exactly one relay
-// is active at a time (pg.RunAsLeader), so ledger order is outbox order
-// across batches. RunOnce also sorts each batch defensively.
+// Ordering contract: Claim returns committed rows in outbox ID order
+// (uuidv7, i.e. creation order) and locks them until Complete or Abort, and
+// one relay is active at a time (pg.RunAsLeader). Ledger order is delivery
+// order: a row whose transaction commits after a later-created row's is
+// delivered in a later batch. The chain, its checkpoints and verification
+// never depend on outbox-ID order; each entry carries its event's database
+// time (occurred_at). Strict creation order would mean holding delivery
+// behind every running transaction or serialising the dispatch write path
+// (CodeRabbit PR #3, finding 962).
 type Outbox interface {
 	Claim(ctx context.Context, topic string, limit int) (OutboxBatch, error)
 }
