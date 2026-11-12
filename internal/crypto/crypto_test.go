@@ -202,3 +202,32 @@ func TestMACRejectsInvalidKeyLength(t *testing.T) {
 		}
 	}
 }
+
+// Each signature purpose has its own ML-DSA context, so a triage-rules
+// signature can never be presented as an audit checkpoint signature (or the
+// reverse), even under the same key.
+func TestSignatureContextsAreSeparated(t *testing.T) {
+	sk, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := sk.PublicKey().Bytes()
+	msg := []byte("bundle")
+	sig, err := SignWithContext(sk, TriageRulesContext, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyWithContext(pub, TriageRulesContext, msg, sig); err != nil {
+		t.Fatalf("own context: %v", err)
+	}
+	if err := VerifyMLDSA65(pub, msg, sig); err == nil {
+		t.Fatal("triage signature verified as a checkpoint signature")
+	}
+	cp, err := SignMLDSA65(sk, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyWithContext(pub, TriageRulesContext, msg, cp); err == nil {
+		t.Fatal("checkpoint signature verified as a triage signature")
+	}
+}

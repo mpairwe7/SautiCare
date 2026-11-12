@@ -39,6 +39,7 @@ type Bundle struct {
 	Dispatch        Dispatch
 	Flags           Flags
 	Screens         Screens
+	Triage          Triage
 	Platform        Platform
 	// Fingerprint is "sha256:<hex>" over every gated file (path and content).
 	Fingerprint string
@@ -74,6 +75,14 @@ type Dispatch struct {
 	VoiceFallbackAfter Duration `yaml:"voice_fallback_after"`
 	RankingOrder       []string `yaml:"ranking_order"`
 	RankingVersion     string   `yaml:"ranking_version"`
+}
+
+// Triage holds the trust anchors for clinical rule bundles: who may sign
+// them (ML-DSA-65 public keys, base64, by key ID) and which bundle runs.
+// Changing either is a protocol change under the amendment gate.
+type Triage struct {
+	RulesFile   string            `yaml:"rules_file"`
+	TrustedKeys map[string]string `yaml:"trusted_keys"`
 }
 
 // Flags are the section 11 enhancements; all stay false during the study.

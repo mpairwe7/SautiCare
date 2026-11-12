@@ -1,0 +1,24 @@
+# Clinical scenarios the signed bundle must satisfy (CI:
+# internal/triage/triage_test.go TestRepositoryBundleVerifies). Owned with
+# the rules by the emergency medicine co-investigators.
+- name: "Build Prompt scenario 3: poisoning, screen 5 = no is yellow, not green"
+  inputs: {danger: "no", category: "poisoning", age_band: "age_18_59", specific_danger: "no"}
+  severity: yellow
+- name: "Danger check yes is red whatever the category"
+  inputs: {danger: "yes", category: "other", age_band: "age_18_59", specific_danger: "no"}
+  severity: red
+- name: "Category danger question yes is red"
+  inputs: {danger: "no", category: "obstetric", age_band: "age_18_59", specific_danger: "yes"}
+  severity: red
+- name: "Danger check I do not know, screen 5 no is yellow"
+  inputs: {danger: "unknown", category: "trauma", age_band: "age_60_plus", specific_danger: "no"}
+  severity: yellow
+- name: "Both no, ordinary category is green"
+  inputs: {danger: "no", category: "acute_medical", age_band: "under_5", specific_danger: "no"}
+  severity: green
+- name: "Poisoning with a danger sign stays red"
+  inputs: {danger: "no", category: "poisoning", age_band: "age_5_17", specific_danger: "yes"}
+  severity: red
+- name: "Unknown age band does not change the rule"
+  inputs: {danger: "no", category: "trauma", age_band: "unknown", specific_danger: "no"}
+  severity: green

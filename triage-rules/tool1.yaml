@@ -1,0 +1,37 @@
+# Tool 1 severity rules: an ordered decision table, first match wins
+# (Build Prompt §10.1; Engineering Guide §5; spec ADR-0019).
+#
+# The rule logic is the protocol's:
+#   red    if screen 2 (danger) = yes or screen 5 (specific danger) = yes;
+#   yellow if screen 2 = I do not know and screen 5 = no,
+#          or the category is time-critical (poisoning or snake bite) and
+#          screen 5 = no;
+#   green  otherwise.
+# The input value lists are PLACEHOLDERS until Data Collection Tool 1 is
+# received: the category list (including whether snake bite is its own
+# category, open item O11) and the age bands. protocol_status: pending blocks
+# production, and so does a development signature.
+#
+# Authored and signed by the emergency medicine co-investigators; any change
+# needs a new signature (sautictl triage sign) and, during the study window,
+# an approved amendment. Clinical scenarios: triage-rules/scenarios.yaml.
+version: "tool1-placeholder-0.1"
+protocol_status: pending
+inputs:
+  danger: ["yes", "no", "unknown"]
+  category: ["trauma", "obstetric", "acute_medical", "poisoning", "other"]
+  age_band: ["under_5", "age_5_17", "age_18_59", "age_60_plus", "unknown"]
+  specific_danger: ["yes", "no"]
+rules:
+  - id: red-danger-sign
+    when: 'danger == "yes" || specific_danger == "yes"'
+    severity: red
+  - id: yellow-danger-unknown
+    when: 'danger == "unknown" && specific_danger == "no"'
+    severity: yellow
+  - id: yellow-time-critical-category
+    when: 'category in ["poisoning"] && specific_danger == "no"'
+    severity: yellow
+  - id: green-otherwise
+    when: "true"
+    severity: green

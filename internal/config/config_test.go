@@ -62,6 +62,7 @@ func minimalFS() fstest.MapFS {
 		"gated/dispatch.yaml": {Data: []byte("mode: protocol\nring_step_metres: 500\nring_interval: 60s\nmax_radius_metres: 2500\ncascade_timeout: 90s\nred_parallel_count: 3\nforward_ack_timeout: 60s\nvoice_fallback_after: 20s\nranking_order: [zone_distance]\nranking_version: v1\n")},
 		"gated/flags.yaml":    {Data: []byte("android_app: false\ncaller_link: false\nspeech_assist: false\napp_api: false\n")},
 		"gated/screens.yaml":  {Data: []byte("started_test_mode: {en: \"Incident {ref}\", lg: \"Ekikolwa {ref}\"}\ninternal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")},
+		"gated/triage.yaml":   {Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {clinical-1: \"AAAA\"}\n")},
 	}
 }
 
@@ -191,5 +192,30 @@ func TestLoadRejectsUnknownGatedFile(t *testing.T) {
 	fs["gated/gazetteer.yaml"] = &fstest.MapFile{Data: []byte("version: v\n")}
 	if _, err := Load(fs); err != nil {
 		t.Fatalf("separately versioned gated file refused: %v", err)
+	}
+}
+
+// The triage trust anchors are gated and fingerprinted: changing who may
+// sign clinical rules is itself a protocol change.
+func TestLoadReadsTriageTrustAnchors(t *testing.T) {
+	b, err := Load(minimalFS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Triage.RulesFile != "triage-rules/tool1.yaml" || b.Triage.TrustedKeys["clinical-1"] != "AAAA" {
+		t.Fatalf("triage = %+v", b.Triage)
+	}
+	fs := minimalFS()
+	fs["gated/triage.yaml"] = &fstest.MapFile{Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {clinical-2: \"AAAA\"}\n")}
+	c, err := Load(fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Fingerprint == b.Fingerprint {
+		t.Fatal("changing the trusted keys did not change the fingerprint")
+	}
+	fs["gated/triage.yaml"] = &fstest.MapFile{Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {}\n")}
+	if _, err := Load(fs); err == nil {
+		t.Fatal("no trusted keys accepted")
 	}
 }
