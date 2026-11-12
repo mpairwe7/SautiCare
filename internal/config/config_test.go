@@ -38,6 +38,7 @@ func TestLoadRepoConfigDefaults(t *testing.T) {
 		{"red parallel 3", b.Dispatch.RedParallelCount == 3},
 		{"forward ack 60s", b.Dispatch.ForwardAckTimeout.Duration == 60*time.Second},
 		{"voice fallback 20s", b.Dispatch.VoiceFallbackAfter.Duration == 20*time.Second},
+		{"red escalation at 3 min (decision 2)", b.Dispatch.RedEscalationAfter.Duration == 3*time.Minute},
 		{"protocol mode until amendment", b.Dispatch.Mode == "protocol"},
 		{"decision 4 default order", strings.Join(b.Dispatch.RankingOrder, ",") == "zone_distance,response_history,least_recently_dispatched"},
 		{"all section 11 flags off", !b.Flags.AndroidApp && !b.Flags.CallerLink && !b.Flags.SpeechAssist && !b.Flags.AppAPI},

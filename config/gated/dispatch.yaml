@@ -9,6 +9,10 @@ cascade_timeout: 90s
 red_parallel_count: 3
 forward_ack_timeout: 60s
 voice_fallback_after: 20s
+# Decision 2, protocol answer (Build Prompt §19): the coordinator is alerted
+# at 3 minutes for red with a role unaccepted (both modes), or when the
+# cascade is exhausted for yellow and green.
+red_escalation_after: 3m
 # Decision 4 is OPEN (PI and co-investigators): safe default order.
 ranking_order: [zone_distance, response_history, least_recently_dispatched]
 ranking_version: default-2026-11-12

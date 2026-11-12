@@ -86,6 +86,7 @@ type Dispatch struct {
 	RedParallelCount   int      `yaml:"red_parallel_count"`
 	ForwardAckTimeout  Duration `yaml:"forward_ack_timeout"`
 	VoiceFallbackAfter Duration `yaml:"voice_fallback_after"`
+	RedEscalationAfter Duration `yaml:"red_escalation_after"`
 	RankingOrder       []string `yaml:"ranking_order"`
 	RankingVersion     string   `yaml:"ranking_version"`
 }
