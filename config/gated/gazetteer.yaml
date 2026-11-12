@@ -6,7 +6,7 @@
 #
 # Gated (rule 3.11): frozen during the study window; a correction is a new
 # version plus a deviation record. Load with `sautictl gazetteer load`.
-version: "placeholder-2026-11-13"
+version: "placeholder-2026-11-13b"
 status: placeholder
 wards:
   - {id: w01, name: {en: "Test Ward 1", lg: "Test Ward 1"}, centre: {lat: 0.3800, lon: 32.5560}}
@@ -47,10 +47,10 @@ stages:  # boda-boda stages where transporters wait (synthetic)
   - {id: w03_stage_b, ward: w03, name: {en: "Test Stage 3B", lg: "Test Stage 3B"}, point: {lat: 0.3700, lon: 32.5640}}
   - {id: w04_stage_a, ward: w04, name: {en: "Test Stage 4A", lg: "Test Stage 4A"}, point: {lat: 0.3660, lon: 32.5550}}
   - {id: w04_stage_b, ward: w04, name: {en: "Test Stage 4B", lg: "Test Stage 4B"}, point: {lat: 0.3630, lon: 32.5530}}
-# Health facilities. Phones are PLACEHOLDERS in a range Uganda's numbering
+# Health facilities. Phones are PLACEHOLDERS (written with the trunk 0: +256 0 ...) in a range Uganda's numbering
 # plan does not use (+256 0...): the real public numbers come with the
 # field team's registration of facilities.
 facilities:
-  - {id: hc_test_1, name: {en: "Test Health Centre 1", lg: "Test Health Centre 1"}, point: {lat: 0.3830, lon: 32.5590}, forwarding_enabled: true, phone: "+256000000001"}
-  - {id: hc_test_2, name: {en: "Test Health Centre 2", lg: "Test Health Centre 2"}, point: {lat: 0.3690, lon: 32.5600}, forwarding_enabled: true, phone: "+256000000002"}
+  - {id: hc_test_1, name: {en: "Test Health Centre 1", lg: "Test Health Centre 1"}, point: {lat: 0.3830, lon: 32.5590}, forwarding_enabled: true, phone: "+2560000000001"}
+  - {id: hc_test_2, name: {en: "Test Health Centre 2", lg: "Test Health Centre 2"}, point: {lat: 0.3690, lon: 32.5600}, forwarding_enabled: true, phone: "+2560000000002"}
   - {id: hc_test_3, name: {en: "Test Clinic 3", lg: "Test Clinic 3"}, point: {lat: 0.3760, lon: 32.5680}}

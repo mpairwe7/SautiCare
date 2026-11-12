@@ -15,6 +15,7 @@
 //	SAUTI_ARI_ALERT_APP   Stasis application of outbound alert calls (default sauti-alerts)
 //	SAUTI_ARI_DIAL        endpoint template for alert calls, with {number} (e.g. PJSIP/{number}@sauti-trunk); unset: no voice alerts
 //	SAUTI_ARI_CALLER_ID   the number responders see on an alert call (placeholder until P0)
+//	SAUTI_COORDINATOR_DIAL the coordinator line rung about every escalation (endpoint; placeholder until P0); unset: no escalation calls
 //	SAUTI_ADMIN_ADDR      health and metrics (default 127.0.0.1:9101)
 //	SAUTI_DEVKEYS_DIR     development key directory (refused in production)
 //	SAUTI_CONFIG_DIR      configuration directory (config/)
@@ -157,16 +158,40 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		callerID := os.Getenv("SAUTI_ARI_CALLER_ID")
 		calls, err := ivr.NewAlertCalls(ivr.AlertCallsConfig{ARI: alertClient, Store: store, Opener: crypto.NewEnvelope(keys, rand.Reader),
-			Dial: dial, CallerID: os.Getenv("SAUTI_ARI_CALLER_ID"), After: cfg.Dispatch.VoiceFallbackAfter.Duration, Copy: cfg.Responder,
+			Dial: dial, CallerID: callerID, After: cfg.Dispatch.VoiceFallbackAfter.Duration, Copy: cfg.Responder,
 			AskReasons: cfg.Dispatch.Mode == dispatch.ModeAmended, Log: log})
 		if err != nil {
 			return err
 		}
-		go func() { errc <- alertClient.Events(ctx, func(e ari.Event) { calls.Handle(ctx, e) }) }()
+		// Forwarded health centres are called (press 1 to acknowledge).
+		forwards, err := ivr.NewForwardCalls(ivr.ForwardCallsConfig{ARI: alertClient, Store: store, Dial: dial, CallerID: callerID,
+			Gazetteer: built.Gazetteer, Log: log})
+		if err != nil {
+			return err
+		}
+		out := ivr.Outbound{ARI: alertClient, Alerts: calls, Forwards: forwards}
+		// Every escalation rings the coordinator line until acknowledged
+		// (rule 3.14); without a line configured, coordinators work from the
+		// console list only.
+		if line := os.Getenv("SAUTI_COORDINATOR_DIAL"); line != "" {
+			if out.Coordinator, err = ivr.NewCoordinatorCalls(ivr.CoordinatorCallsConfig{ARI: alertClient, Store: store, Endpoint: line,
+				CallerID: callerID, Log: log}); err != nil {
+				return err
+			}
+		} else {
+			log.Warn("SAUTI_COORDINATOR_DIAL is not set: escalations are not rung to coordinators")
+		}
+		go func() { errc <- alertClient.Events(ctx, func(e ari.Event) { out.Handle(ctx, e) }) }()
 		go func() {
 			_ = pg.RunAsLeader(ctx, pool, alertCallsLeaderKey, 5*time.Second, func(lctx context.Context) error {
-				return calls.Run(lctx, 2*time.Second, func(err error) { log.Error("voice alerts failed", "err", err) })
+				onErr := func(err error) { log.Error("outbound calls failed", "err", err) }
+				go func() { _ = forwards.Run(lctx, 2*time.Second, onErr) }()
+				if out.Coordinator != nil {
+					go func() { _ = out.Coordinator.Run(lctx, 5*time.Second, onErr) }()
+				}
+				return calls.Run(lctx, 2*time.Second, onErr)
 			})
 		}()
 	} else {

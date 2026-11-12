@@ -1,0 +1,151 @@
+package ivr
+
+import (
+	"context"
+	"os"
+	"slices"
+	"testing"
+	"time"
+	"uuid"
+
+	"sautihealth.com/sauti/internal/dispatch"
+	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/location"
+)
+
+type forwardStore struct {
+	due     []dispatch.ForwardCall
+	claimed map[string]bool
+	settled []string
+	acked   []string
+}
+
+func (s *forwardStore) DueForwardCalls(context.Context, int) ([]dispatch.ForwardCall, error) {
+	var out []dispatch.ForwardCall
+	for _, d := range s.due {
+		if !s.claimed[d.FacilityID] {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+func (s *forwardStore) BeginForwardAttempt(_ context.Context, _ uuid.UUID, facility, channel string) (uuid.UUID, bool, error) {
+	if channel != dispatch.ChannelVoice || s.claimed[facility] {
+		return uuid.UUID{}, false, nil
+	}
+	s.claimed[facility] = true
+	return uuid.NewV7(), true, nil
+}
+func (s *forwardStore) FinishForwardAttempt(_ context.Context, _ uuid.UUID, status, _ string) (bool, error) {
+	s.settled = append(s.settled, status)
+	return true, nil
+}
+func (s *forwardStore) MessageFacts(context.Context, uuid.UUID) (dispatch.MessageFacts, error) {
+	return dispatch.MessageFacts{Reference: "1234567894", Severity: incident.SevRed, Category: "trauma"}, nil
+}
+func (s *forwardStore) AcknowledgeForward(_ context.Context, _ uuid.UUID, facility string) (bool, error) {
+	s.acked = append(s.acked, facility)
+	return true, nil
+}
+
+func gazetteer(t *testing.T) location.File {
+	t.Helper()
+	raw, err := os.ReadFile("../../../config/gated/gazetteer.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := location.ParseFile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// Scenarios 7 and 8: the forwarded health centre's public number is called
+// once; the answered call hears the incident and "press 1"; 1 acknowledges.
+func TestForwardCalls(t *testing.T) {
+	a := &alertARI{}
+	inc := uuid.NewV7()
+	st := &forwardStore{due: []dispatch.ForwardCall{{IncidentID: inc, FacilityID: "hc_test_1"}}, claimed: map[string]bool{}}
+	fc, err := NewForwardCalls(ForwardCallsConfig{ARI: a, Store: st, Dial: "PJSIP/{number}@sauti-trunk", Gazetteer: gazetteer(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := fc.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(a.originated) != 1 || a.originated[0] != "PJSIP/+256000000001@sauti-trunk" || a.args[0][0] != "forward" || len(st.settled) != 1 {
+		t.Fatalf("originated %v args %v settled %v", a.originated, a.args, st.settled)
+	}
+	ch := "fwd-1"
+	fc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: ch, Args: a.args[0]})
+	if len(a.plays) != 1 || !slices.Contains(a.plays[0], "sauti/en/forward-options") || !slices.Contains(a.plays[0], "sauti/digits/4") {
+		t.Fatalf("plays %v", a.plays)
+	}
+	fc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+	if !slices.Equal(st.acked, []string{"hc_test_1"}) || !slices.Contains(a.hungUp, ch) {
+		t.Fatalf("acknowledged %v hung up %v", st.acked, a.hungUp)
+	}
+}
+
+type coordStore struct {
+	calls []dispatch.CoordinatorCall
+	acked map[uuid.UUID]int64
+}
+
+func (s *coordStore) ClaimCoordinatorCalls(context.Context, time.Duration, int) ([]dispatch.CoordinatorCall, error) {
+	out := s.calls
+	s.calls = nil
+	return out, nil
+}
+func (s *coordStore) AcknowledgeCoordinatorCall(_ context.Context, id uuid.UUID, seq int64) error {
+	s.acked[id] = seq
+	return nil
+}
+
+// Scenario 11 and every escalation: the coordinator line rings with the
+// incident number and the reason; 1 acknowledges the escalations up to it.
+func TestCoordinatorCallsRingAndAcknowledge(t *testing.T) {
+	a := &alertARI{}
+	inc := uuid.NewV7()
+	st := &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: inc, Seq: 7, Reason: "triage_rule_error", Reference: "1234567894", Calls: 1}},
+		acked: map[uuid.UUID]int64{}}
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Retry: 2 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := cc.RunOnce(context.Background()); err != nil || n != 1 {
+		t.Fatalf("rang %d %v", n, err)
+	}
+	if len(a.originated) != 1 || a.originated[0] != "PJSIP/coordinators" || a.args[0][0] != "escalation" {
+		t.Fatalf("originated %v %v", a.originated, a.args)
+	}
+	ch := "esc-1"
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: ch, Args: a.args[0]})
+	if len(a.plays) != 1 || !slices.Contains(a.plays[0], "sauti/en/escalation-reason-triage_rule_error") {
+		t.Fatalf("plays %v", a.plays)
+	}
+	cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+	if st.acked[inc] != 7 || !slices.Contains(a.hungUp, ch) {
+		t.Fatalf("acknowledged %v hung up %v", st.acked, a.hungUp)
+	}
+	if got := escalationReasonSound("en", "something_new"); got != "sauti/en/escalation-reason-other" {
+		t.Fatalf("unknown reason sound %s", got)
+	}
+}
+
+// One Stasis application serves all outbound calls: each answered call goes
+// to its kind.
+func TestOutboundRoutesByKind(t *testing.T) {
+	a := &alertARI{}
+	st := &coordStore{acked: map[uuid.UUID]int64{}}
+	cc, _ := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Retry: time.Minute})
+	o := Outbound{ARI: a, Coordinator: cc}
+	o.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "x", Args: []string{"escalation", uuid.NewV7().String(), "3", "dispatch_stalled", "1234567894"}})
+	o.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "y", Args: []string{"nonsense"}})
+	if len(a.answered) != 1 || !slices.Contains(a.hungUp, "y") {
+		t.Fatalf("answered %v hung up %v", a.answered, a.hungUp)
+	}
+}

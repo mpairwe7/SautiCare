@@ -207,3 +207,24 @@ func (s *SMS) Remind(ctx context.Context, r dispatch.Reminder) (string, error) {
 	return s.send(ctx, to, config.SMSAvailabilityExpiring, s.c.ResponderLanguage,
 		config.SMSValues{Time: r.Until.In(eat).Format("15:04")})
 }
+
+// NotifyFacility sends the forwarded facility its SMS (scenario 7): to its
+// public number, in English (a facility's working language), with the
+// incident number, colour, category, ward and landmark.
+func (s *SMS) NotifyFacility(ctx context.Context, incidentID uuid.UUID, facilityID string) (string, error) {
+	for _, fac := range s.c.Gazetteer.Facilities {
+		if fac.ID != facilityID {
+			continue
+		}
+		to, err := pii.ParsePhone(fac.Phone)
+		if err != nil {
+			return "", fmt.Errorf("%w: facility %s has no usable number", dispatch.ErrRejected, facilityID)
+		}
+		f, err := s.c.Directory.MessageFacts(ctx, incidentID)
+		if err != nil {
+			return "", err
+		}
+		return s.send(ctx, to, config.SMSFacilityForward, "en", s.values(f, "en"))
+	}
+	return "", fmt.Errorf("%w: facility %q is not in the gazetteer in force", dispatch.ErrRejected, facilityID)
+}

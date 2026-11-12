@@ -253,6 +253,11 @@ func (s simMessenger) Notify(_ context.Context, n dispatch.Notice) (string, erro
 	return "sim-" + n.AttemptID.String()[:8], nil
 }
 
+func (s simMessenger) NotifyFacility(_ context.Context, incidentID uuid.UUID, facility string) (string, error) {
+	s.log.Info("simulated facility SMS", "incident", incidentID, "facility", facility)
+	return "sim-facility", nil
+}
+
 func (s simMessenger) Remind(_ context.Context, r dispatch.Reminder) (string, error) {
 	s.log.Info("simulated availability reminder", "responder", r.ResponderID, "until", r.Until)
 	return "sim-reminder", nil

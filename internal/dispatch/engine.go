@@ -35,6 +35,8 @@ type Store interface {
 	FinishAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
 
 	BeginNoticeAttempt(ctx context.Context, incidentID uuid.UUID, kind, channel string) (uuid.UUID, bool, error)
+	BeginForwardAttempt(ctx context.Context, incidentID uuid.UUID, facility, channel string) (uuid.UUID, bool, error)
+	FinishForwardAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
 	FinishNoticeAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
 
 	RedDispatchOutcomes(ctx context.Context, window int, redWindow time.Duration) ([]bool, error)
@@ -59,9 +61,11 @@ type Deliverer interface {
 // message (the attempt failed; nothing was sent).
 var ErrRejected = errors.New("dispatch: delivery rejected by the provider")
 
-// Notifier delivers caller notices (the SMS channel); errors as Deliverer.
+// Notifier delivers caller notices and forwarded facilities' SMS (the SMS
+// channel); errors as Deliverer.
 type Notifier interface {
 	Notify(ctx context.Context, n Notice) (providerRef string, err error)
+	NotifyFacility(ctx context.Context, incidentID uuid.UUID, facilityID string) (providerRef string, err error)
 }
 
 // Suspension reports whether dispatch is suspended (O6); the operational
@@ -338,6 +342,21 @@ func (e *Engine) deliver(ctx context.Context, snap Snapshot) error {
 		}
 		ref, nerr := e.notifier.Notify(ctx, Notice{AttemptID: attempt, IncidentID: snap.IncidentID, Kind: kind, Channel: ChannelSMS})
 		if _, err := e.store.FinishNoticeAttempt(ctx, attempt, settlement(nerr), ref); err != nil {
+			return err
+		}
+	}
+	// Each forwarded facility's SMS (scenario 7), once; its call is
+	// ivr-controller's.
+	for _, f := range snap.Forwards {
+		attempt, fresh, err := e.store.BeginForwardAttempt(ctx, snap.IncidentID, f.FacilityID, ChannelSMS)
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			continue
+		}
+		ref, ferr := e.notifier.NotifyFacility(ctx, snap.IncidentID, f.FacilityID)
+		if _, err := e.store.FinishForwardAttempt(ctx, attempt, settlement(ferr), ref); err != nil {
 			return err
 		}
 	}

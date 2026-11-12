@@ -197,3 +197,24 @@ func TestAvailabilityReminderSMS(t *testing.T) {
 		t.Fatalf("reminder %+v", s.got)
 	}
 }
+
+// Forwarding (scenario 7): the facility's SMS goes to its public number and
+// carries the incident number, colour, category, ward and landmark — never
+// the caller's number.
+func TestFacilitySMS(t *testing.T) {
+	_, g := repo(t)
+	s := &fakeSender{}
+	if _, err := newSMS(t, true, fakeDir{facts: facts}, s).NotifyFacility(context.Background(), uuid.NewV7(), "hc_test_1"); err != nil {
+		t.Fatal(err)
+	}
+	ward, _ := g.Ward("w01")
+	fac := g.Facilities[0]
+	want, _ := pii.ParsePhone(fac.Phone)
+	if len(s.got) != 1 || s.got[0].to != want.E164() || !strings.Contains(s.got[0].text, ward.Name.EN) ||
+		!strings.Contains(s.got[0].text, "123 456 7894") || strings.Contains(s.got[0].text, callerNumber) {
+		t.Fatalf("facility SMS %+v", s.got)
+	}
+	if _, err := newSMS(t, true, fakeDir{facts: facts}, s).NotifyFacility(context.Background(), uuid.NewV7(), "hc_unknown"); !errors.Is(err, dispatch.ErrRejected) {
+		t.Fatalf("unknown facility: %v", err)
+	}
+}

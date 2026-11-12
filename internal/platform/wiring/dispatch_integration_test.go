@@ -56,10 +56,18 @@ func (c *hooked) IssueAlert(ctx context.Context, p dispatch.IssueParams) (dispat
 // recorder is the Deliverer: it records every delivery; fail, if set,
 // decides the outcome of one.
 type recorder struct {
-	mu      sync.Mutex
-	sent    []dispatch.Delivery
-	notices []dispatch.Notice
-	fail    func(dispatch.Delivery) error
+	mu         sync.Mutex
+	sent       []dispatch.Delivery
+	notices    []dispatch.Notice
+	facilities []string
+	fail       func(dispatch.Delivery) error
+}
+
+func (r *recorder) NotifyFacility(_ context.Context, _ uuid.UUID, facility string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.facilities = append(r.facilities, facility)
+	return "sim-f-" + facility, nil
 }
 
 func (r *recorder) Notify(_ context.Context, n dispatch.Notice) (string, error) {
