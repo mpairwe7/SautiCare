@@ -88,8 +88,19 @@ func (h *handler) reply(w http.ResponseWriter, sc intake.Screen) {
 	_, _ = w.Write([]byte(prefix + sc.Text))
 }
 
+// fail answers an authenticated request that cannot be processed: the caller
+// still gets an END screen with the free voice line (rule 3.14; review I4).
+// The reason is logged without any input or number.
+func (h *handler) fail(w http.ResponseWriter, sessionID, reason string) {
+	h.log.Warn("ussd request answered with voice line", "provider", h.cfg.Provider, "session", sessionID, "reason", reason)
+	h.reply(w, intake.Screen{Text: h.cfg.ErrorText, End: true})
+}
+
 func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	// Transport-level rejections only: wrong route token, wrong media type,
+	// oversize body, unknown service code. Everything after authentication
+	// is answered with a screen.
 	if subtle.ConstantTimeCompare([]byte(r.PathValue("token")), []byte(h.cfg.PathToken)) != 1 {
 		http.NotFound(w, r)
 		return
@@ -105,28 +116,30 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			return
 		}
-		w.WriteHeader(http.StatusBadRequest)
+		h.fail(w, "", "malformed form encoding")
 		return
 	}
 	sessionID := r.PostForm.Get("sessionId")
 	serviceCode := r.PostForm.Get("serviceCode")
-	if !printable(sessionID, 128) {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
 	if !h.codes[serviceCode] {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	phone, err := pii.ParsePhone(r.PostForm.Get("phoneNumber"))
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+	if !printable(sessionID, 128) {
+		h.fail(w, "", "missing or invalid sessionId")
 		return
 	}
 	text := r.PostForm.Get("text")
 	if len(text) > 1024 || strings.ContainsAny(text, "\r\n") {
-		w.WriteHeader(http.StatusBadRequest)
+		h.fail(w, sessionID, "invalid text")
 		return
+	}
+	// An unparseable or withheld number never blocks a report: the session
+	// proceeds with an unknown phone and dispatch proceeds on location.
+	phone, err := pii.ParsePhone(r.PostForm.Get("phoneNumber"))
+	if err != nil {
+		h.log.Warn("ussd caller number unparseable; proceeding as unknown", "provider", h.cfg.Provider, "session", sessionID)
+		phone = pii.Phone{}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Budget)

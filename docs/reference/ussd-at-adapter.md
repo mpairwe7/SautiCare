@@ -21,8 +21,14 @@
 | `serviceCode` in `SAUTI_USSD_SERVICE_CODES` | 403 |
 | Content type must be form-encoded | 415 |
 | Body ≤ 8 KiB | 413 |
-| `sessionId` printable, ≤ 128 characters; `phoneNumber` parses; `text` ≤ 1024 characters with no line breaks | 400 |
 | Source IP in the aggregator allowlist | enforced at HAProxy and nftables (P0) |
+
+Once the token and service code show the request is ours, nothing else is answered with a 4xx: the caller always gets a screen (fail safe to a human, rule 3.14).
+
+| Authenticated request with… | Answer |
+|---|---|
+| malformed form encoding, missing or invalid `sessionId`, or `text` over 1024 characters or containing line breaks | `END` with the internal-error copy (the free voice line) |
+| an unparseable or withheld `phoneNumber` | processed normally with an **unknown** phone; dispatch proceeds on location |
 
 ## Behaviour
 

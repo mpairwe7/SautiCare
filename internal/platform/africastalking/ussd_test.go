@@ -124,11 +124,55 @@ func TestATInternalErrorGivesVoiceLine(t *testing.T) {
 	}
 }
 
-func TestATMissingSessionIDIs400(t *testing.T) {
-	f := form("")
-	f.Del("sessionId")
-	if rec := post(newHandler(t, &fakePort{}), "/v1/ussd/at/"+token, f); rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+// Fail safe to a human (review finding I4): once the token and service code
+// prove the request is ours, a malformed field still answers the caller with
+// the free voice line instead of a bare 4xx the handset shows as an error.
+func TestATMalformedFieldsGiveVoiceLine(t *testing.T) {
+	cases := map[string]func(url.Values){
+		"missing sessionId":  func(f url.Values) { f.Del("sessionId") },
+		"line break in text": func(f url.Values) { f.Set("text", "1\n2") },
+		"overlong text":      func(f url.Values) { f.Set("text", strings.Repeat("1", 1100)) },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := &fakePort{}
+			f := form("")
+			mutate(f)
+			rec := post(newHandler(t, p), "/v1/ussd/at/"+token, f)
+			if rec.Code != http.StatusOK || rec.Body.String() != "END Sorry. Call 0800 100 200 free." {
+				t.Fatalf("response = %d %q", rec.Code, rec.Body.String())
+			}
+			if len(p.got) != 0 {
+				t.Fatal("malformed request reached intake")
+			}
+		})
+	}
+}
+
+func TestATBadFormEncodingGivesVoiceLine(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/ussd/at/"+token, strings.NewReader("text=%ZZ"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	newHandler(t, &fakePort{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), "END ") {
+		t.Fatalf("response = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// An unparseable or withheld number must not block an emergency report: the
+// session proceeds with an unknown phone (dispatch proceeds on location).
+func TestATUnparseablePhoneProceedsAsUnknown(t *testing.T) {
+	for _, phone := range []string{"772123456", "", "unknown"} {
+		p := &fakePort{screen: intake.Screen{Text: "ok", End: true}}
+		f := form("")
+		f.Set("phoneNumber", phone)
+		rec := post(newHandler(t, p), "/v1/ussd/at/"+token, f)
+		if rec.Code != http.StatusOK || rec.Body.String() != "END ok" {
+			t.Fatalf("phone %q: response = %d %q", phone, rec.Code, rec.Body.String())
+		}
+		if len(p.got) != 1 || !p.got[0].Phone.IsZero() {
+			t.Fatalf("phone %q: intake got %+v, want one call with an unknown phone", phone, p.got)
+		}
 	}
 }
 
@@ -144,7 +188,7 @@ func FuzzATForm(f *testing.F) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		switch rec.Code {
-		case 200, 400, 403, 413:
+		case 200, 403, 413:
 		default:
 			t.Fatalf("unexpected status %d for %q", rec.Code, body)
 		}
