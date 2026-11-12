@@ -315,6 +315,7 @@ threats:
       - internal/platform/pg/opstore/merge_integration_test.go::TestOnlyTheConsoleRecordsStaffActions
       - internal/platform/pg/opstore/merge_integration_test.go::TestSeverityRaisedParity
       - internal/platform/pg/opstore/merge_integration_test.go::TestMergeAbsorbedMatchesTheMergedCall
+      - internal/platform/pg/opstore/merge_integration_test.go::TestSplitAfterARemerge
       - internal/platform/pg/opstore/dedup_integration_test.go::TestConcurrentCompletionsOneSurvivor
       - internal/platform/pg/opstore/dedup_integration_test.go::TestSplitIncident
       - tests/e2e/m1_dedup_test.go::TestScenario4ThreeBystandersOneIncident

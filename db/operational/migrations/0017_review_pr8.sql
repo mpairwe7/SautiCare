@@ -78,5 +78,43 @@ BEGIN
 END
 $$;
 
--- The replaced helpers keep their existing grants (none to runtime roles:
--- only op.append_incident_event, SECURITY DEFINER, calls them).
+-- A split is keyed by the merge it undoes: the member's latest
+-- incident.merged event. A retry finds the same event and the same keys (a
+-- no-op); a later merge of the same pair is a new event, so its split gets
+-- new keys instead of returning the first split's events as duplicates while
+-- the call stays merged. The member is locked first, so no merge can land
+-- between reading its latest merge and the split, and the lock order
+-- (member, then survivor) is the merge path's.
+CREATE OR REPLACE FUNCTION op.split_incident(p_survivor uuid, p_member uuid, p_staff uuid) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path = op, pg_temp
+AS $$
+DECLARE
+    v_merge uuid;
+    v_key   text;
+BEGIN
+    IF p_staff IS NULL THEN
+        PERFORM op.reject('a split needs the coordinator''s staff identity');
+    END IF;
+    PERFORM 1 FROM op.incidents i WHERE i.id = p_member FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'unknown incident %', p_member USING ERRCODE = 'SA404';
+    END IF;
+    SELECT e.id INTO v_merge FROM op.incident_events e
+     WHERE e.incident_id = p_member AND e.type = 'incident.merged'
+     ORDER BY e.seq DESC
+     LIMIT 1;
+    IF v_merge IS NULL THEN
+        PERFORM op.reject('split: the call was never merged');
+    END IF;
+    v_key := 'split:' || p_survivor || ':' || p_member || ':' || v_merge;
+    PERFORM op.append_incident_event(p_survivor, 0, 'incident.split', jsonb_build_object('from', p_member),
+                                     'staff', p_staff, v_key || ':split', NULL);
+    PERFORM op.append_incident_event(p_member, 0, 'incident.unmerged', jsonb_build_object('from', p_survivor),
+                                     'staff', p_staff, v_key || ':unmerge', NULL);
+END
+$$;
+
+-- The replaced functions keep their existing grants: the helpers none to
+-- runtime roles (only op.append_incident_event, SECURITY DEFINER, calls
+-- them), op.split_incident EXECUTE to op_console only.

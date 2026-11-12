@@ -299,3 +299,55 @@ func TestSQLRejectsInvalidMergeSplit(t *testing.T) {
 		t.Errorf("unmerged from the wrong survivor: %v", err)
 	}
 }
+
+// A split is keyed by the merge it undoes. A call split off and later merged
+// into the same survivor again (a direct incident.merged from dispatching)
+// is split by a second op.split_incident; it must not find the first
+// split's keys and report success while the call stays merged. A retry of
+// either split changes nothing.
+func TestSplitAfterARemerge(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	console := storeAs(t, c, "op_console")
+	ctx := context.Background()
+	survivor, member := dispatchedIncident(t, s), dispatchedIncident(t, s)
+	staff := uuid.NewV7()
+	merge := func(round int) {
+		t.Helper()
+		for _, p := range []incident.AppendParams{
+			{IncidentID: member.IncidentID, Type: incident.EvMerged, Payload: json.RawMessage(fmt.Sprintf(`{"into":%q}`, survivor.IncidentID))},
+			{IncidentID: survivor.IncidentID, Type: incident.EvMergeAbsorbed,
+				Payload: json.RawMessage(fmt.Sprintf(`{"from":%q,"t1":%q}`, member.IncidentID, member.T1.UTC().Format(time.RFC3339Nano)))},
+		} {
+			p.ActorKind, p.IdemKey = incident.ActorSystem, fmt.Sprintf("%s:%d", p.Type, round)
+			if _, err := s.Append(ctx, p); err != nil {
+				t.Fatalf("round %d %s: %v", round, p.Type, err)
+			}
+		}
+	}
+	for round := range 2 {
+		merge(round)
+		for range 2 { // the second call is a retry
+			if err := console.SplitIncident(ctx, survivor.IncidentID, member.IncidentID, staff); err != nil {
+				t.Fatalf("round %d split: %v", round, err)
+			}
+		}
+		sp, _ := s.Projection(ctx, survivor.IncidentID)
+		mp, _ := s.Projection(ctx, member.IncidentID)
+		if len(sp.Absorbed) != 0 || mp.State != incident.StateDispatching || mp.MergedInto != nil {
+			t.Fatalf("round %d after split: survivor %+v\nmember %+v", round, sp, mp)
+		}
+	}
+	for _, id := range []uuid.UUID{survivor.IncidentID, member.IncidentID} {
+		evs, _ := s.Events(ctx, id)
+		n := 0
+		for _, e := range evs {
+			if e.Type == incident.EvSplit || e.Type == incident.EvUnmerged {
+				n++
+			}
+		}
+		if n != 2 {
+			t.Errorf("%s: %d split/unmerged events, want 2 (one per merge)", id, n)
+		}
+	}
+}
