@@ -19,7 +19,7 @@ func fixtureEntry() Entry {
 		EventType:     "incident.classified",
 		IncidentID:    &inc,
 		StaffID:       &staff,
-		LogicVersion:  "tr-2026.11.0+sha256:abcd",
+		LogicVersion:  "tr-2026.11.0+sha256:abcdef012345",
 		PayloadSHA256: sha256.Sum256([]byte(`{"severity":"red"}`)),
 	}
 }
@@ -47,7 +47,7 @@ func TestCanonicalGoldenVector(t *testing.T) {
 	lp(&want, []byte("incident.classified"))
 	lp(&want, e.IncidentID[:])
 	lp(&want, e.StaffID[:])
-	lp(&want, []byte("tr-2026.11.0+sha256:abcd"))
+	lp(&want, []byte("tr-2026.11.0+sha256:abcdef012345"))
 	lp(&want, e.PayloadSHA256[:])
 
 	if got := Canonical(e); !bytes.Equal(got, want.Bytes()) {
