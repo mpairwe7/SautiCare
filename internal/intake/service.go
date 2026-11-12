@@ -7,8 +7,8 @@ package intake
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
+	"strconv"
 	"strings"
 	"uuid"
 
@@ -65,13 +65,15 @@ type StepKeys interface {
 	StepLookupMACs(ctx context.Context, msg []byte) ([]crypto.MAC, error)
 }
 
-// StepMessage is the unambiguous (length-prefixed) encoding of one callback
-// input that a step MAC covers.
+// StepMessage is the unambiguous encoding of one callback input that a step
+// MAC covers: each part as a netstring ("<length>:<bytes>,").
 func StepMessage(provider, sessionID, text string) []byte {
 	var b []byte
 	for _, part := range []string{provider, sessionID, text} {
-		b = binary.BigEndian.AppendUint32(b, uint32(len(part)))
+		b = strconv.AppendInt(b, int64(len(part)), 10)
+		b = append(b, ':')
 		b = append(b, part...)
+		b = append(b, ',')
 	}
 	return b
 }

@@ -23,8 +23,6 @@ type MAC struct {
 	Sum   []byte
 }
 
-func macWith(dk DataKey, msg []byte) (MAC, error) { return macWithInfo(dk, macInfo, msg) }
-
 func macWithInfo(dk DataKey, info string, msg []byte) (MAC, error) {
 	// Never derive a MAC key from a short or empty key: the result would be
 	// computable without any secret.

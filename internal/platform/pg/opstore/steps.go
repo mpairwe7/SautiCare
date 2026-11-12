@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"uuid"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -56,7 +57,7 @@ func (s *Store) Latest(ctx context.Context, provider, sessionID string) (intake.
 // Save implements intake.StepStore: the first stored reply wins, and the
 // stored reply is returned, so concurrent duplicates answer identically.
 func (s *Store) Save(ctx context.Context, provider, sessionID string, st intake.Step) (intake.Screen, error) {
-	if len(st.MAC.Sum) != 32 || st.MAC.KeyID == "" || st.ConsumedLen < 0 {
+	if len(st.MAC.Sum) != 32 || st.MAC.KeyID == "" || st.ConsumedLen < 0 || st.ConsumedLen > math.MaxInt32 {
 		return intake.Screen{}, errors.New("opstore: ussd step needs a 32-byte keyed MAC and a consumed length")
 	}
 	var inc pgtype.UUID
@@ -65,7 +66,8 @@ func (s *Store) Save(ctx context.Context, provider, sessionID string, st intake.
 	}
 	if err := s.q.SaveUSSDStep(ctx, opdb.SaveUSSDStepParams{
 		Provider: provider, ProviderSessionID: sessionID, InputMac: st.MAC.Sum, MacKeyID: st.MAC.KeyID,
-		ConsumedLen: int32(st.ConsumedLen), Response: st.Screen.Text, EndSession: st.Screen.End, IncidentID: inc,
+		ConsumedLen: int32(st.ConsumedLen), //nolint:gosec // G115: bounded by the check above
+		Response:    st.Screen.Text, EndSession: st.Screen.End, IncidentID: inc,
 	}); err != nil {
 		return intake.Screen{}, fmt.Errorf("opstore: ussd step save: %w", err)
 	}
