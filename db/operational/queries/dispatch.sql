@@ -203,3 +203,25 @@ ORDER BY a.sent_at LIMIT sqlc.arg(max_rows)::int;
 SELECT a.id, a.incident_id, a.responder_id, a.role, a.outcome, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
 FROM op.alert_attempts x JOIN op.alerts a ON a.id = x.alert_id JOIN op.incidents i ON i.id = a.incident_id
 WHERE x.id = sqlc.arg(attempt_id)::uuid AND x.channel = 'voice';
+
+-- name: BeginForwardAttempt :one
+SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
+FROM op.begin_forward_attempt(sqlc.arg(incident_id)::uuid, sqlc.arg(facility_id)::text, sqlc.arg(channel)::text) AS a(attempt_id, fresh);
+
+-- name: FinishForwardAttempt :one
+SELECT op.finish_forward_attempt(sqlc.arg(attempt_id)::uuid, sqlc.arg(status)::text, sqlc.narg(provider_ref)::text)::boolean AS changed;
+
+-- Forwards awaiting acknowledgement and not yet called (ivr-controller).
+-- name: DueForwardCalls :many
+SELECT f.incident_id, f.facility_id FROM op.forwards f
+WHERE f.acknowledged_at IS NULL AND f.timed_out_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM op.forward_attempts x WHERE x.incident_id = f.incident_id AND x.facility_id = f.facility_id AND x.channel = 'voice')
+ORDER BY f.sent_at LIMIT sqlc.arg(max_rows)::int;
+
+-- name: ClaimCoordinatorCalls :many
+SELECT c.incident_id::uuid AS incident_id, c.seq::bigint AS seq, coalesce(c.reason, '')::text AS reason,
+       c.reference::text AS reference, c.calls::int AS calls
+FROM op.claim_coordinator_calls(sqlc.arg(retry)::interval, sqlc.arg(max_rows)::int) AS c(incident_id, seq, reason, reference, calls);
+
+-- name: AcknowledgeCoordinatorCall :exec
+SELECT op.acknowledge_coordinator_call(sqlc.arg(incident_id)::uuid, sqlc.arg(seq)::bigint);

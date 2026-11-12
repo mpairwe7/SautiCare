@@ -34,6 +34,20 @@ func (q *Queries) AcceptAlert(ctx context.Context, arg AcceptAlertParams) (Accep
 	return i, err
 }
 
+const acknowledgeCoordinatorCall = `-- name: AcknowledgeCoordinatorCall :exec
+SELECT op.acknowledge_coordinator_call($1::uuid, $2::bigint)
+`
+
+type AcknowledgeCoordinatorCallParams struct {
+	IncidentID pgtype.UUID
+	Seq        int64
+}
+
+func (q *Queries) AcknowledgeCoordinatorCall(ctx context.Context, arg AcknowledgeCoordinatorCallParams) error {
+	_, err := q.db.Exec(ctx, acknowledgeCoordinatorCall, arg.IncidentID, arg.Seq)
+	return err
+}
+
 const acknowledgeForward = `-- name: AcknowledgeForward :one
 SELECT op.acknowledge_forward($1::uuid, $2::text)::boolean AS changed
 `
@@ -154,6 +168,29 @@ func (q *Queries) BeginAttempt(ctx context.Context, arg BeginAttemptParams) (Beg
 	return i, err
 }
 
+const beginForwardAttempt = `-- name: BeginForwardAttempt :one
+SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
+FROM op.begin_forward_attempt($1::uuid, $2::text, $3::text) AS a(attempt_id, fresh)
+`
+
+type BeginForwardAttemptParams struct {
+	IncidentID pgtype.UUID
+	FacilityID string
+	Channel    string
+}
+
+type BeginForwardAttemptRow struct {
+	AttemptID pgtype.UUID
+	Fresh     bool
+}
+
+func (q *Queries) BeginForwardAttempt(ctx context.Context, arg BeginForwardAttemptParams) (BeginForwardAttemptRow, error) {
+	row := q.db.QueryRow(ctx, beginForwardAttempt, arg.IncidentID, arg.FacilityID, arg.Channel)
+	var i BeginForwardAttemptRow
+	err := row.Scan(&i.AttemptID, &i.Fresh)
+	return i, err
+}
+
 const beginNoticeAttempt = `-- name: BeginNoticeAttempt :one
 SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
 FROM op.begin_notice_attempt($1::uuid, $2::text, $3::text) AS a(attempt_id, fresh)
@@ -265,6 +302,51 @@ func (q *Queries) ClaimAvailabilityReminders(ctx context.Context, arg ClaimAvail
 	for rows.Next() {
 		var i ClaimAvailabilityRemindersRow
 		if err := rows.Scan(&i.ResponderID, &i.Until); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimCoordinatorCalls = `-- name: ClaimCoordinatorCalls :many
+SELECT c.incident_id::uuid AS incident_id, c.seq::bigint AS seq, coalesce(c.reason, '')::text AS reason,
+       c.reference::text AS reference, c.calls::int AS calls
+FROM op.claim_coordinator_calls($1::interval, $2::int) AS c(incident_id, seq, reason, reference, calls)
+`
+
+type ClaimCoordinatorCallsParams struct {
+	Retry   pgtype.Interval
+	MaxRows int32
+}
+
+type ClaimCoordinatorCallsRow struct {
+	IncidentID pgtype.UUID
+	Seq        int64
+	Reason     string
+	Reference  string
+	Calls      int32
+}
+
+func (q *Queries) ClaimCoordinatorCalls(ctx context.Context, arg ClaimCoordinatorCallsParams) ([]ClaimCoordinatorCallsRow, error) {
+	rows, err := q.db.Query(ctx, claimCoordinatorCalls, arg.Retry, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimCoordinatorCallsRow
+	for rows.Next() {
+		var i ClaimCoordinatorCallsRow
+		if err := rows.Scan(
+			&i.IncidentID,
+			&i.Seq,
+			&i.Reason,
+			&i.Reference,
+			&i.Calls,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -636,6 +718,39 @@ func (q *Queries) DispatchSuspended(ctx context.Context) (bool, error) {
 	return suspended, err
 }
 
+const dueForwardCalls = `-- name: DueForwardCalls :many
+SELECT f.incident_id, f.facility_id FROM op.forwards f
+WHERE f.acknowledged_at IS NULL AND f.timed_out_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM op.forward_attempts x WHERE x.incident_id = f.incident_id AND x.facility_id = f.facility_id AND x.channel = 'voice')
+ORDER BY f.sent_at LIMIT $1::int
+`
+
+type DueForwardCallsRow struct {
+	IncidentID pgtype.UUID
+	FacilityID string
+}
+
+// Forwards awaiting acknowledgement and not yet called (ivr-controller).
+func (q *Queries) DueForwardCalls(ctx context.Context, maxRows int32) ([]DueForwardCallsRow, error) {
+	rows, err := q.db.Query(ctx, dueForwardCalls, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DueForwardCallsRow
+	for rows.Next() {
+		var i DueForwardCallsRow
+		if err := rows.Scan(&i.IncidentID, &i.FacilityID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const dueVoiceAlerts = `-- name: DueVoiceAlerts :many
 SELECT a.id, a.responder_id FROM op.alerts a
 WHERE a.outcome = 'pending' AND a.sent_at <= clock_timestamp() - $1::interval AND NOT op.dispatch_suspended()
@@ -687,6 +802,23 @@ type FinishAttemptParams struct {
 
 func (q *Queries) FinishAttempt(ctx context.Context, arg FinishAttemptParams) (bool, error) {
 	row := q.db.QueryRow(ctx, finishAttempt, arg.AttemptID, arg.Status, arg.ProviderRef)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
+const finishForwardAttempt = `-- name: FinishForwardAttempt :one
+SELECT op.finish_forward_attempt($1::uuid, $2::text, $3::text)::boolean AS changed
+`
+
+type FinishForwardAttemptParams struct {
+	AttemptID   pgtype.UUID
+	Status      string
+	ProviderRef *string
+}
+
+func (q *Queries) FinishForwardAttempt(ctx context.Context, arg FinishForwardAttemptParams) (bool, error) {
+	row := q.db.QueryRow(ctx, finishForwardAttempt, arg.AttemptID, arg.Status, arg.ProviderRef)
 	var changed bool
 	err := row.Scan(&changed)
 	return changed, err

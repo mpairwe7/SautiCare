@@ -70,6 +70,14 @@ type OpConfigVersion struct {
 	AmendmentDate pgtype.Date
 }
 
+type OpCoordinatorCall struct {
+	IncidentID     pgtype.UUID
+	AckedSeq       int64
+	Calls          int32
+	LastCallAt     pgtype.Timestamptz
+	AcknowledgedAt pgtype.Timestamptz
+}
+
 type OpDispatchControl struct {
 	ID        bool
 	Suspended bool
@@ -125,6 +133,17 @@ type OpForward struct {
 	SentAt           pgtype.Timestamptz
 	AcknowledgedAt   pgtype.Timestamptz
 	TimedOutAt       pgtype.Timestamptz
+}
+
+type OpForwardAttempt struct {
+	ID          pgtype.UUID
+	IncidentID  pgtype.UUID
+	FacilityID  string
+	Channel     string
+	Status      string
+	ProviderRef *string
+	ClaimedAt   pgtype.Timestamptz
+	SettledAt   pgtype.Timestamptz
 }
 
 type OpGazetteerVersion struct {

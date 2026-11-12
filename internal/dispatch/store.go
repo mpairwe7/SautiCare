@@ -137,3 +137,20 @@ type AlertHistory struct {
 type VoiceAlert struct {
 	AlertID, ResponderID uuid.UUID
 }
+
+// ForwardCall is a forwarded facility to call (press 1 to acknowledge).
+type ForwardCall struct {
+	IncidentID uuid.UUID
+	FacilityID string
+}
+
+// CoordinatorCall is an escalation to ring the coordinator line about: the
+// incident's latest unacknowledged escalation; Calls counts the rings since
+// the last acknowledgement.
+type CoordinatorCall struct {
+	IncidentID uuid.UUID
+	Seq        int64
+	Reason     string
+	Reference  incident.Reference
+	Calls      int
+}

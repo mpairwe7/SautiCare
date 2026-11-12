@@ -146,3 +146,54 @@ func (s *Store) AlertForAttempt(ctx context.Context, attempt uuid.UUID) (dispatc
 		Outcome: r.Outcome, Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference), Severity: incident.Severity(deref(r.Severity)),
 			Category: deref(r.Category), Ward: deref(r.Ward), Landmark: deref(r.Landmark), Language: deref(r.Language)}}, uuid.UUID(r.ResponderID.Bytes), nil
 }
+
+// BeginForwardAttempt claims a forwarded facility's SMS (op_dispatch) or
+// call (op_ivr) once; a call only while the forward awaits acknowledgement.
+func (s *Store) BeginForwardAttempt(ctx context.Context, incidentID uuid.UUID, facility, channel string) (uuid.UUID, bool, error) {
+	r, err := s.q.BeginForwardAttempt(ctx, opdb.BeginForwardAttemptParams{IncidentID: pgID(incidentID), FacilityID: facility, Channel: channel})
+	if err != nil {
+		return uuid.UUID{}, false, mapErr(err)
+	}
+	return uuid.UUID(r.AttemptID.Bytes), r.Fresh, nil
+}
+
+// FinishForwardAttempt settles a claimed forward attempt.
+func (s *Store) FinishForwardAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error) {
+	ok, err := s.q.FinishForwardAttempt(ctx, opdb.FinishForwardAttemptParams{AttemptID: pgID(attempt), Status: status, ProviderRef: strPtr(providerRef)})
+	return ok, mapErr(err)
+}
+
+// DueForwardCalls lists forwarded facilities to call (ivr-controller).
+func (s *Store) DueForwardCalls(ctx context.Context, limit int) ([]dispatch.ForwardCall, error) {
+	rows, err := s.q.DueForwardCalls(ctx, int32(min(limit, 1000))) //nolint:gosec // bounded above
+	if err != nil {
+		return nil, fmt.Errorf("opstore: due forward calls: %w", err)
+	}
+	out := make([]dispatch.ForwardCall, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, dispatch.ForwardCall{IncidentID: uuid.UUID(r.IncidentID.Bytes), FacilityID: r.FacilityID})
+	}
+	return out, nil
+}
+
+// ClaimCoordinatorCalls claims the coordinator calls due now (ivr-controller):
+// each incident's latest unacknowledged escalation, rung again after retry.
+func (s *Store) ClaimCoordinatorCalls(ctx context.Context, retry time.Duration, limit int) ([]dispatch.CoordinatorCall, error) {
+	rows, err := s.q.ClaimCoordinatorCalls(ctx, opdb.ClaimCoordinatorCallsParams{Retry: pgtype.Interval{Microseconds: retry.Microseconds(), Valid: true},
+		MaxRows: int32(min(limit, 1000))}) //nolint:gosec // bounded above
+	if err != nil {
+		return nil, fmt.Errorf("opstore: coordinator calls: %w", err)
+	}
+	out := make([]dispatch.CoordinatorCall, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, dispatch.CoordinatorCall{IncidentID: uuid.UUID(r.IncidentID.Bytes), Seq: r.Seq, Reason: r.Reason,
+			Reference: incident.Reference(r.Reference), Calls: int(r.Calls)})
+	}
+	return out, nil
+}
+
+// AcknowledgeCoordinatorCall records a coordinator's acknowledgement of the
+// incident's escalations up to seq.
+func (s *Store) AcknowledgeCoordinatorCall(ctx context.Context, incidentID uuid.UUID, seq int64) error {
+	return mapErr(s.q.AcknowledgeCoordinatorCall(ctx, opdb.AcknowledgeCoordinatorCallParams{IncidentID: pgID(incidentID), Seq: seq}))
+}
