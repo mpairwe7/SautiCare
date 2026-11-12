@@ -76,7 +76,22 @@ func Apply(p Projection, e Event) (Projection, error) {
 			next.Flags = append(next.Flags, pl.Flag)
 		}
 	case EvEscalated:
+		if _, _, err := ParseEscalated(e.Payload); err != nil {
+			return p, err
+		}
 		next.Escalated = true
+	case EvAlertIssued, EvAccepted, EvAlertDeclined, EvAlertNoResponse, EvAlertStoodDown:
+		if _, err := ParseAlertFact(e.Type, e.Payload); err != nil {
+			return p, err
+		}
+	case EvForwarded, EvForwardAcknowledged, EvForwardTimedOut:
+		if _, err := ParseFacility(e.Payload); err != nil {
+			return p, err
+		}
+	case EvCallerNotified:
+		if _, _, err := ParseCallerNotified(e.Payload); err != nil {
+			return p, err
+		}
 	case EvMerged:
 		var pl struct {
 			Into string `json:"into"`

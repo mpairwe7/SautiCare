@@ -8,11 +8,53 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type OpAlert struct {
+	ID            pgtype.UUID
+	IncidentID    pgtype.UUID
+	ResponderID   pgtype.UUID
+	Role          string
+	Ring          int32
+	Wave          int32
+	SentAt        pgtype.Timestamptz
+	LogicVersion  string
+	Outcome       string
+	DeclineReason *string
+	RespondedAt   pgtype.Timestamptz
+	ClosedAt      pgtype.Timestamptz
+}
+
+type OpAlertAttempt struct {
+	ID          pgtype.UUID
+	AlertID     pgtype.UUID
+	Purpose     string
+	Channel     string
+	Status      string
+	ProviderRef *string
+	ClaimedAt   pgtype.Timestamptz
+	SettledAt   pgtype.Timestamptz
+}
+
+type OpAssignment struct {
+	IncidentID  pgtype.UUID
+	Role        string
+	ResponderID pgtype.UUID
+	AlertID     pgtype.UUID
+	AcceptedAt  pgtype.Timestamptz
+	ReleasedAt  pgtype.Timestamptz
+}
+
 type OpAvailability struct {
 	ResponderID pgtype.UUID
 	Period      pgtype.Range[pgtype.Timestamptz]
 	Source      string
 	RemindedAt  pgtype.Timestamptz
+}
+
+type OpCallerNotice struct {
+	IncidentID pgtype.UUID
+	Kind       string
+	FacilityID *string
+	CreatedAt  pgtype.Timestamptz
 }
 
 type OpConfigVersion struct {
@@ -22,6 +64,13 @@ type OpConfigVersion struct {
 	EffectiveFrom pgtype.Timestamptz
 	AmendmentRef  *string
 	AmendmentDate pgtype.Date
+}
+
+type OpDispatchTimer struct {
+	IncidentID pgtype.UUID
+	DueAt      pgtype.Timestamptz
+	Gen        int64
+	LeaseUntil pgtype.Timestamptz
 }
 
 type OpEventKey struct {
@@ -44,6 +93,15 @@ type OpFacility struct {
 	ZoneRow           int32
 	Phone             string
 	ForwardingEnabled bool
+}
+
+type OpForward struct {
+	IncidentID       pgtype.UUID
+	FacilityID       string
+	GazetteerVersion string
+	SentAt           pgtype.Timestamptz
+	AcknowledgedAt   pgtype.Timestamptz
+	TimedOutAt       pgtype.Timestamptz
 }
 
 type OpGazetteerVersion struct {

@@ -7,6 +7,7 @@ import (
 	"time"
 	"uuid"
 
+	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/responder"
 )
@@ -110,5 +111,16 @@ func TestNewRankerRejectsUnknownCriterion(t *testing.T) {
 	r, err := NewRanker([]string{"least_recently_dispatched", "zone_distance"}, "trial-2")
 	if err != nil || r.Version() != "trial-2" {
 		t.Fatalf("custom order: %v %v", r, err)
+	}
+}
+
+// The incident log's alert roles and the registry's roles are one list.
+func TestAlertRolesMatchRegistryRoles(t *testing.T) {
+	var roles []string
+	for _, r := range responder.Roles() {
+		roles = append(roles, string(r))
+	}
+	if !slices.Equal(roles, incident.AlertRoles) {
+		t.Fatalf("registry %v, incident log %v", roles, incident.AlertRoles)
 	}
 }

@@ -64,6 +64,7 @@ const (
 
 // Alert is one responder alerted for the incident.
 type Alert struct {
+	ID          uuid.UUID
 	ResponderID uuid.UUID
 	Role        responder.Role
 	Ring        int // the ring in force when the alert was sent
@@ -91,8 +92,8 @@ const (
 
 // Caller message kinds (SMS templates, Part B).
 const (
-	CallerHelperOnTheWay = "helper_on_the_way"
-	CallerForwarded      = "forwarded_to_facility"
+	CallerHelperOnTheWay = incident.NoticeHelperOnTheWay
+	CallerForwarded      = incident.NoticeForwarded
 )
 
 // State is everything the planner needs about one incident, rebuilt from the
@@ -133,6 +134,7 @@ const (
 // worker keys each on the incident and these fields.
 type Action struct {
 	Kind        ActionKind
+	AlertID     uuid.UUID // expire and stand-down
 	ResponderID uuid.UUID
 	Role        responder.Role
 	Ring, Wave  int
@@ -163,7 +165,7 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 	if s.Done {
 		for _, a := range s.Alerts {
 			if a.Outcome == OutcomePending {
-				acts = append(acts, Action{Kind: ActStandDown, ResponderID: a.ResponderID, Role: a.Role})
+				acts = append(acts, Action{Kind: ActStandDown, AlertID: a.ID, ResponderID: a.ResponderID, Role: a.Role})
 			}
 		}
 		return acts, time.Time{}
@@ -179,12 +181,12 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 			continue
 		}
 		if _, taken := s.Assigned[a.Role]; taken {
-			acts = append(acts, Action{Kind: ActStandDown, ResponderID: a.ResponderID, Role: a.Role})
+			acts = append(acts, Action{Kind: ActStandDown, AlertID: a.ID, ResponderID: a.ResponderID, Role: a.Role})
 			continue
 		}
 		due := a.SentAt.Add(p.CascadeTimeout)
 		if !now.Before(due) {
-			acts = append(acts, Action{Kind: ActExpire, ResponderID: a.ResponderID, Role: a.Role})
+			acts = append(acts, Action{Kind: ActExpire, AlertID: a.ID, ResponderID: a.ResponderID, Role: a.Role})
 		} else {
 			soon(due)
 		}

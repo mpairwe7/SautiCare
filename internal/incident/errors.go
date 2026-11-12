@@ -17,6 +17,9 @@ var (
 	ErrVersionConflict = errors.New("incident: version conflict")
 	// ErrNotFound: no such incident.
 	ErrNotFound = errors.New("incident: not found")
+	// ErrForbidden reports an action on something that is not the actor's,
+	// such as a responder answering another responder's alert.
+	ErrForbidden = errors.New("incident: not permitted")
 	// ErrReferenceTaken: the random reference collided with an existing one.
 	ErrReferenceTaken = errors.New("incident: reference already taken")
 )

@@ -23,10 +23,12 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"sautihealth.com/sauti/internal/crypto"
+	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/pg/pgtest"
+	"sautihealth.com/sauti/internal/responder"
 )
 
 func TestMain(m *testing.M) { pgtest.Main(m) }
@@ -510,8 +512,8 @@ func TestRelayRoleSeesOnlyOutboxFunctions(t *testing.T) {
 
 // The database projection and the pure Go reducer must agree exactly.
 func TestProjectionMatchesFold(t *testing.T) {
-	c := pgtest.Cluster(t)
-	s := storeAs(t, c, "op_intake")
+	r := newDispatchRig(t)
+	s := r.intake
 	ctx := context.Background()
 	o, _ := s.OpenIncident(ctx, openParams(t))
 	id := o.IncidentID
@@ -519,13 +521,19 @@ func TestProjectionMatchesFold(t *testing.T) {
 	appendEv(t, s, id, incident.EvFlagged, `{"flag":"test_call"}`, "")
 	appendEv(t, s, id, incident.EvClassified, `{"severity":"red","category":"trauma"}`, testLogic)
 	appendEv(t, s, id, incident.EvDispatchReady, "", "")
-	appendEv(t, s, id, incident.EvAlertIssued, `{"role":"vht"}`, "")
-	appendEv(t, s, id, incident.EvAlertIssued, `{"role":"transporter"}`, "")
-	appendEv(t, s, id, incident.EvAccepted, `{"role":"vht"}`, "")
+	vht, tr := r.responder(t, responder.RoleVHT), r.responder(t, responder.RoleTransporter)
+	av := r.issue(t, id, vht, responder.RoleVHT)
+	at := r.issue(t, id, tr, responder.RoleTransporter)
+	if res, err := s.AcceptAlert(ctx, av.AlertID, vht); err != nil || res.Result != dispatch.Accepted {
+		t.Fatalf("accept: %v %v", res, err)
+	}
 	appendEv(t, s, id, incident.EvEscalated, `{"reason":"test"}`, "")
 	appendEv(t, s, id, incident.EvArrived, "", "")
 	appendEv(t, s, id, incident.EvDeparted, "", "")
 	appendEv(t, s, id, incident.EvAtFacility, "", "")
+	if ok, err := r.dispatcher.CloseAlert(ctx, at.AlertID, dispatch.OutcomeStoodDown); err != nil || !ok {
+		t.Fatalf("stand down: %v %v", ok, err)
+	}
 	appendEv(t, s, id, incident.EvClosed, `{"reason":"completed"}`, "")
 
 	evs, err := s.Events(ctx, id)
@@ -543,7 +551,7 @@ func TestProjectionMatchesFold(t *testing.T) {
 	if d := incident.Diff(got, want); d != "" {
 		t.Fatalf("DB projection differs from Fold: %s", d)
 	}
-	if got.State != incident.StateClosed || got.Version != 13 || got.Severity != incident.SevRed || !got.Escalated {
+	if got.State != incident.StateClosed || got.Version != 14 || got.Severity != incident.SevRed || !got.Escalated {
 		t.Fatalf("projection = %+v", got)
 	}
 }

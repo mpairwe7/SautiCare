@@ -30,7 +30,7 @@ func triaged(t *testing.T, s *opstore.Store, category string) incident.Opened {
 	return o
 }
 
-func dispatch(s *opstore.Store, o incident.Opened, category string, col int) (intake.DispatchOutcome, error) {
+func dispatchOrMerge(s *opstore.Store, o incident.Opened, category string, col int) (intake.DispatchOutcome, error) {
 	payload, _ := json.Marshal(map[string]any{"zone": map[string]int{"col": col, "row": 84}, "location_quality": "landmark"})
 	return s.DispatchOrMerge(context.Background(), intake.DispatchRequest{IncidentID: o.IncidentID, Payload: payload,
 		IdemKey: "dr:" + o.IncidentID.String(), Category: category, Severity: incident.SevRed, LocationQuality: incident.QualityLandmark,
@@ -144,13 +144,13 @@ func TestDispatchOrMergeMergesIntoEarliestDispatched(t *testing.T) {
 	early := triaged(t, s, "trauma") // first call
 	survivor := triaged(t, s, "trauma")
 	other := triaged(t, s, "obstetric")
-	if out, err := dispatch(s, survivor, "trauma", 902); err != nil || out.Merged {
+	if out, err := dispatchOrMerge(s, survivor, "trauma", 902); err != nil || out.Merged {
 		t.Fatalf("first dispatch: %+v %v", out, err)
 	}
-	if out, err := dispatch(s, other, "obstetric", 902); err != nil || out.Merged {
+	if out, err := dispatchOrMerge(s, other, "obstetric", 902); err != nil || out.Merged {
 		t.Fatalf("other category merged: %+v %v", out, err)
 	}
-	out, err := dispatch(s, early, "trauma", 903)
+	out, err := dispatchOrMerge(s, early, "trauma", 903)
 	if err != nil || !out.Merged || out.Survivor != survivor.IncidentID {
 		t.Fatalf("second trauma call: %+v %v", out, err)
 	}
@@ -160,7 +160,7 @@ func TestDispatchOrMergeMergesIntoEarliestDispatched(t *testing.T) {
 		ep.MergedInto == nil || *ep.MergedInto != survivor.IncidentID {
 		t.Fatalf("survivor %+v\nmember %+v", sp, ep)
 	}
-	again, err := dispatch(s, early, "trauma", 903)
+	again, err := dispatchOrMerge(s, early, "trauma", 903)
 	if err != nil || !again.Merged || again.Survivor != survivor.IncidentID {
 		t.Fatalf("retried dispatch: %+v %v", again, err)
 	}
@@ -180,7 +180,7 @@ func TestConcurrentCompletionsOneSurvivor(t *testing.T) {
 		outs := make([]intake.DispatchOutcome, 2)
 		errs := make([]error, 2)
 		for i, o := range []incident.Opened{a, b} {
-			wg.Go(func() { outs[i], errs[i] = dispatch(s, o, "trauma", 950+round*10) })
+			wg.Go(func() { outs[i], errs[i] = dispatchOrMerge(s, o, "trauma", 950+round*10) })
 		}
 		wg.Wait()
 		if errs[0] != nil || errs[1] != nil {
@@ -200,10 +200,10 @@ func TestSplitIncident(t *testing.T) {
 	s := storeAs(t, c, "op_intake")
 	ctx := context.Background()
 	early, survivor := triaged(t, s, "trauma"), triaged(t, s, "trauma")
-	if _, err := dispatch(s, survivor, "trauma", 902); err != nil {
+	if _, err := dispatchOrMerge(s, survivor, "trauma", 902); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := dispatch(s, early, "trauma", 902); err != nil || !out.Merged {
+	if out, err := dispatchOrMerge(s, early, "trauma", 902); err != nil || !out.Merged {
 		t.Fatalf("merge: %+v %v", out, err)
 	}
 	staff := uuid.NewV7()

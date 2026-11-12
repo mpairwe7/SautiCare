@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,8 +28,11 @@ import (
 	"sautihealth.com/sauti/db"
 	"sautihealth.com/sauti/internal/audit"
 	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/crypto"
+	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/location"
+	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/africastalking"
 	"sautihealth.com/sauti/internal/platform/devkeys"
 	"sautihealth.com/sauti/internal/platform/env"
@@ -39,6 +43,7 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/sim"
 	"sautihealth.com/sauti/internal/platform/wiring"
+	"sautihealth.com/sauti/internal/responder"
 )
 
 // Options configures a demo run.
@@ -318,26 +323,25 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	r.say("✓ step 1: caller completed Tool 1 on USSD; incident %s, T1 = %s, classified %s by %s, T2 after screen 7",
 		ref.Spoken(), rep.T1.Format(time.RFC3339Nano), proj.Severity, proj.LogicVersion)
 
-	// Step 2: dispatch-side fixture events (M2-M3 arrive later) through the
-	// single write path.
+	// Step 2: dispatch through the dispatch functions (M2): a synthetic VHT
+	// and transporter, each alerted and accepting (T3, T4). Arrival, departure
+	// and closure are still fixtures until M3, through the single write path.
+	if err := r.dispatchDemo(ctx, cfg, keys, intakePool, id); err != nil {
+		return rep, fmt.Errorf("step 2: %w", err)
+	}
 	fixture := []struct {
-		typ          incident.EventType
-		payload      string
-		logicVersion string
+		typ     incident.EventType
+		payload string
 	}{
-		{incident.EvAlertIssued, `{"role":"vht","ring":1}`, ""},
-		{incident.EvAlertIssued, `{"role":"transporter","ring":1}`, ""},
-		{incident.EvAccepted, `{"role":"vht"}`, ""},
-		{incident.EvAccepted, `{"role":"transporter"}`, ""},
-		{incident.EvArrived, `{"role":"vht"}`, ""},
-		{incident.EvDeparted, `{}`, ""},
-		{incident.EvAtFacility, `{"facility":"kawempe-nrh"}`, ""},
-		{incident.EvClosed, `{"reason":"completed"}`, ""},
+		{incident.EvArrived, `{"role":"vht"}`},
+		{incident.EvDeparted, `{}`},
+		{incident.EvAtFacility, `{"facility":"kawempe-nrh"}`},
+		{incident.EvClosed, `{"reason":"completed"}`},
 	}
 	for i, f := range fixture {
 		if _, err := incidents.Append(ctx, incident.AppendParams{
 			IncidentID: id, Type: f.typ, Payload: json.RawMessage(f.payload), ActorKind: incident.ActorSystem,
-			IdemKey: fmt.Sprintf("demo:%d", i), LogicVersion: f.logicVersion,
+			IdemKey: fmt.Sprintf("demo:%d", i),
 		}); err != nil {
 			return rep, fmt.Errorf("step 2: append %s: %w", f.typ, err)
 		}
@@ -347,7 +351,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 		return rep, err
 	}
 	rep.Events = len(events)
-	r.say("✓ step 2: %d events appended through op.append_incident_event (T2..T7 set by the database)", rep.Events)
+	r.say("✓ step 2: two responders alerted and accepted through the dispatch functions; %d events in all (T2..T7 set by the database)", rep.Events)
 
 	// Step 3: relay.
 	relayed := 0
@@ -518,3 +522,59 @@ END $$;
 DELETE FROM audit.checkpoints;
 ALTER TABLE audit.entries ENABLE TRIGGER entries_append_only;
 ALTER TABLE audit.checkpoints ENABLE TRIGGER checkpoints_append_only;`
+
+// demoResponders are synthetic (development only).
+var demoResponders = []struct {
+	role  responder.Role
+	phone string
+	stage string
+}{
+	{responder.RoleVHT, "+256772000201", "w01_stage_a"},
+	{responder.RoleTransporter, "+256772000202", "w01_stage_a"},
+}
+
+// dispatchDemo registers the demo responders (console), switches them on
+// (intake), alerts each (dispatch) and accepts (intake).
+func (r *runner) dispatchDemo(ctx context.Context, cfg config.Bundle, keys *devkeys.Store, intakePool *pgxpool.Pool, id uuid.UUID) error {
+	consolePool, err := r.pool(ctx, pg.StoreOperational, "op_console")
+	if err != nil {
+		return err
+	}
+	defer consolePool.Close()
+	dispatchPool, err := r.pool(ctx, pg.StoreOperational, "op_dispatch")
+	if err != nil {
+		return err
+	}
+	defer dispatchPool.Close()
+	logic, err := wiring.DispatchLogicVersion(cfg)
+	if err != nil {
+		return err
+	}
+	registry := responder.NewService(opstore.New(consolePool), crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)})
+	intake, dispatcher := opstore.New(intakePool), opstore.New(dispatchPool)
+	now := time.Now()
+	insured := now.AddDate(0, 0, 30)
+	for _, d := range demoResponders {
+		phone, err := pii.ParsePhone(d.phone)
+		if err != nil {
+			return err
+		}
+		reg, err := registry.Register(ctx, responder.RegisterCmd{Role: d.role, Name: pii.NewPersonName("Synthetic " + string(d.role)),
+			Phone: phone, Ward: "w01", Stage: d.stage, CertifiedAt: &now, InsuredUntil: &insured, KitOK: true})
+		if err != nil {
+			return err
+		}
+		if _, err := intake.SetAvailability(ctx, reg.ID, true, "ussd"); err != nil {
+			return err
+		}
+		alert, err := dispatcher.IssueAlert(ctx, dispatch.IssueParams{IncidentID: id, ResponderID: reg.ID, Role: d.role,
+			Ring: 1, Wave: 1, LogicVersion: logic})
+		if err != nil {
+			return fmt.Errorf("alert %s: %w", d.role, err)
+		}
+		if res, err := intake.AcceptAlert(ctx, alert.AlertID, reg.ID); err != nil || res.Result != dispatch.Accepted {
+			return fmt.Errorf("accept %s: %v %w", d.role, res.Result, err)
+		}
+	}
+	return nil
+}
