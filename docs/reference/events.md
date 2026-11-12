@@ -32,6 +32,8 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `incident.unmerged` | — | exactly `from` (the survivor) | staff, console role only; `merged` → `dispatching`; needs T2 |
 | `incident.closed` | — | `reason` | terminal |
 
+Delivery attempts are not incident events. Each SMS or call attempt is a row in `op.alert_attempts`, `op.notice_attempts` or `op.forward_attempts`, claimed once per channel and carrying its result and delivery report. A coordinator's acknowledgement of an escalation call is held in `op.coordinator_calls` ([ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md)). It carries no staff identity, because the phone line does not know who pressed 1. The coordinator's actions on the incident are recorded on the console (M5).
+
 ## Idempotency keys and atomic batches
 
 Every append carries an idempotency key, unique per incident; a retry with the same key returns the stored event and writes nothing. `op.append_incident_event` can also run several times in one transaction (`incident.Service.AppendBatch`, `opstore.Store.AppendBatch`): all of the events are stored or none, and each sees the state the previous one left.

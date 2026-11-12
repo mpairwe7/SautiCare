@@ -414,4 +414,55 @@ threats:
       - internal/platform/pg/opstore/review10_integration_test.go::TestNoAlertOrAttemptWhileSuspended
       - internal/intake/watchdog_test.go::TestWatchdogEscalatesStalledDispatch
       - cmd/dispatch-worker/main_test.go::TestReadinessFailsWhenTheLeaderStalls
-
+  - id: T-026
+    title: Patient data or the caller's number reaches a responder, a facility or a messaging channel through SMS or voice
+    stride: Information disclosure
+    linddun: Disclosure of information
+    asset: SMS and outbound-call content; the caller's and responders' numbers
+    hard_constraints: [5, 6]
+    mitigations:
+      - Templates are gated config; each may carry only its own placeholders, and the value type has no field for a name, a clinical answer or a number
+      - Templates refuse digit runs, non-GSM-7 text and a second segment; production refuses PENDING copy
+      - Ward and landmark appear only in the amended templates (decision 1, behind the amendment gate)
+      - Caller notices go only to the caller's sealed number; responder messages only to the responder's number; numbers are unsealed in memory only
+      - Provider errors and logs carry neither the number nor the API key; outbound calls never record, snoop or bridge
+    verified_by:
+      - internal/config/sms_test.go::TestSMSTemplatesAreCompliant
+      - internal/config/sms_test.go::TestProductionReadyRefusesPendingSMS
+      - internal/platform/channels/sms_test.go::TestAlertSMS
+      - internal/platform/channels/sms_test.go::TestCallerNotices
+      - internal/platform/channels/sms_test.go::TestFacilitySMS
+      - internal/platform/africastalking/sms_test.go::TestSMSErrorsCarryNoNumberOrKey
+      - internal/platform/pg/opstore/sms_integration_test.go::TestCallerContact
+  - id: T-027
+    title: Forged SMS delivery reports or responder-menu answers (a spoofed provider callback or a number not on the registry)
+    stride: Spoofing
+    linddun: Non-compliance
+    asset: alert attempts and assignments
+    hard_constraints: [8, 14]
+    mitigations:
+      - Delivery reports arrive only on a secret path; only status and failure codes are kept and a final report is never overwritten; an unknown message ID changes nothing
+      - The responder menu recognises a registered responder by the keyed hash of their number; a responder may answer only their own alert, and the first acceptance wins in the database
+    verified_by:
+      - internal/platform/africastalking/delivery_test.go::TestDeliveryReportsAreRecordedWithoutTheNumber
+      - internal/platform/africastalking/delivery_test.go::TestDeliveryReportsRefuseBadInput
+      - internal/platform/pg/opstore/sms_integration_test.go::TestNoticeAttemptsAndDeliveryReports
+      - internal/respond/ussd_test.go::TestUnregisteredNumber
+      - internal/platform/wiring/respond_integration_test.go::TestConcurrentAcceptsThroughTheMenu
+  - id: T-028
+    title: An alert, forward or escalation is sent twice, or never reaches a person (provider outage, crash between claim and send, unanswered coordinator line)
+    stride: Denial of service
+    linddun: Non-compliance
+    asset: the alert ladder and coordinator escalation
+    hard_constraints: [14]
+    mitigations:
+      - Every attempt is claimed once per channel before the provider call; an unknown outcome is never re-sent, and the next rung covers it
+      - SMS at 0 s, voice at 20 s, the responder menu at any time; the cascade moves on regardless of channel failures
+      - Every escalation rings the coordinator line, retried every 2 minutes until a coordinator presses 1
+    verified_by:
+      - internal/platform/pg/opstore/forward_integration_test.go::TestForwardAttempts
+      - internal/platform/pg/opstore/forward_integration_test.go::TestCoordinatorCalls
+      - internal/platform/ivr/alerts_test.go::TestAlertCallsDialDueAlertsOnce
+      - internal/platform/wiring/voice_integration_test.go::TestScenario9VoiceAt20Seconds
+      - internal/platform/wiring/forward_integration_test.go::TestScenario7ForwardAcknowledged
+      - internal/platform/wiring/forward_integration_test.go::TestScenario11RuleErrorRingsTheCoordinator
