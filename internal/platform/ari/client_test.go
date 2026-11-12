@@ -2,6 +2,8 @@ package ari
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,11 +12,22 @@ import (
 	"sautihealth.com/sauti/internal/platform/sim"
 )
 
+// secret returns a random credential: no password literal in the repository.
+func secret(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(b)
+}
+
 func newPair(t *testing.T) (*sim.FakeARI, *Client) {
 	t.Helper()
-	f := sim.NewFakeARI("sauti", "s3cret-test")
+	pw := secret(t)
+	f := sim.NewFakeARI("sauti", pw)
 	t.Cleanup(f.Close)
-	c, err := New(Config{BaseURL: f.URL(), User: "sauti", Password: "s3cret-test", App: "sauti-ivr", Timeout: 2 * time.Second})
+	c, err := New(Config{BaseURL: f.URL(), User: "sauti", Password: pw, App: "sauti-ivr", Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,9 +111,9 @@ func TestClientReconnects(t *testing.T) {
 }
 
 func TestClientRejectsWrongCredentials(t *testing.T) {
-	f := sim.NewFakeARI("sauti", "right")
+	f := sim.NewFakeARI("sauti", secret(t))
 	defer f.Close()
-	c, err := New(Config{BaseURL: f.URL(), User: "sauti", Password: "wrong", App: "sauti-ivr"})
+	c, err := New(Config{BaseURL: f.URL(), User: "sauti", Password: secret(t), App: "sauti-ivr"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,12 +137,13 @@ func TestNoRecordingEndpointsUsed(t *testing.T) {
 }
 
 func TestNewValidatesConfig(t *testing.T) {
+	p := secret(t)
 	for _, cfg := range []Config{
-		{BaseURL: "", User: "u", Password: "p", App: "a"},
-		{BaseURL: "ftp://x", User: "u", Password: "p", App: "a"},
-		{BaseURL: "http://x", User: "", Password: "p", App: "a"},
+		{BaseURL: "", User: "u", Password: p, App: "a"},
+		{BaseURL: "ftp://x", User: "u", Password: p, App: "a"},
+		{BaseURL: "http://x", User: "", Password: p, App: "a"},
 		{BaseURL: "http://x", User: "u", Password: "", App: "a"},
-		{BaseURL: "http://x", User: "u", Password: "p", App: ""},
+		{BaseURL: "http://x", User: "u", Password: p, App: ""},
 	} {
 		if _, err := New(cfg); err == nil {
 			t.Errorf("accepted %+v", cfg)

@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"os"
 	"slices"
@@ -48,14 +49,19 @@ func startIVR(t *testing.T, r *intakeRig) *sim.FakeARI {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake := sim.NewFakeARI("sauti", "e2e-ari")
+	pwb := make([]byte, 16)
+	if _, err := rand.Read(pwb); err != nil {
+		t.Fatal(err)
+	}
+	ariPassword := hex.EncodeToString(pwb) // random per run: no password literal
+	fake := sim.NewFakeARI("sauti", ariPassword)
 	t.Cleanup(fake.Close)
 	t.Cleanup(func() {
 		if t.Failed() { // the log is redacted: no numbers
 			t.Logf("ivr log:\n%s\nARI requests: %v", r.logs.String(), fake.Requests())
 		}
 	})
-	client, err := ari.New(ari.Config{BaseURL: fake.URL(), User: "sauti", Password: "e2e-ari", App: "sauti-ivr"})
+	client, err := ari.New(ari.Config{BaseURL: fake.URL(), User: "sauti", Password: ariPassword, App: "sauti-ivr"})
 	if err != nil {
 		t.Fatal(err)
 	}
