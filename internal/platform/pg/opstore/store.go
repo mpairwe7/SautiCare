@@ -190,6 +190,12 @@ func (s *Store) Projection(ctx context.Context, id uuid.UUID) (incident.Projecti
 		ID: uuid.UUID(r.ID.Bytes), Reference: ref, State: incident.State(r.State), Version: r.Version,
 		Channel: r.Channel, Severity: incident.Severity(deref(r.Severity)), LogicVersion: deref(r.LogicVersion),
 		Escalated: r.Escalated, Flags: r.Flags, MergedInto: idPtr(r.MergedInto),
+		Language: deref(r.Language), Danger: deref(r.Danger), Category: deref(r.Category),
+		AgeBand: deref(r.AgeBand), SpecificDanger: deref(r.SpecificDanger), Ward: deref(r.Ward),
+		Landmark: deref(r.Landmark), LastScreen: int(r.LastScreen), LocationQuality: deref(r.LocationQuality),
+	}
+	if r.ZoneCol != nil && r.ZoneRow != nil {
+		p.Zone = &incident.Zone{Col: int(*r.ZoneCol), Row: int(*r.ZoneRow)}
 	}
 	for i, t := range []pgtype.Timestamptz{r.T1, r.T2, r.T3, r.T4, r.T5, r.T6, r.T7} {
 		p.T[i+1] = tsPtr(t)

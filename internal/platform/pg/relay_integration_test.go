@@ -100,7 +100,7 @@ func TestRelayEndToEndAgainstPostgres(t *testing.T) {
 		events++
 		for range i + 1 {
 			if _, err := e.svc.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvScreenAnswered,
-				Payload: json.RawMessage(`{"screen":2}`), ActorKind: incident.ActorCaller, IdemKey: uuid.NewV4().String()}); err != nil {
+				Payload: json.RawMessage(`{"screen":2,"field":"danger","value":"no"}`), ActorKind: incident.ActorCaller, IdemKey: uuid.NewV4().String()}); err != nil {
 				t.Fatal(err)
 			}
 			events++
@@ -136,8 +136,8 @@ func TestAuditEntryNeverCarriesPayloadContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvScreenAnswered,
-		Payload: json.RawMessage(`{"screen":8,"callback":"0772123456"}`), ActorKind: incident.ActorCaller, IdemKey: "s8"}); err != nil {
+	if _, err := e.svc.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvFlagged,
+		Payload: json.RawMessage(`{"flag":"note","note":"0772123456"}`), ActorKind: incident.ActorCaller, IdemKey: "s8"}); err != nil {
 		t.Fatal(err)
 	}
 	drain(t, e.relay)

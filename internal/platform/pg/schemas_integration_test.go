@@ -39,11 +39,12 @@ func code(err error) string {
 func TestAllStoresMigrateFromZero(t *testing.T) {
 	c := pgtest.Cluster(t)
 	want := map[pg.Store][]string{
-		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants", "0004_default_privileges", "0005_salted_payload_hash"},
-		pg.StoreAudit:       {"0000_schema", "0001_ledger", "0002_default_privileges", "0003_hash_at"},
-		pg.StoreAnalytic:    {"0000_schema", "0001_meds", "0002_default_privileges"},
-		pg.StoreLinkage:     {"0000_schema", "0001_vault", "0002_default_privileges"},
-		pg.StoreMedia:       {"0000_schema", "0001_media", "0002_default_privileges"},
+		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants", "0004_default_privileges", "0005_salted_payload_hash",
+			"0006_tool1_projection"},
+		pg.StoreAudit:    {"0000_schema", "0001_ledger", "0002_default_privileges", "0003_hash_at"},
+		pg.StoreAnalytic: {"0000_schema", "0001_meds", "0002_default_privileges"},
+		pg.StoreLinkage:  {"0000_schema", "0001_vault", "0002_default_privileges"},
+		pg.StoreMedia:    {"0000_schema", "0001_media", "0002_default_privileges"},
 	}
 	for s, versions := range want {
 		rows, err := c.Owner(t, s).Query(context.Background(), "SELECT version FROM public.schema_migrations ORDER BY version")

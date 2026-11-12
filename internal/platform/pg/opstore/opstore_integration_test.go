@@ -155,8 +155,8 @@ func TestAppendIsIdempotentOnKey(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
 	o, _ := s.OpenIncident(context.Background(), openParams(t))
-	a := appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":2,"answer":"1"}`, "")
-	b := appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":2,"answer":"1"}`, "")
+	a := appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":2,"field":"danger","value":"yes"}`, "")
+	b := appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":2,"field":"danger","value":"yes"}`, "")
 	if a.Duplicate || !b.Duplicate || a.Event.ID != b.Event.ID || a.Event.Seq != b.Event.Seq {
 		t.Fatalf("first = %+v, second = %+v", a, b)
 	}
@@ -178,10 +178,11 @@ func TestAppendRejectsVersionConflict(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
 	o, _ := s.OpenIncident(context.Background(), openParams(t))
-	if err := appendErr(s, o.IncidentID, incident.EvScreenAnswered, `{}`, 5); !errors.Is(err, incident.ErrVersionConflict) {
+	answer := `{"screen":2,"field":"danger","value":"no"}`
+	if err := appendErr(s, o.IncidentID, incident.EvScreenAnswered, answer, 5); !errors.Is(err, incident.ErrVersionConflict) {
 		t.Fatalf("err = %v, want ErrVersionConflict", err)
 	}
-	if err := appendErr(s, o.IncidentID, incident.EvScreenAnswered, `{}`, 1); err != nil {
+	if err := appendErr(s, o.IncidentID, incident.EvScreenAnswered, answer, 1); err != nil {
 		t.Fatalf("matching expected version rejected: %v", err)
 	}
 }
@@ -322,7 +323,7 @@ func TestProjectionMatchesFold(t *testing.T) {
 	ctx := context.Background()
 	o, _ := s.OpenIncident(ctx, openParams(t))
 	id := o.IncidentID
-	appendEv(t, s, id, incident.EvScreenAnswered, `{"screen":2,"answer":"1"}`, "")
+	appendEv(t, s, id, incident.EvScreenAnswered, `{"screen":2,"field":"danger","value":"yes"}`, "")
 	appendEv(t, s, id, incident.EvFlagged, `{"flag":"test_call"}`, "")
 	appendEv(t, s, id, incident.EvClassified, `{"severity":"red","category":"trauma"}`, "tr-test+sha256:00")
 	appendEv(t, s, id, incident.EvDispatchReady, "", "")
@@ -388,7 +389,7 @@ func TestOutboxPayloadHasOnlyAllowedKeys(t *testing.T) {
 	s := storeAs(t, c, "op_intake")
 	ctx := context.Background()
 	o, _ := s.OpenIncident(ctx, openParams(t))
-	appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":8,"answer":"0772123456"}`, "")
+	appendEv(t, s, o.IncidentID, incident.EvFlagged, `{"flag":"note","note":"0772123456"}`, "")
 	rows, err := c.Owner(t, pg.StoreOperational).Query(ctx, "SELECT id, payload FROM op.outbox ORDER BY id")
 	if err != nil {
 		t.Fatal(err)
@@ -496,13 +497,15 @@ func TestAuditPayloadHashIsSalted(t *testing.T) {
 	s := storeAs(t, c, "op_intake")
 	ctx := context.Background()
 	o, _ := s.OpenIncident(ctx, openParams(t))
-	appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":8,"callback":"0772123456"}`, "")
-	appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":8,"callback":"0772123456","again":1}`, "")
+	// Identifiers never reach payloads (strict screen.answered), so a flag
+	// with a free-form note stands in for a payload worth protecting.
+	appendEv(t, s, o.IncidentID, incident.EvFlagged, `{"flag":"note","note":"0772123456"}`, "")
+	appendEv(t, s, o.IncidentID, incident.EvFlagged, `{"flag":"note","note":"0772123456","again":1}`, "")
 	owner := c.Owner(t, pg.StoreOperational)
 	rows, err := owner.Query(ctx, `
 		SELECT e.payload::text, e.payload_salt, o.payload->>'payload_sha256'
 		FROM op.incident_events e JOIN op.outbox o ON (o.payload->>'event_id')::uuid = e.id
-		WHERE e.type = 'screen.answered' ORDER BY e.seq`)
+		WHERE e.type = 'incident.flagged' ORDER BY e.seq`)
 	if err != nil {
 		t.Fatalf("query salted events: %v", err)
 	}

@@ -251,12 +251,12 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 		payload      string
 		logicVersion string
 	}{
-		{incident.EvScreenAnswered, `{"screen":2,"answer":"1"}`, ""},
-		{incident.EvScreenAnswered, `{"screen":3,"answer":"1"}`, ""},
+		{incident.EvScreenAnswered, `{"screen":2,"field":"danger","value":"yes"}`, ""},
+		{incident.EvScreenAnswered, `{"screen":3,"field":"category","value":"trauma"}`, ""},
 		{incident.EvClassified, `{"severity":"red","category":"trauma"}`, logic},
-		{incident.EvScreenAnswered, `{"screen":7,"answer":"2"}`, ""},
-		{incident.EvDispatchReady, `{"trigger_screen":7}`, ""},
-		{incident.EvScreenAnswered, `{"screen":8,"answer":"0772123456"}`, ""},
+		{incident.EvScreenAnswered, `{"screen":7,"field":"landmark","value":"w01_l2"}`, ""},
+		{incident.EvDispatchReady, `{"trigger_screen":7,"zone":{"col":901,"row":70},"location_quality":"landmark"}`, ""},
+		{incident.EvScreenAnswered, `{"screen":8,"field":"callback","value":"same_number"}`, ""},
 		{incident.EvAlertIssued, `{"role":"vht","ring":1}`, ""},
 		{incident.EvAlertIssued, `{"role":"transporter","ring":1}`, ""},
 		{incident.EvAccepted, `{"role":"vht"}`, ""},

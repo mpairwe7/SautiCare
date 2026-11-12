@@ -26,25 +26,36 @@ type OpEventKey struct {
 }
 
 type OpIncident struct {
-	ID           pgtype.UUID
-	Reference    string
-	Channel      string
-	State        string
-	Version      int64
-	Severity     *string
-	LogicVersion *string
-	T1           pgtype.Timestamptz
-	T2           pgtype.Timestamptz
-	T3           pgtype.Timestamptz
-	T4           pgtype.Timestamptz
-	T5           pgtype.Timestamptz
-	T6           pgtype.Timestamptz
-	T7           pgtype.Timestamptz
-	Escalated    bool
-	Flags        []string
-	MergedInto   pgtype.UUID
-	CreatedAt    pgtype.Timestamptz
-	UpdatedAt    pgtype.Timestamptz
+	ID              pgtype.UUID
+	Reference       string
+	Channel         string
+	State           string
+	Version         int64
+	Severity        *string
+	LogicVersion    *string
+	T1              pgtype.Timestamptz
+	T2              pgtype.Timestamptz
+	T3              pgtype.Timestamptz
+	T4              pgtype.Timestamptz
+	T5              pgtype.Timestamptz
+	T6              pgtype.Timestamptz
+	T7              pgtype.Timestamptz
+	Escalated       bool
+	Flags           []string
+	MergedInto      pgtype.UUID
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	Language        *string
+	Danger          *string
+	Category        *string
+	AgeBand         *string
+	SpecificDanger  *string
+	Ward            *string
+	Landmark        *string
+	LastScreen      int32
+	ZoneCol         *int32
+	ZoneRow         *int32
+	LocationQuality *string
 }
 
 type OpIncidentEvent struct {
