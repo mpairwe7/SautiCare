@@ -13,6 +13,12 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `dispatch_trigger_screen` | `7` | D5, ADR-0009 (Build Prompt §10.1) — defines T2 |
 | | `default_screen_char_limit` | `160` | O7: until MTN/Airtel confirm in writing |
 | | `screen_char_limits` | `{}` | per network code once confirmed |
+| | `fuzzy_match_min_similarity` | `0.45` | Build Prompt §12: below it, ward-level location + `needs_location_callback`; field-tested in M7 |
+| | `abandon_after` | `120s` | Build Prompt §10.3, Guide §4: abandonment flag and danger-yes escalation |
+| `config/gated/tool1.yaml` | the eight screens' copy, options, danger questions, first-aid lines, messages | **placeholder** (`status: placeholder`, `PENDING-TOOL1`) | Tool 1 not received; [tool1-flow.md](tool1-flow.md); blocks production |
+| `config/gated/triage.yaml` | `rules_file`, `trusted_keys` | `triage-rules/tool1.yaml`; one `dev-` key | ADR-0019: who may sign clinical rules; a `dev-` key blocks production |
+| `config/gated/gazetteer.yaml` | wards, landmarks, aliases (versioned) | synthetic `placeholder-2026-11-12` | ADR-0020; separately versioned (not in the fingerprint); `sautictl gazetteer load` |
+| `triage-rules/tool1.yaml` (+ `.sig`, `scenarios.yaml`) | signed decision table | `tool1-placeholder-0.1`, `protocol_status: pending` | ADR-0019; gated |
 | `config/gated/dispatch.yaml` | `mode` | `protocol` | ring 1 only until the decisions 1, 2, 6 amendment |
 | | `ring_step_metres` / `ring_interval` | `500` / `60s` | Build Prompt §10.4, decision 2 |
 | | `max_radius_metres` | `2500` | decision 2 |
@@ -23,11 +29,11 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `ranking_order` | `zone_distance, response_history, least_recently_dispatched` | decision 4 **open**: safe default |
 | | `ranking_version` | `default-2026-11-12` | stamped on incidents (M2) |
 | `config/gated/flags.yaml` | `android_app`, `caller_link`, `speech_assist`, `app_api` | all `false` | decision 10 |
-| `config/gated/screens.yaml` | `started_test_mode`, `internal_error` (`en`, `lg`) | test-mode copy; Luganda `PENDING-TRANSLATION` | blocks production |
+| `config/gated/screens.yaml` | `internal_error` (`en`, `lg`) | names the free voice line; Luganda `PENDING-TRANSLATION` | blocks production |
 | `config/platform.yaml` (ungated) | `checkpoint_interval` | `5m` | Build Prompt §4 |
 | | `outbox_batch_size` / `relay_poll_interval` | `100` / `1s` | tuning |
 
-`Bundle.ProductionReady()` refuses to start with `SAUTI_ENV=production` while `protocol_status` is not `approved`, or while any screen contains `XXX` or `PENDING-TRANSLATION`.
+`Bundle.ProductionReady()` refuses to start with `SAUTI_ENV=production` while `protocol_status` or the Tool 1 catalogue's `status` is not `approved`, or while any screen contains `XXX`, `PENDING-TOOL1` or `PENDING-TRANSLATION`. `wiring.BuildIntake` also refuses a placeholder gazetteer and a pending or `dev-`signed triage bundle. `config.Load` fails on any file under `config/gated/` it does not use.
 
 **What is gated.** The gated paths are `config/gated/**`, `config/study.yaml`, `triage-rules/**` and the gate list `governance/gated-paths.txt` itself. The effective gate is the union of this built-in minimum, the list at the base ref and the list in the change, so a change can only widen it. Gated paths must be regular files, not symlinks, and are hashed as tracked at HEAD. `config/platform.yaml` is ungated operational tuning by design.
 
