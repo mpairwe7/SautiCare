@@ -15,7 +15,9 @@ The hash-chained audit ledger (ADR-0005) no longer verifies: an entry's hash doe
 ## Triggers and detection
 
 * Nightly `sautictl verify-ledger --dsn <audit_reader> --pubkey-file <published key> --witness-dir <witness copy>` (P0 schedule).
-* `sauti_audit_chain_diverged` = 1 on outbox-relay: the checkpointer refused to sign.
+* `sauti_audit_chain_diverged` = 1 on outbox-relay: the checkpointer refused to sign. It returns to 0 on the next successful checkpoint.
+* outbox-relay exits a leadership term with "refusing to checkpoint" when the witness store does not verify at takeover.
+* `sautictl verify-ledger` printing `WARNING: --witness-dir holds no checkpoints`: the witness copy is missing (unmounted volume, wrong path), so the run proves less than it appears to.
 * Every restore drill and every analytic restore.
 * Output names `first_bad_seq` and the first problem.
 
@@ -28,7 +30,7 @@ The hash-chained audit ledger (ADR-0005) no longer verifies: an entry's hash doe
 
 1. Run `sautictl verify-ledger --dsn <audit_reader> --pubkey-file <published key> --witness-dir <witness copy>` and record the full output. **Always pass the witness.** A database owner who rewrites an entry, recomputes the chain and deletes the database checkpoints fools chain-only verification; only `witnesses_bad > 0` reveals it.
 2. Each witness file `checkpoint-<seq>-<time>.txt` carries the signed head at that sequence. The last witness that still verifies proves the ledger was intact up to that sequence.
-3. `sauti_audit_chain_diverged = 1`, or the outbox-relay log `AUDIT LEDGER DIVERGED`, means the relay refused to sign a new checkpoint because history before its witnessed anchor changed. Treat it exactly like a verification failure.
+3. `sauti_audit_chain_diverged = 1`, or the outbox-relay log `AUDIT LEDGER DIVERGED`, means the relay refused to sign a new checkpoint because history before its witnessed anchor changed. Treat it exactly like a verification failure. `sautictl checkpoint` refuses in the same situation.
 4. Check `pg_stat_activity` and the PostgreSQL logs for superuser sessions, `ALTER TABLE … DISABLE TRIGGER`, and `UPDATE`/`DELETE` on `audit.entries` or `audit.checkpoints`.
 5. Cross-check: for the incidents involved, `op.incident_events` payload hashes must match `audit.entries.payload_sha256`.
 

@@ -1,12 +1,18 @@
 package sim
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+
+	"sautihealth.com/sauti/internal/platform/egress"
 )
 
 func TestUSSDSimAccumulatesText(t *testing.T) {
@@ -58,5 +64,33 @@ func TestUSSDSimParsesEndAndRejectsGarbage(t *testing.T) {
 	body = "<html>oops</html>"
 	if _, err := s.Send("1"); err == nil {
 		t.Fatal("non-USSD body accepted")
+	}
+}
+
+// The simulator's outbound HTTP goes through platform/egress, allowing only
+// the gateway host from its base URL: a redirect to any other host is
+// refused before a connection is made (CodeRabbit PR #4).
+func TestUSSDSimReachesOnlyTheGatewayHost(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("no second loopback address: %v", err)
+	}
+	var reached atomic.Bool
+	elsewhere := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		_, _ = w.Write([]byte("END elsewhere"))
+	}))
+	_ = elsewhere.Listener.Close()
+	elsewhere.Listener = ln
+	elsewhere.Start()
+	defer elsewhere.Close()
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer gateway.Close()
+
+	_, err = NewUSSD(gateway.URL, "t", "*1#", "64101").Dial("+256700000001").Send("")
+	if !errors.Is(err, egress.ErrDenied) || reached.Load() {
+		t.Fatalf("redirect off the gateway host: err = %v, reached = %v; want egress.ErrDenied", err, reached.Load())
 	}
 }

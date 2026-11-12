@@ -14,7 +14,7 @@ intake-gw answers Africa's Talking USSD callbacks. On any internal error it stil
 
 ## Triggers and detection
 
-* Log lines `ussd intake failed` (session ID only, never the number or the input).
+* Log lines `ussd intake failed` (the session correlation value only, valid within one process lifetime; never the session ID, the number or the input).
 * `curl -s 127.0.0.1:9100/readyz` reports `operational_db: fail`.
 * Synthetic monitors on MTN and Airtel every 5 minutes (M7).
 
