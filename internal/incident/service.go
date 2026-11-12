@@ -253,3 +253,10 @@ func (s *Service) ResumeSession(ctx context.Context, cmd ResumeSession) (Opened,
 	}
 	return s.store.ResumeSession(ctx, p)
 }
+
+// SealedContact is a sealed phone number and the row it is bound to: the
+// AAD to open it with (a session's number or a callback identifier).
+type SealedContact struct {
+	Sealed crypto.Sealed
+	AAD    crypto.AAD
+}

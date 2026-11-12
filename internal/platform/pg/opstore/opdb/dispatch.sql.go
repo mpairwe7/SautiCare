@@ -89,6 +89,29 @@ func (q *Queries) BeginAttempt(ctx context.Context, arg BeginAttemptParams) (Beg
 	return i, err
 }
 
+const beginNoticeAttempt = `-- name: BeginNoticeAttempt :one
+SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
+FROM op.begin_notice_attempt($1::uuid, $2::text, $3::text) AS a(attempt_id, fresh)
+`
+
+type BeginNoticeAttemptParams struct {
+	IncidentID pgtype.UUID
+	Kind       string
+	Channel    string
+}
+
+type BeginNoticeAttemptRow struct {
+	AttemptID pgtype.UUID
+	Fresh     bool
+}
+
+func (q *Queries) BeginNoticeAttempt(ctx context.Context, arg BeginNoticeAttemptParams) (BeginNoticeAttemptRow, error) {
+	row := q.db.QueryRow(ctx, beginNoticeAttempt, arg.IncidentID, arg.Kind, arg.Channel)
+	var i BeginNoticeAttemptRow
+	err := row.Scan(&i.AttemptID, &i.Fresh)
+	return i, err
+}
+
 const busyResponders = `-- name: BusyResponders :many
 SELECT DISTINCT s.responder_id FROM op.assignments s JOIN op.incidents i ON i.id = s.incident_id
 WHERE s.released_at IS NULL AND i.state NOT IN ('closed', 'merged')
@@ -108,6 +131,78 @@ func (q *Queries) BusyResponders(ctx context.Context) ([]pgtype.UUID, error) {
 			return nil, err
 		}
 		items = append(items, responder_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const callerContact = `-- name: CallerContact :many
+SELECT c.source::text AS source, c.row_id::uuid AS row_id, c.ct::bytea AS ct, c.key_id::text AS key_id
+FROM op.caller_contact($1::uuid) AS c(source, row_id, ct, key_id)
+`
+
+type CallerContactRow struct {
+	Source string
+	RowID  pgtype.UUID
+	Ct     []byte
+	KeyID  string
+}
+
+func (q *Queries) CallerContact(ctx context.Context, incidentID pgtype.UUID) ([]CallerContactRow, error) {
+	rows, err := q.db.Query(ctx, callerContact, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CallerContactRow
+	for rows.Next() {
+		var i CallerContactRow
+		if err := rows.Scan(
+			&i.Source,
+			&i.RowID,
+			&i.Ct,
+			&i.KeyID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimAvailabilityReminders = `-- name: ClaimAvailabilityReminders :many
+SELECT c.responder_id::uuid AS responder_id, c.until::timestamptz AS until
+FROM op.claim_availability_reminders($1::interval, $2::int) AS c(responder_id, until)
+`
+
+type ClaimAvailabilityRemindersParams struct {
+	Within  pgtype.Interval
+	MaxRows int32
+}
+
+type ClaimAvailabilityRemindersRow struct {
+	ResponderID pgtype.UUID
+	Until       pgtype.Timestamptz
+}
+
+func (q *Queries) ClaimAvailabilityReminders(ctx context.Context, arg ClaimAvailabilityRemindersParams) ([]ClaimAvailabilityRemindersRow, error) {
+	rows, err := q.db.Query(ctx, claimAvailabilityReminders, arg.Within, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimAvailabilityRemindersRow
+	for rows.Next() {
+		var i ClaimAvailabilityRemindersRow
+		if err := rows.Scan(&i.ResponderID, &i.Until); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -493,6 +588,23 @@ func (q *Queries) FinishAttempt(ctx context.Context, arg FinishAttemptParams) (b
 	return changed, err
 }
 
+const finishNoticeAttempt = `-- name: FinishNoticeAttempt :one
+SELECT op.finish_notice_attempt($1::uuid, $2::text, $3::text)::boolean AS changed
+`
+
+type FinishNoticeAttemptParams struct {
+	AttemptID   pgtype.UUID
+	Status      string
+	ProviderRef *string
+}
+
+func (q *Queries) FinishNoticeAttempt(ctx context.Context, arg FinishNoticeAttemptParams) (bool, error) {
+	row := q.db.QueryRow(ctx, finishNoticeAttempt, arg.AttemptID, arg.Status, arg.ProviderRef)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
 const issueAlert = `-- name: IssueAlert :one
 
 SELECT a.alert_id::uuid AS alert_id, a.sent_at::timestamptz AS sent_at, a.duplicate::boolean AS duplicate
@@ -560,6 +672,30 @@ func (q *Queries) OldestOverdueDispatch(ctx context.Context) (float64, error) {
 	var seconds float64
 	err := row.Scan(&seconds)
 	return seconds, err
+}
+
+const recordDeliveryReport = `-- name: RecordDeliveryReport :one
+SELECT op.record_delivery_report($1::text, $2::text, $3::text,
+                                 $4::boolean)::boolean AS known
+`
+
+type RecordDeliveryReportParams struct {
+	ProviderRef string
+	Status      string
+	Failure     *string
+	Final       bool
+}
+
+func (q *Queries) RecordDeliveryReport(ctx context.Context, arg RecordDeliveryReportParams) (bool, error) {
+	row := q.db.QueryRow(ctx, recordDeliveryReport,
+		arg.ProviderRef,
+		arg.Status,
+		arg.Failure,
+		arg.Final,
+	)
+	var known bool
+	err := row.Scan(&known)
+	return known, err
 }
 
 const recordForward = `-- name: RecordForward :one

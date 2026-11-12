@@ -24,14 +24,18 @@ type OpAlert struct {
 }
 
 type OpAlertAttempt struct {
-	ID          pgtype.UUID
-	AlertID     pgtype.UUID
-	Purpose     string
-	Channel     string
-	Status      string
-	ProviderRef *string
-	ClaimedAt   pgtype.Timestamptz
-	SettledAt   pgtype.Timestamptz
+	ID              pgtype.UUID
+	AlertID         pgtype.UUID
+	Purpose         string
+	Channel         string
+	Status          string
+	ProviderRef     *string
+	ClaimedAt       pgtype.Timestamptz
+	SettledAt       pgtype.Timestamptz
+	DeliveryStatus  *string
+	DeliveryFailure *string
+	DeliveryFinal   bool
+	DeliveryAt      pgtype.Timestamptz
 }
 
 type OpAssignment struct {
@@ -235,6 +239,21 @@ type OpLandmarkAlias struct {
 	AliasOrder int32
 	WardID     string
 	AliasNorm  string
+}
+
+type OpNoticeAttempt struct {
+	ID              pgtype.UUID
+	IncidentID      pgtype.UUID
+	Kind            string
+	Channel         string
+	Status          string
+	ProviderRef     *string
+	ClaimedAt       pgtype.Timestamptz
+	SettledAt       pgtype.Timestamptz
+	DeliveryStatus  *string
+	DeliveryFailure *string
+	DeliveryFinal   bool
+	DeliveryAt      pgtype.Timestamptz
 }
 
 type OpOutbox struct {

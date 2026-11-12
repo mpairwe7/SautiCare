@@ -142,3 +142,22 @@ SELECT (red.t4 IS NOT NULL AND red.t4 <= red.t2 + sqlc.arg(red_window)::interval
 -- name: OldestOverdueDispatch :one
 SELECT coalesce(extract(epoch FROM clock_timestamp() - min(due_at)), 0)::float8 AS seconds
 FROM op.dispatch_timers WHERE due_at <= clock_timestamp();
+
+-- name: BeginNoticeAttempt :one
+SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
+FROM op.begin_notice_attempt(sqlc.arg(incident_id)::uuid, sqlc.arg(kind)::text, sqlc.arg(channel)::text) AS a(attempt_id, fresh);
+
+-- name: FinishNoticeAttempt :one
+SELECT op.finish_notice_attempt(sqlc.arg(attempt_id)::uuid, sqlc.arg(status)::text, sqlc.narg(provider_ref)::text)::boolean AS changed;
+
+-- name: RecordDeliveryReport :one
+SELECT op.record_delivery_report(sqlc.arg(provider_ref)::text, sqlc.arg(status)::text, sqlc.narg(failure)::text,
+                                 sqlc.arg(final)::boolean)::boolean AS known;
+
+-- name: CallerContact :many
+SELECT c.source::text AS source, c.row_id::uuid AS row_id, c.ct::bytea AS ct, c.key_id::text AS key_id
+FROM op.caller_contact(sqlc.arg(incident_id)::uuid) AS c(source, row_id, ct, key_id);
+
+-- name: ClaimAvailabilityReminders :many
+SELECT c.responder_id::uuid AS responder_id, c.until::timestamptz AS until
+FROM op.claim_availability_reminders(sqlc.arg(within)::interval, sqlc.arg(max_rows)::int) AS c(responder_id, until);

@@ -88,3 +88,17 @@ type ControlEntry struct {
 	Failures int        // stopping_rule_breached only
 	Window   int
 }
+
+// Reminder is an availability period about to end (review focus 4: the
+// expiry reminder is sent once per period).
+type Reminder struct {
+	ResponderID uuid.UUID
+	Until       time.Time
+}
+
+// Notice is a caller notice to deliver (a recorded caller.notified).
+type Notice struct {
+	AttemptID, IncidentID uuid.UUID
+	Kind                  string
+	Channel               string
+}
