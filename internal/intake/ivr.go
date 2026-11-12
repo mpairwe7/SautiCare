@@ -36,11 +36,16 @@ func (s *Service) StartIVR(ctx context.Context, callID string, phone pii.Phone) 
 		return IVRTurn{}, err
 	}
 	call.IncidentID = opened.IncidentID
-	p, err := s.d.Reader.Projection(ctx, call.IncidentID)
+	// A resumed incident may lack what an earlier, failed request on either
+	// channel was to record (its classification, T2): record it first.
+	p, err := s.catchUp(ctx, call.IncidentID, "")
 	if err != nil {
 		return IVRTurn{}, err
 	}
-	pr := s.d.Machine.Next(p, call.HasPhone)
+	pr, err := s.next(p, call.HasPhone)
+	if err != nil {
+		return IVRTurn{}, err
+	}
 	call.Shown = pr.Kind
 	return IVRTurn{Call: call, Prompt: pr}, nil
 }
