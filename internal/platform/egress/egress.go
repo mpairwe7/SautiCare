@@ -28,13 +28,13 @@ func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
 	return g.next.RoundTrip(req)
 }
 
-// NewClient returns an *http.Client that refuses every host not in allow.
-// Redirects are re-checked hop by hop because each hop passes through the
-// guarded transport.
 // DefaultTimeout applies when a caller passes a non-positive timeout: every
 // external call has a deadline (spec §7.5).
 const DefaultTimeout = 10 * time.Second
 
+// NewClient returns an *http.Client that refuses every host not in allow.
+// Redirects are re-checked hop by hop because each hop passes through the
+// guarded transport.
 func NewClient(allow []string, timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
