@@ -138,7 +138,7 @@ func (s *Store) DispatchSnapshot(ctx context.Context, incidentID uuid.UUID) (dis
 		return dispatch.Snapshot{}, fmt.Errorf("opstore: dispatch snapshot: %w", notFound(err))
 	}
 	snap := dispatch.Snapshot{IncidentID: incidentID, State: incident.State(inc.State), Severity: incident.Severity(deref(inc.Severity)),
-		DispatchedAt: tsOpt(inc.T2), Assigned: map[responder.Role]uuid.UUID{}}
+		DispatchedAt: tsOpt(inc.T2), Ward: deref(inc.Ward), Assigned: map[responder.Role]uuid.UUID{}}
 	if inc.ZoneCol != nil && inc.ZoneRow != nil {
 		snap.Zone = &incident.Zone{Col: int(*inc.ZoneCol), Row: int(*inc.ZoneRow)}
 	}
@@ -179,4 +179,42 @@ func notFound(err error) error {
 		return incident.ErrNotFound
 	}
 	return err
+}
+
+// ResponderHistory returns each responder's settled alerts of the last 90
+// days for ranking (op_dispatch).
+func (s *Store) ResponderHistory(ctx context.Context) (map[uuid.UUID]dispatch.History, error) {
+	rows, err := s.q.ResponderHistory(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("opstore: responder history: %w", err)
+	}
+	out := make(map[uuid.UUID]dispatch.History, len(rows))
+	for _, r := range rows {
+		out[uuid.UUID(r.ResponderID.Bytes)] = dispatch.History{Alerted: int(r.Alerted), Accepted: int(r.Accepted),
+			LastDispatched: tsOpt(r.LastDispatched)}
+	}
+	return out, nil
+}
+
+// BusyResponders returns the responders assigned to an open incident.
+func (s *Store) BusyResponders(ctx context.Context) (map[uuid.UUID]bool, error) {
+	ids, err := s.q.BusyResponders(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("opstore: busy responders: %w", err)
+	}
+	out := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		out[uuid.UUID(id.Bytes)] = true
+	}
+	return out, nil
+}
+
+// Now is the database clock (rule 3.4: server-side time); the dispatch
+// planner compares it with timestamps the database recorded.
+func (s *Store) Now(ctx context.Context) (time.Time, error) {
+	t, err := s.q.DatabaseNow(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("opstore: now: %w", err)
+	}
+	return t.Time.UTC(), nil
 }

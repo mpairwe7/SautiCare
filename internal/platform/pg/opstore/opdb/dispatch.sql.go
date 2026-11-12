@@ -73,6 +73,32 @@ func (q *Queries) BeginAttempt(ctx context.Context, arg BeginAttemptParams) (Beg
 	return i, err
 }
 
+const busyResponders = `-- name: BusyResponders :many
+SELECT DISTINCT s.responder_id FROM op.assignments s JOIN op.incidents i ON i.id = s.incident_id
+WHERE s.released_at IS NULL AND i.state NOT IN ('closed', 'merged')
+`
+
+// Responders on an open incident are not alerted for another.
+func (q *Queries) BusyResponders(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, busyResponders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var responder_id pgtype.UUID
+		if err := rows.Scan(&responder_id); err != nil {
+			return nil, err
+		}
+		items = append(items, responder_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const claimDueDispatch = `-- name: ClaimDueDispatch :many
 SELECT d.incident_id::uuid AS incident_id, d.gen::bigint AS gen
 FROM op.claim_due_dispatch($1::int, $2::interval) AS d(incident_id, gen)
@@ -122,6 +148,17 @@ func (q *Queries) CloseAlert(ctx context.Context, arg CloseAlertParams) (bool, e
 	var changed bool
 	err := row.Scan(&changed)
 	return changed, err
+}
+
+const databaseNow = `-- name: DatabaseNow :one
+SELECT clock_timestamp()::timestamptz AS now
+`
+
+func (q *Queries) DatabaseNow(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, databaseNow)
+	var now pgtype.Timestamptz
+	err := row.Scan(&now)
+	return now, err
 }
 
 const declineAlert = `-- name: DeclineAlert :one
@@ -301,7 +338,7 @@ func (q *Queries) DispatchForwards(ctx context.Context, incidentID pgtype.UUID) 
 }
 
 const dispatchIncident = `-- name: DispatchIncident :one
-SELECT id, state, severity, t2, zone_col, zone_row FROM op.incidents WHERE id = $1::uuid
+SELECT id, state, severity, t2, zone_col, zone_row, ward FROM op.incidents WHERE id = $1::uuid
 `
 
 type DispatchIncidentRow struct {
@@ -311,6 +348,7 @@ type DispatchIncidentRow struct {
 	T2       pgtype.Timestamptz
 	ZoneCol  *int32
 	ZoneRow  *int32
+	Ward     *string
 }
 
 func (q *Queries) DispatchIncident(ctx context.Context, id pgtype.UUID) (DispatchIncidentRow, error) {
@@ -323,6 +361,7 @@ func (q *Queries) DispatchIncident(ctx context.Context, id pgtype.UUID) (Dispatc
 		&i.T2,
 		&i.ZoneCol,
 		&i.ZoneRow,
+		&i.Ward,
 	)
 	return i, err
 }
@@ -445,6 +484,49 @@ func (q *Queries) RecordForward(ctx context.Context, arg RecordForwardParams) (b
 	var changed bool
 	err := row.Scan(&changed)
 	return changed, err
+}
+
+const responderHistory = `-- name: ResponderHistory :many
+SELECT responder_id,
+       count(*) FILTER (WHERE outcome <> 'pending')::int AS alerted,
+       count(*) FILTER (WHERE outcome = 'accepted')::int AS accepted,
+       max(responded_at) FILTER (WHERE outcome = 'accepted')::timestamptz AS last_dispatched
+FROM op.alerts WHERE sent_at > clock_timestamp() - interval '90 days'
+GROUP BY responder_id
+`
+
+type ResponderHistoryRow struct {
+	ResponderID    pgtype.UUID
+	Alerted        int32
+	Accepted       int32
+	LastDispatched pgtype.Timestamptz
+}
+
+// Response history for ranking (decision 4): settled alerts of the last 90
+// days per responder; "dispatched" is an acceptance.
+func (q *Queries) ResponderHistory(ctx context.Context) ([]ResponderHistoryRow, error) {
+	rows, err := q.db.Query(ctx, responderHistory)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ResponderHistoryRow
+	for rows.Next() {
+		var i ResponderHistoryRow
+		if err := rows.Scan(
+			&i.ResponderID,
+			&i.Alerted,
+			&i.Accepted,
+			&i.LastDispatched,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const scheduleDispatch = `-- name: ScheduleDispatch :exec

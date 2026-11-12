@@ -67,7 +67,8 @@ type Snapshot struct {
 	State          incident.State
 	Severity       incident.Severity
 	DispatchedAt   *time.Time
-	Zone           *incident.Zone
+	Zone           *incident.Zone // nil for a ward-level location
+	Ward           string
 	Alerts         []Alert
 	Assigned       map[responder.Role]uuid.UUID
 	Forwards       []ForwardState

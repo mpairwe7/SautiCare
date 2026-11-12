@@ -1,0 +1,330 @@
+package dispatch
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+	"uuid"
+
+	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/location"
+	"sautihealth.com/sauti/internal/responder"
+)
+
+// Store is the dispatch worker's persistence port (the operational store,
+// role op_dispatch). Every write is idempotent.
+type Store interface {
+	ClaimDueDispatch(ctx context.Context, limit int, lease time.Duration) ([]Due, error)
+	ScheduleDispatch(ctx context.Context, incidentID uuid.UUID, gen int64, due *time.Time) error
+	DispatchSnapshot(ctx context.Context, incidentID uuid.UUID) (Snapshot, error)
+	Responders(ctx context.Context) ([]responder.Responder, error)
+	ResponderHistory(ctx context.Context) (map[uuid.UUID]History, error)
+	BusyResponders(ctx context.Context) (map[uuid.UUID]bool, error)
+	Now(ctx context.Context) (time.Time, error) // the database clock (rule 3.4)
+
+	IssueAlert(ctx context.Context, p IssueParams) (Issued, error)
+	CloseAlert(ctx context.Context, alert uuid.UUID, outcome string) (bool, error)
+	RecordForward(ctx context.Context, incidentID uuid.UUID, facility, gazetteerVersion, logicVersion string) (bool, error)
+	TimeOutForward(ctx context.Context, incidentID uuid.UUID, facility string) (bool, error)
+	NotifyCaller(ctx context.Context, incidentID uuid.UUID, kind, facility string) (bool, error)
+	DispatchEscalate(ctx context.Context, incidentID uuid.UUID, reason string, role responder.Role, logicVersion string) (bool, error)
+	BeginAttempt(ctx context.Context, alert uuid.UUID, purpose, channel string) (uuid.UUID, bool, error)
+	FinishAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
+}
+
+// Delivery is one message to a responder: an alert or a stand-down. It
+// carries identifiers only; the channel adapter looks up the number.
+type Delivery struct {
+	AttemptID, AlertID, IncidentID, ResponderID uuid.UUID
+	Role                                        responder.Role
+	Purpose, Channel                            string
+}
+
+// Deliverer sends deliveries (Part B: SMS, voice). An error means the
+// outcome is unknown: the attempt is settled "unknown" and never re-sent.
+type Deliverer interface {
+	Deliver(ctx context.Context, d Delivery) (providerRef string, err error)
+}
+
+// ErrRejected is returned by a Deliverer when the provider refused the
+// message (the attempt failed; nothing was sent).
+var ErrRejected = errors.New("dispatch: delivery rejected by the provider")
+
+// Suspension reports whether dispatch is suspended (O6).
+type Suspension interface {
+	Suspended(ctx context.Context) (bool, error)
+}
+
+// Engine executes plans: it reads an incident's facts, plans, records each
+// action through the store, delivers what the store says is undelivered,
+// and stores the next wake. It holds no dispatch state of its own, so a
+// crash or failover at any point resumes from the store (scenario 14).
+type Engine struct {
+	store      Store
+	deliverer  Deliverer
+	suspension Suspension
+	params     Params
+	ranker     Ranker
+	logic      string
+	gazetteer  location.File
+	stageCells map[string]location.Cell
+}
+
+// EngineConfig wires an Engine.
+type EngineConfig struct {
+	Store        Store
+	Deliverer    Deliverer
+	Suspension   Suspension
+	Params       Params
+	Ranker       Ranker
+	LogicVersion string        // stamped on every dispatch fact
+	Gazetteer    location.File // stages, wards and facilities in force
+}
+
+// NewEngine validates the configuration.
+func NewEngine(c EngineConfig) (*Engine, error) {
+	if c.Store == nil || c.Deliverer == nil || c.Suspension == nil || c.LogicVersion == "" || c.Gazetteer.Version == "" {
+		return nil, errors.New("dispatch: engine needs a store, deliverer, suspension source, logic version and gazetteer")
+	}
+	if err := c.Params.Validate(); err != nil {
+		return nil, err
+	}
+	if c.Ranker.Version() == "" {
+		return nil, errors.New("dispatch: engine needs a ranker")
+	}
+	cells := map[string]location.Cell{}
+	for _, s := range c.Gazetteer.Stages {
+		cells[s.ID] = s.Cell
+	}
+	return &Engine{store: c.Store, deliverer: c.Deliverer, suspension: c.Suspension, params: c.Params, ranker: c.Ranker,
+		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells}, nil
+}
+
+// maxRounds bounds re-planning within one wake; each round records facts,
+// so a plan that never settles is a bug, escalated rather than looped.
+const maxRounds = 32
+
+// Process plans one due incident until nothing more is due now, delivers,
+// and stores the next wake for the generation it was claimed at.
+func (e *Engine) Process(ctx context.Context, due Due) error {
+	refused := map[uuid.UUID]bool{} // refused by the database this wake (a lapse since the read)
+	for range maxRounds {
+		snap, err := e.store.DispatchSnapshot(ctx, due.IncidentID)
+		if err != nil {
+			return err
+		}
+		now, err := e.store.Now(ctx)
+		if err != nil {
+			return err
+		}
+		suspended, err := e.suspension.Suspended(ctx)
+		if err != nil {
+			return err
+		}
+		st, pool, err := e.state(ctx, snap, suspended, now, refused)
+		if err != nil {
+			return err
+		}
+		acts, wake := Plan(st, pool, e.gazetteer.Facilities, e.params, now)
+		if len(acts) == 0 {
+			if err := e.deliver(ctx, snap); err != nil {
+				return err
+			}
+			var next *time.Time
+			if !wake.IsZero() {
+				next = &wake
+			}
+			return e.store.ScheduleDispatch(ctx, due.IncidentID, due.Gen, next)
+		}
+		for _, a := range acts {
+			if err := e.execute(ctx, snap.IncidentID, a, refused); err != nil {
+				return fmt.Errorf("dispatch: %s for %s: %w", a.Kind, snap.IncidentID, err)
+			}
+		}
+	}
+	return fmt.Errorf("dispatch: incident %s: the plan did not settle in %d rounds", due.IncidentID, maxRounds)
+}
+
+// state builds the planner's view: the stored facts, the pool of eligible
+// responders ranked, and the search centres.
+func (e *Engine) state(ctx context.Context, snap Snapshot, suspended bool, now time.Time, refused map[uuid.UUID]bool) (State, Pool, error) {
+	st := State{Severity: snap.Severity, Assigned: snap.Assigned, Alerts: snap.Alerts, Forwards: snap.Forwards,
+		Escalations: snap.Escalations, CallerNotified: snap.CallerNotified, Suspended: suspended}
+	if snap.DispatchedAt != nil {
+		st.DispatchedAt = *snap.DispatchedAt
+	}
+	switch snap.State {
+	case incident.StateDispatching, incident.StateAssigned, incident.StateOnScene:
+	default: // closed, merged, or past the point of dispatch: stand everyone down
+		st.Done = true
+		return st, rankedPool{}, nil
+	}
+	centres, cell := e.centres(snap)
+	st.Cell = cell
+	rs, err := e.store.Responders(ctx)
+	if err != nil {
+		return st, nil, err
+	}
+	busy, err := e.store.BusyResponders(ctx)
+	if err != nil {
+		return st, nil, err
+	}
+	history, err := e.store.ResponderHistory(ctx)
+	if err != nil {
+		return st, nil, err
+	}
+	rs = slices.DeleteFunc(rs, func(r responder.Responder) bool { return busy[r.ID] || refused[r.ID] })
+	pool := rankedPool{}
+	for _, role := range responder.Roles() {
+		cs := Eligible(rs, e.stageCells, role, centres, e.params.ringLimit(), now)
+		for i := range cs {
+			cs[i].History = history[cs[i].Responder.ID]
+		}
+		pool[role] = e.ranker.Rank(cs)
+	}
+	return st, pool, nil
+}
+
+// centres are the incident's zone, or every zone of its ward when only the
+// ward is known; cell orders facilities by distance.
+func (e *Engine) centres(snap Snapshot) ([]location.Cell, location.Cell) {
+	if snap.Zone != nil {
+		c := location.Cell{Col: snap.Zone.Col, Row: snap.Zone.Row}
+		return []location.Cell{c}, c
+	}
+	for _, w := range e.gazetteer.Wards {
+		if w.ID == snap.Ward {
+			return w.Zones, w.Centre
+		}
+	}
+	return nil, location.Cell{} // unknown location: nobody is eligible, so the coordinator is alerted
+}
+
+// rankedPool holds each role's eligible responders within the mode's ring
+// limit, best first; Ranked filters by ring, keeping the order.
+type rankedPool map[responder.Role][]Candidate
+
+func (p rankedPool) Ranked(role responder.Role, ring int) []Candidate {
+	var out []Candidate
+	for _, c := range p[role] {
+		if c.Distance <= ring {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, refused map[uuid.UUID]bool) error {
+	var err error
+	switch a.Kind {
+	case ActAlert:
+		_, err = e.store.IssueAlert(ctx, IssueParams{IncidentID: incidentID, ResponderID: a.ResponderID, Role: a.Role,
+			Ring: a.Ring, Wave: a.Wave, LogicVersion: e.logic})
+		if errors.Is(err, incident.ErrIllegalTransition) {
+			// The responder lapsed or was taken since the read: leave them
+			// out and re-plan; the database is the last guard (review focus 4).
+			refused[a.ResponderID] = true
+			return nil
+		}
+	case ActExpire:
+		_, err = e.store.CloseAlert(ctx, a.AlertID, OutcomeNoResponse)
+	case ActStandDown:
+		_, err = e.store.CloseAlert(ctx, a.AlertID, OutcomeStoodDown)
+	case ActEscalate:
+		_, err = e.store.DispatchEscalate(ctx, incidentID, a.Reason, a.Role, e.logic)
+	case ActForward:
+		_, err = e.store.RecordForward(ctx, incidentID, a.FacilityID, e.gazetteer.Version, e.logic)
+	case ActForwardTimeout:
+		_, err = e.store.TimeOutForward(ctx, incidentID, a.FacilityID)
+	case ActCallerSMS:
+		_, err = e.store.NotifyCaller(ctx, incidentID, a.Message, a.FacilityID)
+	default:
+		err = fmt.Errorf("unknown action %q", a.Kind)
+	}
+	return err
+}
+
+// deliver sends every alert still pending and every stand-down that has not
+// been attempted. An attempt is claimed in the store before the provider
+// call and only once, so neither a retry nor a crash sends it twice; one
+// whose result is unknown is never re-sent (the cascade's next rung covers
+// it). Channel: SMS (USSD push is disabled, O2; voice fallback is Part B).
+func (e *Engine) deliver(ctx context.Context, snap Snapshot) error {
+	for _, a := range snap.Alerts {
+		purpose := ""
+		switch a.Outcome {
+		case OutcomePending:
+			purpose = PurposeAlert
+		case OutcomeStoodDown:
+			purpose = PurposeStandDown
+		default:
+			continue
+		}
+		attempt, fresh, err := e.store.BeginAttempt(ctx, a.ID, purpose, ChannelSMS)
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			continue
+		}
+		ref, derr := e.deliverer.Deliver(ctx, Delivery{AttemptID: attempt, AlertID: a.ID, IncidentID: snap.IncidentID,
+			ResponderID: a.ResponderID, Role: a.Role, Purpose: purpose, Channel: ChannelSMS})
+		status := "sent"
+		switch {
+		case errors.Is(derr, ErrRejected):
+			status = "failed"
+		case derr != nil:
+			status = "unknown"
+		}
+		if _, err := e.store.FinishAttempt(ctx, attempt, status, ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RunOnce claims due incidents (most urgent first) and processes each. A
+// failure is reported and escalated, and the lease lets it be retried.
+func (e *Engine) RunOnce(ctx context.Context, batch int, lease time.Duration, onErr func(uuid.UUID, error)) (int, error) {
+	due, err := e.store.ClaimDueDispatch(ctx, batch, lease)
+	if err != nil {
+		return 0, err
+	}
+	for _, d := range due {
+		if err := e.Process(ctx, d); err != nil {
+			if ctx.Err() != nil {
+				return len(due), ctx.Err()
+			}
+			onErr(d.IncidentID, err)
+			// Fail safe to a human (rule 3.14): the coordinator sees it now.
+			if _, eerr := e.store.DispatchEscalate(ctx, d.IncidentID, ReasonDispatchError, "", e.logic); eerr != nil {
+				onErr(d.IncidentID, eerr)
+			}
+		}
+	}
+	return len(due), nil
+}
+
+// ReasonDispatchError escalates an incident the worker could not process.
+const ReasonDispatchError = "dispatch_error"
+
+// Run polls for due incidents until ctx ends: at once again when a full
+// batch was claimed, otherwise after poll.
+func (e *Engine) Run(ctx context.Context, poll time.Duration, batch int, lease time.Duration, onErr func(uuid.UUID, error)) error {
+	for {
+		n, err := e.RunOnce(ctx, batch, lease, onErr)
+		if err != nil && ctx.Err() == nil {
+			onErr(uuid.UUID{}, err)
+		}
+		if n >= batch && err == nil {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}

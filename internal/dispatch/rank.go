@@ -37,15 +37,21 @@ type Candidate struct {
 }
 
 // Eligible returns the responders of role who pass the gates, have an open
-// availability period at now, and wait at a stage within ring k of centre.
-func Eligible(rs []responder.Responder, stageCells map[string]location.Cell, role responder.Role, centre location.Cell, k int, now time.Time) []Candidate {
+// availability period at now, and wait at a stage within ring k of the
+// incident. The incident is its zone, or every zone of its ward when only
+// the ward is known; a responder's distance is to the nearest of them.
+func Eligible(rs []responder.Responder, stageCells map[string]location.Cell, role responder.Role, centres []location.Cell, k int, now time.Time) []Candidate {
 	var out []Candidate
 	for _, r := range rs {
 		cell, ok := stageCells[r.Stage]
-		if r.Role != role || !ok || r.Gates(now) != nil || !r.AvailableAt(now) {
+		if r.Role != role || !ok || r.Gates(now) != nil || !r.AvailableAt(now) || len(centres) == 0 {
 			continue
 		}
-		if d := centre.Chebyshev(cell); d <= k {
+		d := centres[0].Chebyshev(cell)
+		for _, c := range centres[1:] {
+			d = min(d, c.Chebyshev(cell))
+		}
+		if d <= k {
 			out = append(out, Candidate{Responder: r, Cell: cell, Distance: d})
 		}
 	}

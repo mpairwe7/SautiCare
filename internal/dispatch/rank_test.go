@@ -41,7 +41,7 @@ func TestEligibleAppliesGatesAvailabilityAndRing(t *testing.T) {
 	unknownStage := rider("nowhere")
 	vht := rider("here")
 	vht.Role = responder.RoleVHT
-	got := Eligible([]responder.Responder{ok, near, two, lapsed, off, unknownStage, vht}, stages, responder.RoleTransporter, centre, 1, t0)
+	got := Eligible([]responder.Responder{ok, near, two, lapsed, off, unknownStage, vht}, stages, responder.RoleTransporter, []location.Cell{centre}, 1, t0)
 	ids := []uuid.UUID{}
 	for _, c := range got {
 		ids = append(ids, c.Responder.ID)
@@ -49,7 +49,7 @@ func TestEligibleAppliesGatesAvailabilityAndRing(t *testing.T) {
 	if len(got) != 2 || !slices.Contains(ids, ok.ID) || !slices.Contains(ids, near.ID) {
 		t.Fatalf("ring 1 eligible = %v", got)
 	}
-	if n := len(Eligible([]responder.Responder{ok, near, two}, stages, responder.RoleTransporter, centre, 2, t0)); n != 3 {
+	if n := len(Eligible([]responder.Responder{ok, near, two}, stages, responder.RoleTransporter, []location.Cell{centre}, 2, t0)); n != 3 {
 		t.Fatalf("ring 2 eligible = %d, want 3", n)
 	}
 }
@@ -122,5 +122,22 @@ func TestAlertRolesMatchRegistryRoles(t *testing.T) {
 	}
 	if !slices.Equal(roles, incident.AlertRoles) {
 		t.Fatalf("registry %v, incident log %v", roles, incident.AlertRoles)
+	}
+}
+
+// A ward-level location (no landmark) searches from every zone of the ward:
+// a responder's distance is to the nearest of them.
+func TestEligibleFromSeveralCentres(t *testing.T) {
+	ward := []location.Cell{{Col: 902, Row: 84}, {Col: 906, Row: 84}}
+	near := rider("far") // stage "far" is at col 908: 2 from the ward's second zone
+	got := Eligible([]responder.Responder{near}, stages, responder.RoleTransporter, ward, 2, t0)
+	if len(got) != 1 || got[0].Distance != 2 {
+		t.Fatalf("eligible from the ward's zones: %+v", got)
+	}
+	if got := Eligible([]responder.Responder{near}, stages, responder.RoleTransporter, ward[:1], 2, t0); len(got) != 0 {
+		t.Fatalf("one centre only: %+v", got)
+	}
+	if got := Eligible([]responder.Responder{near}, stages, responder.RoleTransporter, nil, 5, t0); len(got) != 0 {
+		t.Fatal("no centre: nobody is eligible")
 	}
 }
