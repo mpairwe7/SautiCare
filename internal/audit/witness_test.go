@@ -222,3 +222,65 @@ func TestLatestWitnessedPicksHighestValidAndFailsClosed(t *testing.T) {
 		t.Fatal("notes signed by another key were accepted")
 	}
 }
+
+// A standby that takes over must anchor on what the previous leader
+// witnessed while it waited, not on what it read at start-up (CodeRabbit
+// PR #4): with the older anchor it would sign a rewrite made after it.
+func TestAnchoredCheckpointerUsesTheLatestWitnessEachTerm(t *testing.T) {
+	l := newFakeLedger()
+	ctx := context.Background()
+	signer := newTestSigner(t)
+	w := &memWitness{}
+	appendN(t, l, 0, 3)
+	if _, err := NewCheckpointer(l, signer, w, "sauti-test", time.Now).Checkpoint(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The standby's start-up read.
+	stale, startAnchor, err := NewAnchoredCheckpointer(l, signer, w, "sauti-test", time.Now)
+	if err != nil || startAnchor == nil || startAnchor.Seq != 3 {
+		t.Fatalf("start-up anchor = %+v, %v; want seq 3", startAnchor, err)
+	}
+	// Meanwhile the active leader witnesses seq 7; then an attacker rewrites
+	// entry 5, between the two anchors, and recomputes the chain.
+	appendN(t, l, 3, 4)
+	newer, err := NewCheckpointer(l, signer, w, "sauti-test", time.Now).WithAnchor(*startAnchor).Checkpoint(ctx)
+	if err != nil || newer.Seq != 7 {
+		t.Fatalf("leader checkpoint = %+v, %v", newer, err)
+	}
+	rewriteFrom(l, 5, "incident.closed")
+
+	// The next term reads the witness again: anchored on seq 7, it refuses.
+	term, anchor, err := NewAnchoredCheckpointer(l, signer, w, "sauti-test", time.Now)
+	if err != nil || anchor == nil || anchor.Seq != newer.Seq || anchor.Head != newer.Head {
+		t.Fatalf("next-term anchor = %+v, %v; want seq %d", anchor, err, newer.Seq)
+	}
+	if _, err := term.Checkpoint(ctx); !errors.Is(err, ErrChainDiverged) {
+		t.Fatalf("next term over the rewrite: err = %v, want ErrChainDiverged", err)
+	}
+	// What the fix prevents: the start-up checkpointer still signs.
+	if _, err := stale.Checkpoint(ctx); err != nil {
+		t.Fatalf("precondition: the stale anchor should not see the rewrite: %v", err)
+	}
+}
+
+func TestAnchoredCheckpointerEmptyWitnessAndFailClosed(t *testing.T) {
+	l := newFakeLedger()
+	ctx := context.Background()
+	signer := newTestSigner(t)
+	w := &memWitness{}
+	appendN(t, l, 0, 2)
+	cp, anchor, err := NewAnchoredCheckpointer(l, signer, w, "sauti-test", time.Now)
+	if err != nil || anchor != nil {
+		t.Fatalf("empty witness: anchor = %+v, %v; want none", anchor, err)
+	}
+	if _, err := cp.Checkpoint(ctx); err != nil {
+		t.Fatalf("unanchored first checkpoint: %v", err)
+	}
+	if _, _, err := NewAnchoredCheckpointer(l, newTestSigner(t), w, "sauti-test", time.Now); err == nil {
+		t.Fatal("a note signed by another key was accepted")
+	}
+	w.files["checkpoint-9-1.txt"] = []byte("not a note")
+	if _, _, err := NewAnchoredCheckpointer(l, signer, w, "sauti-test", time.Now); err == nil {
+		t.Fatal("a corrupt witness note was ignored instead of failing closed")
+	}
+}

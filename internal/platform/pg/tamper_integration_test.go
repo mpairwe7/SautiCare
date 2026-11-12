@@ -46,9 +46,11 @@ func TestOwnerRewriteWithRecomputedChainIsCaughtByWitness(t *testing.T) {
 	}
 	pub := e.keys.Signer().PublicKey()
 
-	// Database-only verification is fooled — which is why witnesses are required.
-	if rep, _ := audit.Verify(ctx, e.reader, pub, nil); !rep.OK() {
-		t.Fatalf("precondition: database-only verification should be fooled: %+v", rep)
+	// Database-only verification is fooled — which is why witnesses are
+	// required. A read error leaves a zero report that OK() accepts, so it
+	// must not pass for a completed verification (CodeRabbit PR #4).
+	if rep, err := audit.Verify(ctx, e.reader, pub, nil); err != nil || !rep.OK() {
+		t.Fatalf("precondition: database-only verification should complete and be fooled: %+v, %v", rep, err)
 	}
 
 	notes, err := witness.ReadAll()

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/mldsa"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +38,15 @@ func (w *memWitness) Put(_ context.Context, name string, data []byte) error {
 	}
 	w.files[name] = data
 	return nil
+}
+
+func (w *memWitness) ReadAll() ([][]byte, error) {
+	names := slices.Sorted(maps.Keys(w.files))
+	out := make([][]byte, 0, len(names))
+	for _, n := range names {
+		out = append(out, w.files[n])
+	}
+	return out, nil
 }
 
 func TestCheckpointSignedAndWitnessed(t *testing.T) {
