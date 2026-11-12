@@ -352,7 +352,7 @@ func TestDispatchOrMergeWhileTheSurvivorCloses(t *testing.T) {
 	s := storeAs(t, c, "op_intake")
 	ctx := context.Background()
 	survivor, call := triaged(t, s, "trauma"), triaged(t, s, "trauma")
-	if out, err := dispatch(s, survivor, "trauma", 902); err != nil || out.Merged {
+	if out, err := dispatchOrMerge(s, survivor, "trauma", 902); err != nil || out.Merged {
 		t.Fatalf("survivor dispatch: %+v %v", out, err)
 	}
 	closing := beginAs(t, c, "op_intake")
