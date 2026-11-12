@@ -172,11 +172,13 @@ SELECT reference, severity, category, ward, landmark, language FROM op.incidents
 SELECT coalesce(facility_id, '')::text AS facility_id FROM op.caller_notices
 WHERE incident_id = sqlc.arg(incident_id)::uuid AND kind = sqlc.arg(kind)::text;
 
--- The responder's own latest pending alert, with what the menu may show.
--- name: PendingAlertFor :many
-SELECT a.id, a.incident_id, a.role, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
+-- The responder's own most recent alert of the last hour, whatever its
+-- outcome (a retried USSD answer finds the alert it answered), with what the
+-- menu may show.
+-- name: RecentAlertFor :many
+SELECT a.id, a.incident_id, a.role, a.outcome, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
 FROM op.alerts a JOIN op.incidents i ON i.id = a.incident_id
-WHERE a.responder_id = sqlc.arg(responder_id)::uuid AND a.outcome = 'pending'
+WHERE a.responder_id = sqlc.arg(responder_id)::uuid AND a.sent_at > clock_timestamp() - interval '1 hour'
 ORDER BY a.sent_at DESC LIMIT 1;
 
 -- name: AvailableUntil :many

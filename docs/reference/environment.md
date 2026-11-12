@@ -24,6 +24,7 @@ Processes read deployment settings from the environment (12-factor), so a later 
 | `SAUTI_AT_SMS_URL` | dispatch-worker | messaging base URL (the egress allowlist holds exactly its host) | `https://api.sandbox.africastalking.com` |
 | `SAUTI_AT_SENDER_ID` | dispatch-worker | optional alphanumeric sender ID (≤ 11) | — |
 | `SAUTI_USSD_SERVICE_CODES` | intake-gw | comma-separated accepted service codes | — (required) |
+| `SAUTI_USSD_RESPONDER_CODES` | intake-gw | comma-separated service codes of the responder menu (accept, decline, availability); unset: no responder menu | — |
 | `SAUTI_RULES_ROOT` | intake-gw | directory holding `triage-rules/` (the signed bundle named by `config/gated/triage.yaml`) | `.` |
 | `SAUTI_WITNESS_DIR` | outbox-relay | write-once checkpoint witness directory | `var/witness` |
 | `SAUTI_ORIGIN` | outbox-relay | ledger origin name in checkpoints | `sauti-dispatch` |

@@ -48,16 +48,16 @@ func (s *Store) DeclineAlert(ctx context.Context, alert, responderID uuid.UUID, 
 	return out, mapErr(err)
 }
 
-// PendingAlertFor returns the responder's own latest pending alert (op_intake,
-// op_ivr: the responder menu).
-func (s *Store) PendingAlertFor(ctx context.Context, responderID uuid.UUID) (dispatch.ResponderAlert, bool, error) {
-	rows, err := s.q.PendingAlertFor(ctx, pgID(responderID))
+// RecentAlertFor returns the responder's own most recent alert of the last
+// hour, whatever its outcome (op_intake, op_ivr: the responder menu).
+func (s *Store) RecentAlertFor(ctx context.Context, responderID uuid.UUID) (dispatch.ResponderAlert, bool, error) {
+	rows, err := s.q.RecentAlertFor(ctx, pgID(responderID))
 	if err != nil || len(rows) == 0 {
 		return dispatch.ResponderAlert{}, false, err
 	}
 	r := rows[0]
 	return dispatch.ResponderAlert{AlertID: uuid.UUID(r.ID.Bytes), IncidentID: uuid.UUID(r.IncidentID.Bytes), Role: responder.Role(r.Role),
-		Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference), Severity: incident.Severity(deref(r.Severity)),
+		Outcome: r.Outcome, Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference), Severity: incident.Severity(deref(r.Severity)),
 			Category: deref(r.Category), Ward: deref(r.Ward), Landmark: deref(r.Landmark), Language: deref(r.Language)}}, true, nil
 }
 

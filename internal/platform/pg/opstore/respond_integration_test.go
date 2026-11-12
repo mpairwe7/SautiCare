@@ -38,19 +38,21 @@ func TestScenario10DeclineReasonStoredAndShown(t *testing.T) {
 	}
 }
 
-// The responder menu reads the responder's own pending alert and current
-// availability (op_intake), nothing about other responders.
+// The responder menu reads the responder's own most recent alert (within
+// the hour, whatever its outcome, so a retried answer finds the same alert)
+// and current availability (op_intake), nothing about other responders.
 func TestResponderMenuReads(t *testing.T) {
 	r := newDispatchRig(t)
 	ctx := context.Background()
 	vht := r.responder(t, responder.RoleVHT)
-	if _, ok, err := r.intake.PendingAlertFor(ctx, vht); err != nil || ok {
+	if _, ok, err := r.intake.RecentAlertFor(ctx, vht); err != nil || ok {
 		t.Fatalf("no alert yet: %v %v", ok, err)
 	}
 	a := r.issue(t, r.incident, vht, responder.RoleVHT)
-	got, ok, err := r.intake.PendingAlertFor(ctx, vht)
-	if err != nil || !ok || got.AlertID != a.AlertID || got.IncidentID != r.incident || got.Facts.Reference == "" || got.Facts.Severity != "red" {
-		t.Fatalf("pending alert %+v %v %v", got, ok, err)
+	got, ok, err := r.intake.RecentAlertFor(ctx, vht)
+	if err != nil || !ok || got.AlertID != a.AlertID || got.IncidentID != r.incident || got.Outcome != dispatch.OutcomePending ||
+		got.Facts.Reference == "" || got.Facts.Severity != "red" || got.Role != responder.RoleVHT {
+		t.Fatalf("recent alert %+v %v %v", got, ok, err)
 	}
 	until, on, err := r.intake.AvailableUntil(ctx, vht)
 	if err != nil || !on || time.Until(until) < 7*time.Hour {
@@ -59,7 +61,7 @@ func TestResponderMenuReads(t *testing.T) {
 	if _, err := r.intake.AcceptAlert(ctx, a.AlertID, vht); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := r.intake.PendingAlertFor(ctx, vht); ok {
-		t.Fatal("an accepted alert is still pending")
+	if got, ok, _ := r.intake.RecentAlertFor(ctx, vht); !ok || got.Outcome != dispatch.OutcomeAccepted {
+		t.Fatalf("after accepting: %+v %v", got, ok)
 	}
 }

@@ -8,7 +8,7 @@
 -- impossible: a reason is a code.
 --
 -- intake-gw and ivr-controller serve the responder's own menu: they read the
--- responder's pending alert and current availability, nothing more.
+-- responder's own recent alert and current availability, nothing more.
 
 CREATE OR REPLACE FUNCTION op.decline_alert(p_alert uuid, p_responder uuid, p_reason text) RETURNS text
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER

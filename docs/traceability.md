@@ -65,7 +65,7 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 | 7 | Nobody accepts: rings to 2.5 km, health centre acknowledges | M2 — planner verified (Part A): `internal/dispatch/plan_test.go::TestScenario7NobodyAcceptsForwardsToNearest`; the facility call in Part B |
 | 8 | First health centre silent: next nearest called | M2 — planner verified (Part A): `internal/dispatch/plan_test.go::TestScenario8NoAcknowledgementTriesNextNearest`; the facility call in Part B |
 | 9 | USSD push unanswered: voice at 20 s | M2 |
-| 10 | Decline reason 3 stored and shown | M2 |
+| 10 | Decline reason 3 stored and shown | M2 — **verified** (Part B, amended mode): `internal/platform/wiring/respond_integration_test.go::TestScenario10DeclineThroughTheMenu`, `internal/platform/pg/opstore/respond_integration_test.go::TestScenario10DeclineReasonStoredAndShown` |
 | 11 | Triage rule error: red and coordinator alerted | M1 red + flag + escalation event (`internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`); M2 voice alert |
 | 12 | Implausible arrival flagged | M3 |
 | 13 | Payment timeout: status by reference, one disbursement | M4 |

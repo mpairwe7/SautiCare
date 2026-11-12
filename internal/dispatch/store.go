@@ -114,10 +114,11 @@ type MessageFacts struct {
 	Language  string // the caller's Tool 1 language
 }
 
-// ResponderAlert is a responder's own pending alert, as their menu shows it.
+// ResponderAlert is a responder's own recent alert, as their menu shows it.
 type ResponderAlert struct {
 	AlertID, IncidentID uuid.UUID
 	Role                responder.Role
+	Outcome             string
 	Facts               MessageFacts
 }
 
