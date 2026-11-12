@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"testing"
 
@@ -229,5 +230,49 @@ func TestSignatureContextsAreSeparated(t *testing.T) {
 	}
 	if err := VerifyWithContext(pub, TriageRulesContext, msg, cp); err == nil {
 		t.Fatal("checkpoint signature verified as a triage signature")
+	}
+}
+
+// USSD step keys are keyed hashes under their own HKDF info: never the plain
+// sha256 of the input (which holds the callback number at screen 8, and
+// would be reversible by enumeration), and never equal to the phone lookup
+// MAC of the same bytes.
+func TestStepMACIsKeyedAndSeparated(t *testing.T) {
+	ids := Identifiers{Env: NewEnvelope(newMemKeys(t), rand.Reader)}
+	ctx := context.Background()
+	msg := []byte("+256772123456")
+	step, err := ids.StepMAC(ctx, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := sha256.Sum256(msg)
+	phone, err := ids.Env.MAC(ctx, ClassIdentifiers, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(step.Sum, plain[:]) || bytes.Equal(step.Sum, phone.Sum) || step.KeyID != phone.KeyID {
+		t.Fatalf("step MAC not domain-separated: %x", step.Sum)
+	}
+	cands, err := ids.StepLookupMACs(ctx, msg)
+	if err != nil || len(cands) == 0 || !bytes.Equal(cands[0].Sum, step.Sum) {
+		t.Fatalf("StepLookupMACs = %v, %v", cands, err)
+	}
+}
+
+func TestSealTextBindsToItsRow(t *testing.T) {
+	ids := Identifiers{Env: NewEnvelope(newMemKeys(t), rand.Reader)}
+	ctx := context.Background()
+	aad := AAD{Store: "operational", Table: "incident_identifiers", Column: "ct", RowID: "row-1"}
+	s, err := ids.SealText(ctx, []byte("Kawempe mkt"), aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ids.Env.Open(ctx, s, aad); err != nil || string(got) != "Kawempe mkt" {
+		t.Fatalf("Open = %q, %v", got, err)
+	}
+	other := aad
+	other.RowID = "row-2"
+	if _, err := ids.Env.Open(ctx, s, other); err == nil {
+		t.Fatal("ciphertext opened under another row's AAD")
 	}
 }

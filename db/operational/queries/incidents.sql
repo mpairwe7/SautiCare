@@ -44,12 +44,23 @@ SELECT op.mark_outbox_delivered(sqlc.arg(ids)::uuid[])::int AS marked;
 SELECT op.default_partition_rows()::bigint AS n;
 
 -- name: LookupUSSDStep :many
-SELECT response, end_session FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id FROM op.ussd_steps
 WHERE provider = sqlc.arg(provider)::text AND provider_session_id = sqlc.arg(provider_session_id)::text
-  AND input_sha256 = sqlc.arg(input_sha256)::bytea;
+  AND input_mac = ANY (sqlc.arg(input_macs)::bytea[]);
+
+-- name: LatestUSSDStep :many
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id FROM op.ussd_steps
+WHERE provider = sqlc.arg(provider)::text AND provider_session_id = sqlc.arg(provider_session_id)::text
+ORDER BY consumed_len DESC, created_at DESC
+LIMIT 1;
 
 -- name: SaveUSSDStep :exec
-INSERT INTO op.ussd_steps (provider, provider_session_id, input_sha256, response, end_session, incident_id)
-VALUES (sqlc.arg(provider)::text, sqlc.arg(provider_session_id)::text, sqlc.arg(input_sha256)::bytea,
-        sqlc.arg(response)::text, sqlc.arg(end_session)::boolean, sqlc.narg(incident_id)::uuid)
+INSERT INTO op.ussd_steps (provider, provider_session_id, input_mac, mac_key_id, consumed_len, response, end_session, incident_id)
+VALUES (sqlc.arg(provider)::text, sqlc.arg(provider_session_id)::text, sqlc.arg(input_mac)::bytea,
+        sqlc.arg(mac_key_id)::text, sqlc.arg(consumed_len)::int, sqlc.arg(response)::text,
+        sqlc.arg(end_session)::boolean, sqlc.narg(incident_id)::uuid)
 ON CONFLICT DO NOTHING;
+
+-- name: StoreIdentifier :one
+SELECT op.store_identifier(sqlc.arg(id)::uuid, sqlc.arg(incident_id)::uuid, sqlc.arg(kind)::text,
+                           sqlc.arg(ct)::bytea, sqlc.arg(key_id)::text, sqlc.arg(idem_key)::text)::uuid AS id;

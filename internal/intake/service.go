@@ -7,12 +7,13 @@ package intake
 
 import (
 	"context"
-	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"uuid"
 
 	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/pii"
 )
@@ -33,11 +34,46 @@ type Screen struct {
 	End  bool
 }
 
+// Step is the stored reply to one USSD callback. MAC is the keyed hash of the
+// callback's input (StepMessage), never a plain hash: the input can hold a
+// callback number (ADR-0021). ConsumedLen is the length of the text the step
+// processed, so the next callback's new answer is text[ConsumedLen+1:], which
+// keeps a '*' typed inside a free-text answer.
+type Step struct {
+	Screen      Screen
+	ConsumedLen int
+	MAC         crypto.MAC
+	IncidentID  uuid.UUID
+}
+
 // StepStore persists the reply to each (session, input) so a retried
 // callback returns the same screen without a second write.
 type StepStore interface {
-	Lookup(ctx context.Context, provider, sessionID string, inputSHA [32]byte) (Screen, bool, error)
-	Save(ctx context.Context, provider, sessionID string, inputSHA [32]byte, s Screen, incidentID uuid.UUID) (Screen, error)
+	// Lookup finds the step stored under any of macs (current and previous
+	// key period).
+	Lookup(ctx context.Context, provider, sessionID string, macs []crypto.MAC) (Step, bool, error)
+	// Latest returns the session's furthest step.
+	Latest(ctx context.Context, provider, sessionID string) (Step, bool, error)
+	// Save stores st unless a step with its MAC exists; it returns the stored
+	// screen, so concurrent duplicates answer identically.
+	Save(ctx context.Context, provider, sessionID string, st Step) (Screen, error)
+}
+
+// StepKeys computes keyed step hashes (crypto.Identifiers).
+type StepKeys interface {
+	StepMAC(ctx context.Context, msg []byte) (crypto.MAC, error)
+	StepLookupMACs(ctx context.Context, msg []byte) ([]crypto.MAC, error)
+}
+
+// StepMessage is the unambiguous (length-prefixed) encoding of one callback
+// input that a step MAC covers.
+func StepMessage(provider, sessionID, text string) []byte {
+	var b []byte
+	for _, part := range []string{provider, sessionID, text} {
+		b = binary.BigEndian.AppendUint32(b, uint32(len(part)))
+		b = append(b, part...)
+	}
+	return b
 }
 
 // Starter opens or re-finds the incident for a session.
@@ -49,14 +85,15 @@ type Starter interface {
 type Service struct {
 	starter Starter
 	steps   StepStore
+	keys    StepKeys
 	screens config.Screens
 	lang    string
 }
 
 // NewService wires the intake service. lang is the default language until
 // screen 1 (language choice) exists in M1.
-func NewService(st Starter, steps StepStore, screens config.Screens, lang string) *Service {
-	return &Service{starter: st, steps: steps, screens: screens, lang: lang}
+func NewService(st Starter, steps StepStore, keys StepKeys, screens config.Screens, lang string) *Service {
+	return &Service{starter: st, steps: steps, keys: keys, screens: screens, lang: lang}
 }
 
 // Render substitutes the spoken reference into a catalogue string.
@@ -76,11 +113,14 @@ func channelFor(provider string) (incident.Channel, error) {
 
 // HandleUSSD answers one callback.
 func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error) {
-	inputSHA := sha256.Sum256([]byte(r.Text))
-	if sc, ok, err := s.steps.Lookup(ctx, r.Provider, r.SessionID, inputSHA); err != nil {
+	macs, err := s.keys.StepLookupMACs(ctx, StepMessage(r.Provider, r.SessionID, r.Text))
+	if err != nil {
+		return Screen{}, err
+	}
+	if st, ok, err := s.steps.Lookup(ctx, r.Provider, r.SessionID, macs); err != nil {
 		return Screen{}, err
 	} else if ok {
-		return sc, nil
+		return st.Screen, nil
 	}
 	ch, err := channelFor(r.Provider)
 	if err != nil {
@@ -104,5 +144,5 @@ func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error)
 		tmpl = s.screens.StartedTestMode["en"]
 	}
 	sc := Screen{Text: Render(tmpl, opened.Reference), End: true}
-	return s.steps.Save(ctx, r.Provider, r.SessionID, inputSHA, sc, opened.IncidentID)
+	return s.steps.Save(ctx, r.Provider, r.SessionID, Step{Screen: sc, ConsumedLen: len(r.Text), MAC: macs[0], IncidentID: opened.IncidentID})
 }

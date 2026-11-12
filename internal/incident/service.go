@@ -20,12 +20,32 @@ type Store interface {
 	OpenIncident(ctx context.Context, p OpenParams) (Opened, error)
 	Append(ctx context.Context, p AppendParams) (Appended, error)
 	Events(ctx context.Context, id uuid.UUID) ([]Event, error)
+	// StoreIdentifier stores a sealed identifier once per (incident,
+	// IdemKey) and returns the stored row's ID (the existing one on a retry).
+	StoreIdentifier(ctx context.Context, p IdentifierParams) (uuid.UUID, error)
+}
+
+// Identifier kinds from screen answers (Build Prompt §9 "callback number",
+// "free-text landmark"). They are sealed, never put in an event payload.
+const (
+	IdentifierCallback     = "callback"
+	IdentifierLandmarkText = "landmark_text"
+)
+
+// IdentifierParams is one sealed screen-answer identifier.
+type IdentifierParams struct {
+	ID         uuid.UUID
+	IncidentID uuid.UUID
+	Kind       string
+	Sealed     crypto.Sealed
+	IdemKey    string
 }
 
 // PhoneSealer encrypts and hashes phone numbers (crypto.Identifiers).
 type PhoneSealer interface {
 	SealPhone(ctx context.Context, p pii.Phone, aad crypto.AAD) (crypto.Sealed, error)
 	PhoneMAC(ctx context.Context, p pii.Phone) (crypto.MAC, error)
+	SealText(ctx context.Context, plaintext []byte, aad crypto.AAD) (crypto.Sealed, error)
 }
 
 // OpenParams creates an incident, its session and its session.started event.
@@ -138,4 +158,24 @@ func (s *Service) Append(ctx context.Context, p AppendParams) (Appended, error) 
 		p.Payload = json.RawMessage("{}")
 	}
 	return s.store.Append(ctx, p)
+}
+
+// StoreIdentifier seals a screen-answer identifier (a callback number or a
+// typed landmark) with AAD naming its own row and stores it outside every
+// event payload; the screen.answered event references the returned ID. The
+// call is idempotent on (incident, idemKey).
+func (s *Service) StoreIdentifier(ctx context.Context, incidentID uuid.UUID, kind string, plaintext []byte, idemKey string) (uuid.UUID, error) {
+	if kind != IdentifierCallback && kind != IdentifierLandmarkText {
+		return uuid.UUID{}, fmt.Errorf("incident: unknown identifier kind %q", kind)
+	}
+	if idemKey == "" {
+		return uuid.UUID{}, errors.New("incident: identifier requires an idempotency key")
+	}
+	id := uuid.NewV7()
+	aad := crypto.AAD{Store: "operational", Table: "incident_identifiers", Column: "ct", RowID: id.String()}
+	sealed, err := s.sealer.SealText(ctx, plaintext, aad)
+	if err != nil {
+		return uuid.UUID{}, fmt.Errorf("incident: seal identifier: %w", err)
+	}
+	return s.store.StoreIdentifier(ctx, IdentifierParams{ID: id, IncidentID: incidentID, Kind: kind, Sealed: sealed, IdemKey: idemKey})
 }

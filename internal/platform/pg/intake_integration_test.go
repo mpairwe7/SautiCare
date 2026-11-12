@@ -4,11 +4,13 @@ package pg_test
 
 import (
 	"context"
+	"crypto/rand"
 	"os"
 	"sync"
 	"testing"
 
 	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/pg"
@@ -20,7 +22,8 @@ func intakeService(t *testing.T, e env) *intake.Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return intake.NewService(e.svc, e.intake, b.Screens, "en")
+	ids := crypto.Identifiers{Env: crypto.NewEnvelope(e.keys, rand.Reader)}
+	return intake.NewService(e.svc, e.intake, ids, b.Screens, "en")
 }
 
 func firstCallback() intake.USSDRequest {

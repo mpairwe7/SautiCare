@@ -92,6 +92,16 @@ type OpIncidentEventsDefault struct {
 	LogicVersion *string
 }
 
+type OpIncidentIdentifier struct {
+	ID         pgtype.UUID
+	IncidentID pgtype.UUID
+	Kind       string
+	Ct         []byte
+	KeyID      string
+	IdemKey    string
+	CreatedAt  pgtype.Timestamptz
+}
+
 type OpIncidentTransition struct {
 	FromState string
 	EventType string
@@ -152,11 +162,13 @@ type OpSession struct {
 type OpUssdStep struct {
 	Provider          string
 	ProviderSessionID string
-	InputSha256       []byte
 	Response          string
 	EndSession        bool
 	IncidentID        pgtype.UUID
 	CreatedAt         pgtype.Timestamptz
+	InputMac          []byte
+	MacKeyID          string
+	ConsumedLen       int32
 }
 
 type OpWard struct {

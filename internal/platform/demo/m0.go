@@ -204,7 +204,8 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	}
 
 	ops := opstore.New(intakePool)
-	incidents := incident.NewService(ops, crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)}, rand.Reader)
+	sealer := crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)}
+	incidents := incident.NewService(ops, sealer, rand.Reader)
 	ledger := auditstore.New(appenderPool)
 	reader := auditstore.New(readerPool)
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -215,7 +216,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	token := hex.EncodeToString(tok)
 	handler, err := africastalking.NewUSSDHandler(africastalking.USSDConfig{
 		Provider: "at", PathToken: token, ServiceCodes: []string{"*384*1#"}, ErrorText: cfg.Screens.InternalError["en"],
-	}, intake.NewService(incidents, ops, cfg.Screens, "en"), quiet)
+	}, intake.NewService(incidents, ops, sealer, cfg.Screens, "en"), quiet)
 	if err != nil {
 		return rep, err
 	}

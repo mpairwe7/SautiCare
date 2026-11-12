@@ -40,7 +40,8 @@ func TestAllStoresMigrateFromZero(t *testing.T) {
 	c := pgtest.Cluster(t)
 	want := map[pg.Store][]string{
 		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants", "0004_default_privileges", "0005_salted_payload_hash",
-			"0006_tool1_projection", "0007_gazetteer"},
+			"0006_tool1_projection", "0007_gazetteer",
+			"0008_identifiers_and_steps"},
 		pg.StoreAudit:    {"0000_schema", "0001_ledger", "0002_default_privileges", "0003_hash_at"},
 		pg.StoreAnalytic: {"0000_schema", "0001_meds", "0002_default_privileges"},
 		pg.StoreLinkage:  {"0000_schema", "0001_vault", "0002_default_privileges"},

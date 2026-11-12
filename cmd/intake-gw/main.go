@@ -89,7 +89,7 @@ func run(log *slog.Logger) error {
 	ids := crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)}
 	incidents := incident.NewService(store, ids, rand.Reader)
 	lang := env.Default("SAUTI_DEFAULT_LANG", "en")
-	svc := intake.NewService(incidents, store, cfg.Screens, lang)
+	svc := intake.NewService(incidents, store, ids, cfg.Screens, lang)
 	errorText := cfg.Screens.InternalError[lang]
 	if errorText == "" {
 		errorText = cfg.Screens.InternalError["en"]

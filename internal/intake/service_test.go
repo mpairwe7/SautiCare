@@ -13,6 +13,7 @@ import (
 	"uuid"
 
 	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/pii"
 )
@@ -28,30 +29,62 @@ func (f *fakeStarter) StartSession(_ context.Context, c incident.StartSession) (
 }
 
 type memSteps struct {
-	mu sync.Mutex
-	m  map[string]Screen
+	mu    sync.Mutex
+	m     map[string]Step
+	order map[string][]Step
 }
 
-func key(p, s string, h [32]byte) string { return p + "|" + s + "|" + string(h[:]) }
+func key(p, s string, mac crypto.MAC) string { return p + "|" + s + "|" + string(mac.Sum) }
 
-func (m *memSteps) Lookup(_ context.Context, p, s string, h [32]byte) (Screen, bool, error) {
+func (m *memSteps) Lookup(_ context.Context, p, s string, macs []crypto.MAC) (Step, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	sc, ok := m.m[key(p, s, h)]
-	return sc, ok, nil
+	for _, mac := range macs {
+		if st, ok := m.m[key(p, s, mac)]; ok {
+			return st, true, nil
+		}
+	}
+	return Step{}, false, nil
 }
 
-func (m *memSteps) Save(_ context.Context, p, s string, h [32]byte, sc Screen, _ uuid.UUID) (Screen, error) {
+func (m *memSteps) Latest(_ context.Context, p, s string) (Step, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best Step
+	found := false
+	for _, st := range m.order[p+"|"+s] {
+		if !found || st.ConsumedLen > best.ConsumedLen {
+			best, found = st, true
+		}
+	}
+	return best, found, nil
+}
+
+func (m *memSteps) Save(_ context.Context, p, s string, st Step) (Screen, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.m == nil {
-		m.m = map[string]Screen{}
+		m.m, m.order = map[string]Step{}, map[string][]Step{}
 	}
-	if old, ok := m.m[key(p, s, h)]; ok {
-		return old, nil
+	if old, ok := m.m[key(p, s, st.MAC)]; ok {
+		return old.Screen, nil
 	}
-	m.m[key(p, s, h)] = sc
-	return sc, nil
+	m.m[key(p, s, st.MAC)] = st
+	m.order[p+"|"+s] = append(m.order[p+"|"+s], st)
+	return st.Screen, nil
+}
+
+// fakeKeys is a keyed hash stand-in: deterministic, but never sha256(msg).
+type fakeKeys struct{}
+
+func (fakeKeys) StepMAC(_ context.Context, msg []byte) (crypto.MAC, error) {
+	sum := sha256.Sum256(append([]byte("test-key|"), msg...))
+	return crypto.MAC{KeyID: "k1", Sum: sum[:]}, nil
+}
+
+func (k fakeKeys) StepLookupMACs(ctx context.Context, msg []byte) ([]crypto.MAC, error) {
+	m, err := k.StepMAC(ctx, msg)
+	return []crypto.MAC{m}, err
 }
 
 func repoScreens(t *testing.T) config.Screens {
@@ -71,7 +104,7 @@ func request(text string) USSDRequest {
 func TestHandleUSSDStartsSessionOnEmptyText(t *testing.T) {
 	ref, _ := incident.NewReference(rand.Reader)
 	st := &fakeStarter{ref: ref}
-	svc := NewService(st, &memSteps{}, repoScreens(t), "en")
+	svc := NewService(st, &memSteps{}, fakeKeys{}, repoScreens(t), "en")
 	sc, err := svc.HandleUSSD(context.Background(), request(""))
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +127,7 @@ func TestHandleUSSDReplaysStoredScreen(t *testing.T) {
 	ref, _ := incident.NewReference(rand.Reader)
 	st := &fakeStarter{ref: ref}
 	steps := &memSteps{}
-	svc := NewService(st, steps, repoScreens(t), "en")
+	svc := NewService(st, steps, fakeKeys{}, repoScreens(t), "en")
 	first, _ := svc.HandleUSSD(context.Background(), request(""))
 	again, err := svc.HandleUSSD(context.Background(), request(""))
 	if err != nil || again != first {
@@ -103,9 +136,22 @@ func TestHandleUSSDReplaysStoredScreen(t *testing.T) {
 	if len(st.calls) != 1 {
 		t.Fatalf("StartSession called %d times, want 1", len(st.calls))
 	}
-	h := sha256.Sum256([]byte(""))
-	if _, ok, _ := steps.Lookup(context.Background(), "at", "ATUid_1", h); !ok {
-		t.Fatal("step not stored under sha256(text)")
+	mac, _ := fakeKeys{}.StepMAC(context.Background(), StepMessage("at", "ATUid_1", ""))
+	if _, ok, _ := steps.Lookup(context.Background(), "at", "ATUid_1", []crypto.MAC{mac}); !ok {
+		t.Fatal("step not stored under its keyed MAC")
+	}
+	plain := sha256.Sum256([]byte(""))
+	if _, ok, _ := steps.Lookup(context.Background(), "at", "ATUid_1", []crypto.MAC{{KeyID: "k1", Sum: plain[:]}}); ok {
+		t.Fatal("step stored under the plain sha256 of its input")
+	}
+}
+
+// Step messages are length-prefixed, so no choice of provider, session and
+// text can collide with another.
+func TestStepMessageIsUnambiguous(t *testing.T) {
+	if string(StepMessage("at", "s1*2", "3")) == string(StepMessage("at", "s1", "2*3")) ||
+		string(StepMessage("a", "t", "")) == string(StepMessage("at", "", "")) {
+		t.Fatal("step messages collide")
 	}
 }
 
@@ -114,7 +160,7 @@ func TestUCCRouteMapsToItsChannel(t *testing.T) {
 	st := &fakeStarter{ref: ref}
 	r := request("")
 	r.Provider = "ucc"
-	if _, err := NewService(st, &memSteps{}, repoScreens(t), "en").HandleUSSD(context.Background(), r); err != nil {
+	if _, err := NewService(st, &memSteps{}, fakeKeys{}, repoScreens(t), "en").HandleUSSD(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
 	if st.calls[0].Channel != incident.ChannelUSSDUCC {
@@ -143,7 +189,7 @@ func TestScreensFitCharLimit(t *testing.T) {
 // incident reference.
 func TestHandleUSSDAlwaysCarriesTheReference(t *testing.T) {
 	ref, _ := incident.NewReference(rand.Reader)
-	svc := NewService(&fakeStarter{ref: ref}, &memSteps{}, repoScreens(t), "lg")
+	svc := NewService(&fakeStarter{ref: ref}, &memSteps{}, fakeKeys{}, repoScreens(t), "lg")
 	sc, err := svc.HandleUSSD(context.Background(), request(""))
 	if err != nil {
 		t.Fatal(err)

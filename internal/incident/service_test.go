@@ -16,6 +16,12 @@ type fakeStore struct {
 	takenFirst int
 	opens      []OpenParams
 	appends    []AppendParams
+	idents     []IdentifierParams
+}
+
+func (f *fakeStore) StoreIdentifier(_ context.Context, p IdentifierParams) (uuid.UUID, error) {
+	f.idents = append(f.idents, p)
+	return p.ID, nil
 }
 
 func (f *fakeStore) OpenIncident(_ context.Context, p OpenParams) (Opened, error) {
@@ -38,6 +44,11 @@ type fakeSealer struct{ aads []crypto.AAD }
 func (s *fakeSealer) SealPhone(_ context.Context, _ pii.Phone, aad crypto.AAD) (crypto.Sealed, error) {
 	s.aads = append(s.aads, aad)
 	return crypto.Sealed{KeyID: "k", Ciphertext: []byte{1}}, nil
+}
+
+func (s *fakeSealer) SealText(_ context.Context, b []byte, aad crypto.AAD) (crypto.Sealed, error) {
+	s.aads = append(s.aads, aad)
+	return crypto.Sealed{KeyID: "k", Ciphertext: append([]byte("ct:"), b...)}, nil
 }
 
 func (s *fakeSealer) PhoneMAC(context.Context, pii.Phone) (crypto.MAC, error) {
@@ -122,5 +133,31 @@ func TestAppendRejectsUnknownEventType(t *testing.T) {
 	}
 	if len(st.appends) != 0 {
 		t.Fatal("unknown type reached the store")
+	}
+}
+
+// A typed landmark or callback number is sealed with AAD naming its own row,
+// stored outside every event payload, and referenced by that row's ID.
+func TestStoreIdentifierSealsWithRowAAD(t *testing.T) {
+	st, se := &fakeStore{}, &fakeSealer{}
+	svc := NewService(st, se, rand.Reader)
+	inc := uuid.NewV7()
+	id, err := svc.StoreIdentifier(context.Background(), inc, IdentifierCallback, []byte("+256772123456"), "ussd:at:s1:s8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.idents) != 1 || len(se.aads) != 1 {
+		t.Fatalf("stored %d, sealed %d", len(st.idents), len(se.aads))
+	}
+	p, aad := st.idents[0], se.aads[0]
+	want := crypto.AAD{Store: "operational", Table: "incident_identifiers", Column: "ct", RowID: id.String()}
+	if aad != want || p.ID != id || p.IncidentID != inc || p.Kind != IdentifierCallback || p.IdemKey != "ussd:at:s1:s8" {
+		t.Fatalf("aad=%+v params=%+v", aad, p)
+	}
+	if _, err := svc.StoreIdentifier(context.Background(), inc, "address", []byte("x"), "k"); err == nil {
+		t.Fatal("unknown identifier kind accepted")
+	}
+	if _, err := svc.StoreIdentifier(context.Background(), inc, IdentifierLandmarkText, []byte("x"), ""); err == nil {
+		t.Fatal("identifier without an idempotency key accepted")
 	}
 }
