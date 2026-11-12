@@ -32,7 +32,7 @@ Audit outbox rows are not reaching the ledger quickly. The outbox keeps every ro
 ## Mitigation
 
 1. Restore audit database availability (Patroni failover is automatic inside Site A).
-2. If no instance is the leader, restart one outbox-relay unit (`systemctl restart outbox-relay`). Advisory-lock leadership hands over automatically when the leader dies.
+2. Leadership heals itself. If the lock connection is lost (switchover, restart, network blip), the relay campaigns again and resumes without exiting. Restart a unit (`systemctl restart outbox-relay`) only if no instance logs `outbox-relay is the active leader` within a minute.
 3. Do not delete or edit outbox rows.
 
 ## Escalation

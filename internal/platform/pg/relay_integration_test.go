@@ -5,6 +5,7 @@ package pg_test
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -205,4 +206,62 @@ func TestSingleActiveRelayLeader(t *testing.T) {
 	}
 	stop2()
 	<-done2
+}
+
+// Review finding I1: losing the leader lock (Patroni switchover, a restart,
+// a network blip, a DBA terminating the backend) must not end the relay. It
+// must campaign again and resume, never return while the process lives.
+func TestRelayLeaderRecampaignsAfterLockLoss(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, err := pg.Connect(ctx, c.DSN(pg.StoreOperational, "op_relay"), "test", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	const key = 7347998
+	var runs atomic.Int32
+	returned := make(chan error, 1)
+	go func() {
+		returned <- pg.RunAsLeader(ctx, p, key, 100*time.Millisecond, func(lctx context.Context) error {
+			runs.Add(1)
+			<-lctx.Done()
+			return lctx.Err()
+		})
+	}()
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !cond() {
+			select {
+			case err := <-returned:
+				t.Fatalf("RunAsLeader returned (%v) while the process was alive, before %s", err, what)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	waitFor("first leadership", func() bool { return runs.Load() == 1 })
+
+	super := c.Superuser(t, pg.StoreOperational)
+	var killed bool
+	if err := super.QueryRow(ctx, `SELECT pg_terminate_backend(pid) FROM pg_locks
+		WHERE locktype = 'advisory' AND objid = $1 AND objsubid = 1 AND granted`, key).Scan(&killed); err != nil || !killed {
+		t.Fatalf("terminate lock holder: %v (killed=%v)", err, killed)
+	}
+	waitFor("leadership regained after lock loss", func() bool { return runs.Load() == 2 })
+
+	cancel()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("after shutdown RunAsLeader = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunAsLeader did not return after shutdown")
+	}
 }
