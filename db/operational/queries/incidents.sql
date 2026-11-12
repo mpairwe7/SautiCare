@@ -132,3 +132,18 @@ ORDER BY r.id;
 
 -- name: ResponderByPhone :many
 SELECT id FROM op.responders WHERE phone_mac = ANY (sqlc.arg(macs)::bytea[]) AND status <> 'retired' LIMIT 2;
+
+-- Dispatch watchdog (review I8): dispatched incidents with no alert (T3) and
+-- no dispatch escalation of any kind, T2 older than after — dispatch-worker
+-- has not acted on them. Read by intake-gw's leader, a separate process.
+-- name: ListStalledDispatch :many
+SELECT i.id FROM op.incidents i
+WHERE i.state = 'dispatching' AND i.t3 IS NULL AND i.t2 < clock_timestamp() - sqlc.arg(after)::interval
+  AND NOT EXISTS (
+      SELECT 1 FROM op.incident_events e
+       WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+         AND e.payload ->> 'reason' IN ('no_eligible_responder', 'no_responder_nearby', 'red_no_acceptance',
+                                        'forwarded_to_facility', 'no_facility_acknowledged', 'dispatch_suspended',
+                                        'dispatch_error', 'dispatch_stalled'))
+ORDER BY i.t2
+LIMIT 500;

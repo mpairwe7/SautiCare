@@ -48,7 +48,7 @@ FROM op.claim_due_dispatch(sqlc.arg(max_rows)::int, sqlc.arg(lease)::interval) A
 SELECT op.schedule_dispatch(sqlc.arg(incident_id)::uuid, sqlc.arg(gen)::bigint, sqlc.narg(due_at)::timestamptz);
 
 -- name: DispatchIncident :one
-SELECT id, state, severity, t2, zone_col, zone_row, ward FROM op.incidents WHERE id = sqlc.arg(id)::uuid;
+SELECT id, state, severity, t2, zone_col, zone_row, ward, location_quality FROM op.incidents WHERE id = sqlc.arg(id)::uuid;
 
 -- name: DispatchAlerts :many
 SELECT id, responder_id, role, ring, wave, sent_at, outcome FROM op.alerts
@@ -65,9 +65,17 @@ WHERE incident_id = sqlc.arg(incident_id)::uuid ORDER BY sent_at, facility_id;
 -- name: DispatchNotices :many
 SELECT kind FROM op.caller_notices WHERE incident_id = sqlc.arg(incident_id)::uuid ORDER BY created_at, kind;
 
+-- Escalation keys (incident.EscalationKey): once per reason and role.
 -- name: DispatchEscalations :many
-SELECT DISTINCT (payload ->> 'reason')::text AS reason FROM op.incident_events
+SELECT DISTINCT ('escalate:' || (payload ->> 'reason') || ':' || coalesce(payload ->> 'role', '-'))::text AS escalation
+FROM op.incident_events
 WHERE incident_id = sqlc.arg(incident_id)::uuid AND type = 'incident.escalated' ORDER BY 1;
+
+-- When the incident became red (classified red, or raised to red by a merge).
+-- name: DispatchRedSince :one
+SELECT min(e.recorded_at)::timestamptz AS red_since FROM op.incident_events e
+WHERE e.incident_id = sqlc.arg(incident_id)::uuid AND e.payload ->> 'severity' = 'red'
+  AND e.type IN ('incident.classified', 'incident.severity_raised');
 
 -- Response history for ranking (decision 4): settled alerts of the last 90
 -- days per responder; "dispatched" is an acceptance.
@@ -103,24 +111,34 @@ SELECT op.auto_suspend_dispatch(sqlc.arg(failures)::int, sqlc.arg(window_size)::
 SELECT recorded_at, action, reason, staff_id, failures, window_size FROM op.dispatch_control_log
 ORDER BY recorded_at DESC, id DESC LIMIT sqlc.arg(max_rows)::int;
 
--- Settled red incidents for the stopping rule, newest T2 first: success is
--- an acceptance before any dispatch escalation for lack of one; closure or
--- such an escalation without it is a failure. Merged incidents and those
--- escalated while dispatch was suspended are not judged.
+-- Settled red incidents for the stopping rule (Guide §14; review I2),
+-- newest T2 first. A success is an acceptance (any role) within the red
+-- window of T2 (decision 2: 3 minutes); a failure is the window passing
+-- without one. Not judged: an incident closed inside the window without an
+-- acceptance (a caller's or coordinator's decision, not a dispatch outcome),
+-- one whose window is not over, merged incidents, and anything dispatched
+-- before the latest resumption — so a coordinator's resume is never undone
+-- by the evidence that caused the suspension.
 -- name: RedDispatchOutcomes :many
-WITH red AS (
-    SELECT i.id, i.t2, i.t4, i.state,
+WITH anchor AS (
+    SELECT coalesce(max(l.recorded_at), '-infinity'::timestamptz) AS at
+      FROM op.dispatch_control_log l WHERE l.action = 'resumed'),
+red AS (
+    SELECT i.id, i.t2, i.t4,
            (SELECT min(e.recorded_at) FROM op.incident_events e
-             WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
-               AND e.payload ->> 'reason' IN ('no_eligible_responder', 'red_no_acceptance',
-                                              'forwarded_to_facility', 'no_facility_acknowledged')) AS failed_at,
-           EXISTS (SELECT 1 FROM op.incident_events e
-                    WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
-                      AND e.payload ->> 'reason' = 'dispatch_suspended') AS during_suspension
-      FROM op.incidents i
-     WHERE i.severity = 'red' AND i.t2 IS NOT NULL AND i.state <> 'merged')
-SELECT (red.t4 IS NOT NULL AND (red.failed_at IS NULL OR red.t4 <= red.failed_at))::boolean AS succeeded
+             WHERE e.incident_id = i.id AND e.type = 'incident.closed') AS closed_at
+      FROM op.incidents i, anchor
+     WHERE i.severity = 'red' AND i.t2 IS NOT NULL AND i.state <> 'merged' AND i.t2 > anchor.at)
+SELECT (red.t4 IS NOT NULL AND red.t4 <= red.t2 + sqlc.arg(red_window)::interval)::boolean AS succeeded
   FROM red
- WHERE NOT red.during_suspension AND (red.t4 IS NOT NULL OR red.failed_at IS NOT NULL OR red.state = 'closed')
+ WHERE (red.t4 IS NOT NULL AND red.t4 <= red.t2 + sqlc.arg(red_window)::interval)
+    OR (clock_timestamp() >= red.t2 + sqlc.arg(red_window)::interval
+        AND (red.closed_at IS NULL OR red.closed_at >= red.t2 + sqlc.arg(red_window)::interval))
  ORDER BY red.t2 DESC, red.id DESC
  LIMIT sqlc.arg(window_size)::int;
+
+-- How late the most overdue dispatch wake is (0 when none is due): a growing
+-- value means dispatch is not keeping up or not running (review I8).
+-- name: OldestOverdueDispatch :one
+SELECT coalesce(extract(epoch FROM clock_timestamp() - min(due_at)), 0)::float8 AS seconds
+FROM op.dispatch_timers WHERE due_at <= clock_timestamp();

@@ -85,6 +85,7 @@ type ForwardState struct {
 const (
 	ReasonSuspended           = "dispatch_suspended"
 	ReasonExhausted           = "no_eligible_responder"
+	ReasonNoneNearby          = "no_responder_nearby" // amended mode: ring 1 empty at T2 (the search widens)
 	ReasonRedNoAcceptance     = "red_no_acceptance"
 	ReasonForwarded           = "forwarded_to_facility"
 	ReasonForwardingExhausted = "no_facility_acknowledged"
@@ -105,10 +106,11 @@ type State struct {
 	Assigned       map[responder.Role]uuid.UUID // first acceptance per role
 	Alerts         []Alert
 	Forwards       []ForwardState
-	Escalations    []string // reasons already escalated
-	CallerNotified []string // caller message kinds already sent
-	Suspended      bool     // dispatch suspended (O6)
-	Done           bool     // closed or merged
+	Escalations    []string  // escalation keys already recorded (incident.EscalationKey)
+	RedSince       time.Time // when the incident became red (zero: from T2)
+	CallerNotified []string  // caller message kinds already sent
+	Suspended      bool      // dispatch suspended (O6)
+	Done           bool      // closed or merged
 }
 
 // Pool returns the eligible responders of a role within ring k of the
@@ -198,8 +200,12 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 		return []Action{{Kind: ActCallerSMS, Message: CallerHelperOnTheWay}}, time.Time{}
 	}
 
+	// Once per reason and role: a second role's exhaustion is its own alert.
 	escalate := func(reason string, role responder.Role) {
-		if !slices.Contains(s.Escalations, reason) && !slices.ContainsFunc(acts, func(a Action) bool { return a.Reason == reason }) {
+		key := incident.EscalationKey(reason, string(role))
+		if !slices.Contains(s.Escalations, key) && !slices.ContainsFunc(acts, func(a Action) bool {
+			return a.Kind == ActEscalate && incident.EscalationKey(a.Reason, string(a.Role)) == key
+		}) {
 			acts = append(acts, Action{Kind: ActEscalate, Reason: reason, Role: role})
 		}
 	}
@@ -234,8 +240,10 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 			if a.Outcome == OutcomePending {
 				pending++
 			}
-			if !red || a.Wave == step+1 {
-				wave++ // red: sent in this ring step; otherwise: cascade depth so far
+			if !red {
+				wave++ // cascade depth so far
+			} else if a.Wave == step+1 && !a.SentAt.Before(s.RedSince) {
+				wave++ // red: sent in this ring step since the incident became red
 			}
 		}
 		fresh := func(k int) []Candidate {
@@ -271,6 +279,11 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 		if pending == 0 && len(fresh(p.ringLimit())) == 0 {
 			escalate(ReasonExhausted, role)
 		}
+		// Amended mode: nobody at all in ring 1 at T2 — the coordinator hears
+		// it now, while the search widens (review focus 3).
+		if p.Mode == ModeAmended && step == 0 && len(pool.Ranked(role, 1)) == 0 && !slices.ContainsFunc(s.Alerts, func(a Alert) bool { return a.Role == role }) {
+			escalate(ReasonNoneNearby, role)
+		}
 	}
 	if len(open) == 0 {
 		return acts, wake
@@ -282,7 +295,9 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 	if red {
 		at := s.DispatchedAt.Add(p.RedEscalationAfter)
 		if !now.Before(at) {
-			escalate(ReasonRedNoAcceptance, open[0])
+			for _, role := range open {
+				escalate(ReasonRedNoAcceptance, role)
+			}
 		} else {
 			soon(at)
 		}
@@ -331,7 +346,7 @@ func forward(s State, facilities []location.Facility, p Params, now time.Time, s
 			return []Action{{Kind: ActForward, FacilityID: f.ID}}
 		}
 	}
-	if !slices.Contains(s.Escalations, ReasonForwardingExhausted) {
+	if !HasEscalation(s.Escalations, ReasonForwardingExhausted) {
 		return []Action{{Kind: ActEscalate, Reason: ReasonForwardingExhausted}}
 	}
 	return nil
@@ -350,4 +365,11 @@ func nearest(fs []location.Facility, from location.Cell) []location.Facility {
 		return cmp.Compare(from.Chebyshev(a.Cell), from.Chebyshev(b.Cell))
 	})
 	return out
+}
+
+// HasEscalation reports whether keys holds an escalation for reason (any role).
+func HasEscalation(keys []string, reason string) bool {
+	prefix := incident.EscalationKey(reason, "")
+	prefix = prefix[:len(prefix)-1] // "escalate:<reason>:"
+	return slices.ContainsFunc(keys, func(k string) bool { return len(k) > len(prefix) && k[:len(prefix)] == prefix })
 }

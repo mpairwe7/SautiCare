@@ -180,3 +180,14 @@ func ParseEscalated(raw json.RawMessage) (reason, role string, err error) {
 	}
 	return "", "", illegal("incident.escalated needs a reason code and at most a role")
 }
+
+// EscalationKey is the idempotency key of an escalation from dispatch or
+// intake: once per reason and role ("-" for none). The SQL dispatch_escalate
+// builds the same key, so whichever side records it first, the other's
+// attempt is a duplicate.
+func EscalationKey(reason, role string) string {
+	if role == "" {
+		role = "-"
+	}
+	return "escalate:" + reason + ":" + role
+}

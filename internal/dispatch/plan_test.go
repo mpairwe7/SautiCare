@@ -76,7 +76,7 @@ func (m *sim) apply(a Action) {
 			}
 		}
 	case ActEscalate:
-		m.s.Escalations = append(m.s.Escalations, a.Reason)
+		m.s.Escalations = append(m.s.Escalations, incident.EscalationKey(a.Reason, string(a.Role)))
 	case ActForward:
 		m.s.Forwards = append(m.s.Forwards, ForwardState{FacilityID: a.FacilityID, SentAt: m.now})
 	case ActForwardTimeout:
@@ -238,7 +238,7 @@ func TestScenario7NobodyAcceptsForwardsToNearest(t *testing.T) {
 	if got := m.forwarded(); !slices.Equal(got, []string{"hc_near"}) || !m.s.Forwards[0].SentAt.Equal(t0.Add(5*time.Minute)) {
 		t.Fatalf("forwards = %v at %v", got, m.s.Forwards)
 	}
-	if !slices.Contains(m.s.Escalations, ReasonForwarded) || !slices.Contains(m.s.CallerNotified, CallerForwarded) {
+	if !HasEscalation(m.s.Escalations, ReasonForwarded) || !slices.Contains(m.s.CallerNotified, CallerForwarded) {
 		t.Fatalf("escalations %v caller %v", m.s.Escalations, m.s.CallerNotified)
 	}
 	for _, a := range m.log {
@@ -262,7 +262,7 @@ func TestScenario8NoAcknowledgementTriesNextNearest(t *testing.T) {
 		!m.s.Forwards[1].SentAt.Equal(t0.Add(6*time.Minute)) {
 		t.Fatalf("forwards = %v %v", got, m.s.Forwards)
 	}
-	if m.count(ActCallerSMS) != 1 || slices.Contains(m.s.Escalations, ReasonForwardingExhausted) {
+	if m.count(ActCallerSMS) != 1 || HasEscalation(m.s.Escalations, ReasonForwardingExhausted) {
 		t.Fatalf("caller SMS %d, escalations %v", m.count(ActCallerSMS), m.s.Escalations)
 	}
 }
@@ -272,7 +272,7 @@ func TestScenario8NoAcknowledgementTriesNextNearest(t *testing.T) {
 func TestNoCentreAcknowledgesEscalates(t *testing.T) {
 	m := newSim(t, incident.SevYellow, makePool(map[int]int{}), amended)
 	m.run(t0.Add(15 * time.Minute))
-	if got := m.forwarded(); len(got) != 2 || !slices.Contains(m.s.Escalations, ReasonForwardingExhausted) ||
+	if got := m.forwarded(); len(got) != 2 || !HasEscalation(m.s.Escalations, ReasonForwardingExhausted) ||
 		slices.Contains(m.s.CallerNotified, CallerForwarded) {
 		t.Fatalf("forwards %v escalations %v caller %v", got, m.s.Escalations, m.s.CallerNotified)
 	}
@@ -294,7 +294,7 @@ func TestProtocolModeStaysAtRingOne(t *testing.T) {
 			t.Fatalf("alerted at ring %d in protocol mode", a.Ring)
 		}
 	}
-	if len(m.alerts(responder.RoleVHT)) != 2 || !slices.Contains(m.s.Escalations, ReasonExhausted) || m.count(ActForward) != 0 {
+	if len(m.alerts(responder.RoleVHT)) != 2 || !HasEscalation(m.s.Escalations, ReasonExhausted) || m.count(ActForward) != 0 {
 		t.Fatalf("alerts %d, escalations %v, forwards %d", len(m.alerts(responder.RoleVHT)), m.s.Escalations, m.count(ActForward))
 	}
 	// Decision 2 (protocol answer): the coordinator is alerted at 3 minutes
@@ -306,7 +306,7 @@ func TestProtocolModeStaysAtRingOne(t *testing.T) {
 			t.Fatalf("%s: red escalated before 3 minutes: %v", par.Mode, r.s.Escalations)
 		}
 		r.run(t0.Add(3 * time.Minute))
-		if !slices.Contains(r.s.Escalations, ReasonRedNoAcceptance) {
+		if !HasEscalation(r.s.Escalations, ReasonRedNoAcceptance) {
 			t.Fatalf("%s: red not escalated at 3 minutes: %v", par.Mode, r.s.Escalations)
 		}
 		for _, a := range r.s.Alerts {
@@ -337,7 +337,7 @@ func TestUnknownSeverityIsRedAndNoT2PlansNothing(t *testing.T) {
 func TestNoEligibleEscalatesImmediately(t *testing.T) {
 	m := newSim(t, incident.SevGreen, makePool(map[int]int{}), protocol)
 	m.run(t0)
-	if !slices.Contains(m.s.Escalations, ReasonExhausted) {
+	if !HasEscalation(m.s.Escalations, ReasonExhausted) {
 		t.Fatalf("escalations at T2 = %v", m.s.Escalations)
 	}
 }
@@ -367,7 +367,7 @@ func TestSuspendedNeverAlertsAndEscalates(t *testing.T) {
 	m := newSim(t, incident.SevRed, makePool(map[int]int{1: 3}), amended)
 	m.s.Suspended = true
 	m.run(t0.Add(3 * time.Minute))
-	if len(m.s.Alerts) != 0 || m.count(ActEscalate) != 1 || !slices.Contains(m.s.Escalations, ReasonSuspended) {
+	if len(m.s.Alerts) != 0 || m.count(ActEscalate) != 1 || !HasEscalation(m.s.Escalations, ReasonSuspended) {
 		t.Fatalf("alerts %d, escalations %v", len(m.s.Alerts), m.s.Escalations)
 	}
 	m.s.Suspended = false
@@ -385,7 +385,7 @@ func TestSuspensionMidCascade(t *testing.T) {
 	before := len(m.s.Alerts)
 	m.s.Suspended = true
 	m.run(t0.Add(10 * time.Minute))
-	if len(m.s.Alerts) != before || m.count(ActForward) != 0 || !slices.Contains(m.s.Escalations, ReasonSuspended) {
+	if len(m.s.Alerts) != before || m.count(ActForward) != 0 || !HasEscalation(m.s.Escalations, ReasonSuspended) {
 		t.Fatalf("alerts %d→%d, forwards %d, escalations %v", before, len(m.s.Alerts), m.count(ActForward), m.s.Escalations)
 	}
 	for _, a := range m.s.Alerts {
@@ -467,5 +467,69 @@ func TestParamsValidate(t *testing.T) {
 		if p.Validate() == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// Review I5: escalations are once per reason AND role — the second role's
+// exhaustion is announced too, and red without acceptance names each role.
+func TestEscalationsAreOncePerReasonAndRole(t *testing.T) {
+	p := makePool(map[int]int{})
+	p[responder.RoleTransporter] = []Candidate{{Responder: responder.Responder{ID: uuid.NewV7(), Role: responder.RoleTransporter}, Distance: 1}}
+	m := newSim(t, incident.SevYellow, p, protocol)
+	m.run(t0)
+	if !slices.Contains(m.s.Escalations, incident.EscalationKey(ReasonExhausted, "vht")) || len(m.s.Escalations) != 1 {
+		t.Fatalf("at T2: %v", m.s.Escalations)
+	}
+	m.run(t0.Add(2 * time.Minute))
+	if !slices.Contains(m.s.Escalations, incident.EscalationKey(ReasonExhausted, "transporter")) {
+		t.Fatalf("the transporter's exhaustion was silent: %v", m.s.Escalations)
+	}
+	r := newSim(t, incident.SevRed, makePool(map[int]int{1: 12}), protocol)
+	r.run(t0.Add(3 * time.Minute))
+	for _, role := range []string{"vht", "transporter"} {
+		if !slices.Contains(r.s.Escalations, incident.EscalationKey(ReasonRedNoAcceptance, role)) {
+			t.Fatalf("red at 3 minutes without %s: %v", role, r.s.Escalations)
+		}
+	}
+}
+
+// Review I9 (review focus 3): in amended mode an empty ring 1 alerts the
+// coordinator at T2, once per role, while the search keeps widening.
+func TestAmendedEmptyRingOneEscalatesAtOnce(t *testing.T) {
+	for _, sev := range []incident.Severity{incident.SevRed, incident.SevYellow} {
+		m := newSim(t, sev, makePool(map[int]int{3: 3}), amended)
+		m.run(t0)
+		for _, role := range []string{"vht", "transporter"} {
+			if !slices.Contains(m.s.Escalations, incident.EscalationKey(ReasonNoneNearby, role)) {
+				t.Fatalf("%s: empty ring 1 not escalated for %s: %v", sev, role, m.s.Escalations)
+			}
+		}
+		m.run(t0.Add(2*time.Minute + time.Second))
+		if len(m.alerts(responder.RoleVHT)) == 0 || HasEscalation(m.s.Escalations, ReasonExhausted) {
+			t.Fatalf("%s: the search did not go on: %d alerts, %v", sev, len(m.alerts(responder.RoleVHT)), m.s.Escalations)
+		}
+	}
+	// Protocol mode: ring 1 is the limit, so exhaustion already says it.
+	m := newSim(t, incident.SevRed, makePool(map[int]int{3: 3}), protocol)
+	m.run(t0)
+	if HasEscalation(m.s.Escalations, ReasonNoneNearby) || !HasEscalation(m.s.Escalations, ReasonExhausted) {
+		t.Fatalf("protocol mode: %v", m.s.Escalations)
+	}
+}
+
+// Review I4: a yellow incident raised to red mid-cascade gets its red wave
+// (the top 3 of each role) at once; alerts from before the raise do not
+// count towards it.
+func TestRaisedToRedSendsAFullWave(t *testing.T) {
+	m := newSim(t, incident.SevYellow, makePool(map[int]int{1: 6}), amended)
+	m.run(t0)
+	if len(m.alerts(responder.RoleVHT)) != 1 {
+		t.Fatal("yellow at T2: one VHT")
+	}
+	m.now = t0.Add(30 * time.Second)
+	m.s.Severity, m.s.RedSince = incident.SevRed, m.now
+	m.run(m.now)
+	if n := len(m.alerts(responder.RoleVHT)); n != 4 {
+		t.Fatalf("VHT alerts after the raise = %d, want the yellow one plus 3 red", n)
 	}
 }

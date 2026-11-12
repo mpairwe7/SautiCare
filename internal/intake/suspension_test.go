@@ -61,3 +61,34 @@ func TestSuspendedDispatchChangesTheClosingMessageAndEscalates(t *testing.T) {
 		t.Fatalf("closing screen after resumption = %+v", done)
 	}
 }
+
+// Review I6: a second caller about the same emergency, merged at T2 while
+// dispatch is suspended, hears the suspended message with their own number —
+// not an error — and the merged call itself is not escalated (its survivor
+// is).
+func TestMergedCallerWhileSuspendedHearsTheMessage(t *testing.T) {
+	r := newRig(t, nil, nil)
+	r.suspension.on.Store(true)
+	walk := func(session, phone string) (Screen, *caller) {
+		c := r.dial(t, session, phone)
+		c.send("")
+		for _, in := range []string{"1", "2", "4", "3", "2", "1", "2"} {
+			c.send(in)
+		}
+		return c.send("1"), c
+	}
+	walk("S1", "0772123456")
+	done, c2 := walk("S2", "0772123457")
+	p := c2.projection()
+	if p.State != incident.StateMerged {
+		t.Fatalf("second call state %s, want merged", p.State)
+	}
+	if !done.End || !strings.Contains(done.Text, "coordinator") || !strings.Contains(done.Text, p.Reference.Spoken()) {
+		t.Fatalf("merged caller's closing screen = %+v", done)
+	}
+	for _, e := range r.inc.allEvents() {
+		if e.IncidentID == p.ID && e.Type == incident.EvEscalated {
+			t.Fatal("the merged call itself was escalated")
+		}
+	}
+}

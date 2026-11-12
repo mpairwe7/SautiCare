@@ -5,6 +5,7 @@ package opstore_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -307,7 +308,7 @@ func TestDispatchLifecycleIsRecordedAndConsistent(t *testing.T) {
 	if outcomes[a1.AlertID] != dispatch.OutcomeDeclined || outcomes[a2.AlertID] != dispatch.OutcomeAccepted ||
 		outcomes[a3.AlertID] != dispatch.OutcomeStoodDown || snap.Assigned[responder.RoleVHT] != v2 ||
 		len(snap.Forwards) != 1 || !snap.Forwards[0].Acked || !snap.Forwards[0].TimedOut ||
-		len(snap.Escalations) != 1 || snap.Escalations[0] != dispatch.ReasonForwarded || len(snap.CallerNotified) != 2 ||
+		len(snap.Escalations) != 1 || snap.Escalations[0] != incident.EscalationKey(dispatch.ReasonForwarded, "transporter") || len(snap.CallerNotified) != 2 ||
 		snap.DispatchedAt == nil || snap.Zone == nil || snap.Severity != incident.SevRed {
 		t.Fatalf("snapshot %+v", snap)
 	}
@@ -357,9 +358,17 @@ func TestDispatchTimers(t *testing.T) {
 	if len(got) != 1 || got[0].IncidentID != red.IncidentID {
 		t.Fatalf("claimed %v first, want the red incident", got)
 	}
+	// A merge wakes the merged call once (review I7: anything in flight is
+	// stood down and delivered); the planner then parks it for good.
 	appendEv(t, r.intake, green.IncidentID, incident.EvMerged, `{"into":"`+red.IncidentID.String()+`"}`, "")
-	if got, _ := r.dispatcher.ClaimDueDispatch(ctx, 10, time.Minute); len(got) != 0 {
-		t.Fatalf("a merged incident is still due: %v", got)
+	got, _ = r.dispatcher.ClaimDueDispatch(ctx, 10, time.Minute)
+	if i := slices.IndexFunc(got, func(d dispatch.Due) bool { return d.IncidentID == green.IncidentID }); i < 0 {
+		t.Fatalf("the merge did not wake the merged call: %v", got)
+	} else if err := r.dispatcher.ScheduleDispatch(ctx, green.IncidentID, got[i].Gen, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.dispatcher.ClaimDueDispatch(ctx, 10, time.Minute); slices.ContainsFunc(got, func(d dispatch.Due) bool { return d.IncidentID == green.IncidentID }) {
+		t.Fatalf("a parked merged call is due again: %v", got)
 	}
 }
 

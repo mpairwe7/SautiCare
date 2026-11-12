@@ -526,6 +526,42 @@ func (q *Queries) ListResponders(ctx context.Context) ([]ListRespondersRow, erro
 	return items, nil
 }
 
+const listStalledDispatch = `-- name: ListStalledDispatch :many
+SELECT i.id FROM op.incidents i
+WHERE i.state = 'dispatching' AND i.t3 IS NULL AND i.t2 < clock_timestamp() - $1::interval
+  AND NOT EXISTS (
+      SELECT 1 FROM op.incident_events e
+       WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+         AND e.payload ->> 'reason' IN ('no_eligible_responder', 'no_responder_nearby', 'red_no_acceptance',
+                                        'forwarded_to_facility', 'no_facility_acknowledged', 'dispatch_suspended',
+                                        'dispatch_error', 'dispatch_stalled'))
+ORDER BY i.t2
+LIMIT 500
+`
+
+// Dispatch watchdog (review I8): dispatched incidents with no alert (T3) and
+// no dispatch escalation of any kind, T2 older than after — dispatch-worker
+// has not acted on them. Read by intake-gw's leader, a separate process.
+func (q *Queries) ListStalledDispatch(ctx context.Context, after pgtype.Interval) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listStalledDispatch, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lookupUSSDStep = `-- name: LookupUSSDStep :many
 SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text

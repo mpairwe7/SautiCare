@@ -134,8 +134,14 @@ func run(log *slog.Logger) error {
 	// One abandonment sweeper across all intake-gw instances (leadership by
 	// advisory lock); it never blocks the request path.
 	sweeper := intake.NewSweeper(store, built.Incidents, cfg.Intake.AbandonAfter.Duration)
+	// The dispatch watchdog (review I8) runs here, apart from dispatch-worker:
+	// an incident dispatch has not touched two minutes after T2 is escalated.
+	watchdog := intake.NewWatchdog(store, built.Incidents, intake.DispatchWatchdogAfter)
 	go func() {
 		_ = pg.RunAsLeader(ctx, pool, sweeperLeaderKey, 5*time.Second, func(lctx context.Context) error {
+			go func() {
+				_ = watchdog.Run(lctx, sweepEvery, func(err error) { log.Error("dispatch watchdog failed", "err", err) })
+			}()
 			return sweeper.Run(lctx, sweepEvery, func(err error) { log.Error("abandonment sweep failed", "err", err) })
 		})
 	}()

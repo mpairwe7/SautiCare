@@ -351,13 +351,18 @@ func (s *Service) next(ctx context.Context, p incident.Projection, hasPhone bool
 	if !suspended {
 		return pr, nil
 	}
-	esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": ReasonDispatchSuspended},
-		incidentKey(p.ID, "dispatch_suspended"), "")
-	if err != nil {
-		return Prompt{}, err
-	}
-	if _, err := s.d.Incidents.Append(ctx, esc); err != nil {
-		return Prompt{}, err
+	// A call merged at T2 is not escalated itself: its survivor is (by
+	// dispatch-worker), and a merged incident accepts no escalation (review
+	// I6). The key is dispatch's own, so the coordinator is alerted once.
+	if p.State != incident.StateMerged {
+		esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": ReasonDispatchSuspended},
+			incident.EscalationKey(ReasonDispatchSuspended, ""), "")
+		if err != nil {
+			return Prompt{}, err
+		}
+		if _, err := s.d.Incidents.Append(ctx, esc); err != nil {
+			return Prompt{}, err
+		}
 	}
 	return s.d.Machine.prompt(p, KindSuspended, hasPhone), nil
 }
