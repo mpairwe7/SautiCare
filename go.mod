@@ -6,6 +6,7 @@ toolchain go1.27.4
 
 require (
 	cel.dev/cel-go v0.33.2
+	github.com/coder/websocket v1.8.15
 	github.com/fergusstrange/embedded-postgres/v2 v2.0.1
 	github.com/jackc/pgx/v5 v5.13.0
 	go.yaml.in/yaml/v4 v4.0.0

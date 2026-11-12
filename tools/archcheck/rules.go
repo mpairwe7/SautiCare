@@ -23,7 +23,7 @@ var netImports = []string{
 
 // netPrefixes are third-party I/O libraries with the same restriction.
 var netPrefixes = []string{
-	"github.com/jackc/pgx", "github.com/valkey-io/", "github.com/fergusstrange/embedded-postgres",
+	"github.com/jackc/pgx", "github.com/valkey-io/", "github.com/fergusstrange/embedded-postgres", "github.com/coder/websocket",
 }
 
 // ioLocations may import network and database packages.

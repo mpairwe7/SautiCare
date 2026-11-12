@@ -7,3 +7,4 @@ go test -run='^$' -fuzz='^FuzzParseReference$' -fuzztime="$T" ./internal/inciden
 go test -run='^$' -fuzz='^FuzzATForm$' -fuzztime="$T" ./internal/platform/africastalking/
 go test -run='^$' -fuzz='^FuzzClassifyNeverPanics$' -fuzztime="$T" ./internal/triage/
 go test -run='^$' -fuzz='^FuzzAnswerNeverPanics$' -fuzztime="$T" ./internal/intake/
+go test -run='^$' -fuzz='^FuzzEventDecode$' -fuzztime="$T" ./internal/platform/ari/
