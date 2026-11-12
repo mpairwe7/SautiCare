@@ -323,12 +323,21 @@ func cmdDemo(ctx context.Context, args []string, out io.Writer) error {
 	if *admin == "" {
 		return errors.New("--admin-dsn (or SAUTI_TEST_PG_DSN) is required; without a server run: go test -tags integration -v ./tests/e2e/")
 	}
+	// Refused before any connection: the demo provisions server-global
+	// roles and databases (CodeRabbit PR #4).
+	senv, err := env.Environment()
+	if err != nil {
+		return err
+	}
+	if senv != "dev" && senv != "test" {
+		return fmt.Errorf("refusing SAUTI_ENV=%s: the demo provisions server-global roles and databases (dev and test only)", senv)
+	}
 	password, err := env.Required("SAUTI_DEV_DB_PASSWORD")
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(out, "Sauti Dispatch — M0 demo (spec §12.2)")
-	_, err = demo.RunM0(ctx, demo.Options{AdminDSN: *admin, RolePassword: password, ConfigDir: *cfgDir, Out: out, Keep: *keep})
+	_, err = demo.RunM0(ctx, demo.Options{AdminDSN: *admin, Env: senv, RolePassword: password, ConfigDir: *cfgDir, Out: out, Keep: *keep})
 	if err == nil {
 		fmt.Fprintln(out, "M0 demo PASSED")
 	}
