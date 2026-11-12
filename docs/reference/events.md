@@ -24,7 +24,7 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `responder.departed` | **T6** | — | |
 | `responder.at_facility` | **T7** | `facility` | |
 | `incident.flagged` | — | `flag` | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
-| `incident.escalated` | — | exactly `reason` (a code), optional `role` | sets `escalated`; dispatch (`op.dispatch_escalate`, once per reason): `no_eligible_responder`, `red_no_acceptance`, `forwarded_to_facility`, `no_facility_acknowledged`, `dispatch_suspended`, `dispatch_error` (see [no-eligible-responders](../runbooks/no-eligible-responders.md)); intake: `dispatch_suspended` at the closing screen while dispatch is suspended (ADR-0026), `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch`; deduplication: `merged_call_escalated` (an escalated call merged into a survivor that was not) |
+| `incident.escalated` | — | exactly `reason` (a code), optional `role` | sets `escalated`; dispatch (`op.dispatch_escalate`, once per reason and role): `no_eligible_responder`, `no_responder_nearby` (amended mode, ring 1 empty at T2), `red_no_acceptance`, `forwarded_to_facility`, `no_facility_acknowledged`, `dispatch_suspended`, `dispatch_error`; intake-gw's dispatch watchdog: `dispatch_stalled` (no alert and no dispatch escalation 2 minutes after T2) (see [no-eligible-responders](../runbooks/no-eligible-responders.md)); intake: `dispatch_suspended` at the closing screen while dispatch is suspended (ADR-0026), `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch`; deduplication: `merged_call_escalated` (an escalated call merged into a survivor that was not) |
 | `incident.merged` | — | `into` (incident UUID: existing, open, not itself) | on the later call, at T2 (ADR-0022); a merged call then accepts only its own caller's answers and its unmerge |
 | `incident.merge_absorbed` | T1 (earliest) | exactly `from` (incident UUID), `t1` (RFC 3339, ≤ µs) | on the survivor, after the call's own `incident.merged` into it; `t1` must equal the call's stored T1 (the database checks the call's row); T1 = earliest of its own call and every absorbed call |
 | `incident.severity_raised` | — | exactly `severity` (`red`/`yellow`/`green`), `from` (the merged call's incident UUID) | on the survivor, in the merge's transaction, when the merged call is more urgent; `from` must be in the survivor's `absorbed` set and `severity` must be that call's own (the database checks the call's row); the severity must rise strictly; sets severity, not `logic_version` |
@@ -40,7 +40,7 @@ Intake uses two kinds of key (see [tool1-flow.md](tool1-flow.md)):
 - **Session-scoped**, for what a caller said: `ussd:<provider>:<session>:s<screen>` or `ivr:<call>:s<screen>` for `screen.answered`, with a suffix for the sealed identifier it references.
 - **Incident-scoped**, for what the answers imply: `intake:<incident>:classify`, `:rule_error`, `:escalate`, `:out_of_area`, `:close`, `:needs_location_callback` and `:dispatch_ready`. Whichever session or channel records one first, every retry or redial converges on that one event.
 
-Dispatch keys its events by the fact: `alert:<responder>`, `accept:<alert>`, `decline:<alert>`, `no_response:<alert>`, `stood_down:<alert>`, `forward:<facility>`, `forward_ack:<facility>`, `forward_timeout:<facility>`, `notify:<kind>` and `escalate:<reason>`.
+Dispatch keys its events by the fact: `alert:<responder>`, `accept:<alert>`, `decline:<alert>`, `no_response:<alert>`, `stood_down:<alert>`, `forward:<facility>`, `forward_ack:<facility>`, `forward_timeout:<facility>`, `notify:<kind>` and `escalate:<reason>:<role or ->` (`incident.EscalationKey`; intake uses the same key for `dispatch_suspended` and `dispatch_stalled`, so each is recorded once).
 
 A merge at T2 (ADR-0022) keys its events by the merged call: `intake:<call>:dispatch_ready:merge` (`incident.merged`), and on the survivor `dedup:absorb:<call>`, `dedup:raise:<call>` (`incident.severity_raised`) and `dedup:escalate:<call>`. A coordinator's split is keyed by the merge it undoes (the call's latest `incident.merged` event): `split:<survivor>:<call>:<merge event>:split` and `…:unmerge`. A retried split is a no-op; a call merged into the same survivor again and split again gets new keys.
 
@@ -68,9 +68,10 @@ States: `intake → triaged → dispatching → assigned → on_scene → transp
 | * | incident.closed | closed |
 | intake, triaged, dispatching | incident.merged | merged |
 | merged | incident.unmerged | dispatching |
+| closed | incident.split | — |
 | merged | screen.answered | — |
 
-A merged incident accepts only its exact transitions (its unmerge and its own caller's answers), never a `*` event. Each role searches on its own, so the other role may still be alerted and accept once the first responder is on scene. `incident.closed` is refused while any alert is pending: whoever closes stands the responders down first.
+A merged incident accepts only its exact transitions (its unmerge and its own caller's answers), never a `*` event. Each role searches on its own, so the other role may still be alerted and accept once the first responder is on scene. `incident.closed` is refused while any alert is pending: whoever closes stands the responders down first; `incident.merged` is likewise refused while an alert is pending. A closed incident accepts only a coordinator's `incident.split` (a call wrongly merged into it is revived), never a `*` event.
 
 ## Errors raised by the write path
 

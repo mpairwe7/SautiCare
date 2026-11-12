@@ -374,6 +374,8 @@ threats:
       - internal/platform/pg/opstore/dispatch_integration_test.go::TestDispatchTimers
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineCrashBetweenRecordAndDelivery
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineFailoverMidCascade
+      - internal/platform/wiring/dispatch_integration_test.go::TestEngineDoesNotDeliverAfterADatabaseSuspension
+      - internal/platform/pg/opstore/review10_integration_test.go::TestCloseAndMergeWakeDispatch
 
   - id: T-024
     title: Dispatch facts forged or bypassed (direct table writes, generic appends, another responder's alert)
@@ -408,4 +410,8 @@ threats:
       - internal/intake/suspension_test.go::TestSuspendedDispatchChangesTheClosingMessageAndEscalates
       - cmd/sautictl/main_test.go::TestDispatchCommandsGateAndValidate
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineRunOnceEscalatesAnUnprocessableIncident
+      - internal/platform/pg/opstore/control_integration_test.go::TestRedDispatchOutcomes
+      - internal/platform/pg/opstore/review10_integration_test.go::TestNoAlertOrAttemptWhileSuspended
+      - internal/intake/watchdog_test.go::TestWatchdogEscalatesStalledDispatch
+      - cmd/dispatch-worker/main_test.go::TestReadinessFailsWhenTheLeaderStalls
 

@@ -27,7 +27,7 @@ While dispatch is suspended, intake continues and records are kept, but no respo
 ## Mitigation
 1. **Tell the coordinators by voice** that dispatch is suspended and that every new incident is theirs. Brief the Medical Director and PI the same hour.
 2. Record the event in the study's reportable-events process. The register row is the system's record of it; the study's report is separate.
-3. Fix the cause. Do not resume while it persists, or the rule will fire again.
+3. Fix the cause. After you resume, the rule judges only red incidents dispatched since your resumption (a red incident fails when nobody accepts within 3 minutes of T2), so it cannot fire again on the old evidence — but it will on 30 new red incidents if the cause persists.
 4. To suspend by hand (development and test only until the message is approved):
 
    ```sh
