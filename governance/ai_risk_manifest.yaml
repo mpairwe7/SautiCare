@@ -20,11 +20,7 @@ risks:
     verified_by:
       - internal/incident/fold_test.go::TestApplyRejectsSeverityLowering
       - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering
-      - internal/triage/triage_test.go::TestRepositoryBundleVerifies
-      - internal/triage/triage_test.go::TestRuleTableFromBuildPrompt
-      - internal/triage/triage_test.go::TestRuntimeErrorIsRed
-      - internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated
-      - tests/e2e/m1_intake_test.go::TestScenario3PoisoningIsYellow
+      - "planned:M1 signed CEL decision table with clinical scenario suite and rule-error-is-red test"
   - id: AIR-002
     title: Logic version not recorded, so a mid-study amendment corrupts the dataset
     nist_function: GOVERN

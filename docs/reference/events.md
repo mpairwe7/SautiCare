@@ -4,20 +4,19 @@
 
 Every state change is one row in `op.incident_events`, written only by `op.open_incident` or `op.append_incident_event`. The protocol timestamps are set by the database clock and are first-wins: a later event of the same type never moves them (Build Prompt §15.1).
 
-| Event type | Sets | Payload | Notes |
+| Event type | Sets | Payload (M0) | Notes |
 |---|---|---|---|
 | `session.started` | **T1** | `reference`, `channel` | written only by `op.open_incident` |
-| `session.resumed` | — | `channel` | a redial within the resume window joined this incident (M1) |
-| `screen.answered` | — | exactly `screen` (1–8), `field`, `value` (a code), optional `identifier_id` | Tool 1 answers; validated identically in Go and SQL; see [tool1-flow.md](tool1-flow.md) |
-| `incident.classified` | — | `severity` (`red`/`yellow`/`green`), `rule_id` | `logic_version` = signed bundle `<version>+sha256:<12 hex>`; severity can only rise |
-| `incident.dispatch_ready` | **T2** | `trigger_screen`, `zone {col,row}`, `location_quality` (`landmark`/`fuzzy`/`ward`), `gazetteer_version` | severity and location known (screen 7, D5); zone and quality go together |
+| `screen.answered` | — | `screen`, `answer` | Tool 1 answers (M1) |
+| `incident.classified` | — | `severity` (`red`/`yellow`/`green`), `category` | logic version in the event's `logic_version` column; severity can only rise |
+| `incident.dispatch_ready` | **T2** | `trigger_screen` | severity and location known (screen 7, D5) |
 | `alert.issued` | **T3** (first) | `role`, `ring` | |
 | `responder.accepted` | **T4** (first) | `role` | per-role T4 lives in assignments (M2) |
 | `responder.arrived` | **T5** (first, attested) | `role` | verification in M3 |
 | `responder.departed` | **T6** | — | |
 | `responder.at_facility` | **T7** | `facility` | |
-| `incident.flagged` | — | `flag` | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
-| `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes` |
+| `incident.flagged` | — | `flag` | e.g. `out_of_area`, `needs_location_callback`, `test_call` |
+| `incident.escalated` | — | `reason` | sets `escalated` |
 | `incident.merged` | — | `into` (incident UUID) | duplicates (M1) |
 | `incident.closed` | — | `reason` | terminal |
 

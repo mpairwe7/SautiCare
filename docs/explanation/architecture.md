@@ -56,13 +56,11 @@ Each bounded context in `internal/` holds pure domain logic and application serv
 - `incident`: the aggregate, reducer, reference and commands.
 - `audit`: the ledger, relay, checkpoints and verifier.
 - `crypto`: envelope encryption, MACs and ML-DSA.
-- `config`: versioned configuration, including the Tool 1 catalogue.
-- `intake`: the Tool 1 state machine and the USSD flow: resume, sealing of identifiers, abandonment sweeper (M1).
-- `triage`: the signed CEL decision table (M1, ADR-0019).
-- `location`: the UTM 36N grid and the gazetteer port (M1, ADR-0020).
+- `config`: versioned configuration.
+- `intake`: the USSD session flow.
 - `pii`: masked identifier types.
 
-Adapters live in `internal/platform/`; `cmd/` holds the composition roots, and `internal/platform/wiring` composes intake with every start-up check so all processes and tests build it the same way. A context never imports an adapter, and contexts import each other only along declared edges. `tools/archcheck` enforces both rules in CI ([ADR-0002](../adr/ADR-0002-hexagonal-modular-monolith.md)).
+Adapters live in `internal/platform/`; `cmd/` holds the composition roots. A context never imports an adapter, and contexts import each other only along declared edges. `tools/archcheck` enforces both rules in CI ([ADR-0002](../adr/ADR-0002-hexagonal-modular-monolith.md)).
 
 ## The write path
 
@@ -103,6 +101,6 @@ Three properties follow from this design:
 | Egress allowlist | `internal/platform/egress/egress.go` |
 | Verifiers | `sautictl verify-ledger`, `sautictl verify-projections` |
 
-## What is not built yet
+## What M0 does not do yet
 
-M1 Part A (Tool 1 on USSD, triage, location, resume, abandonment) is built; deduplication (Part B) and the IVR (Part C) complete M1. Dispatch arrives in M2, field reporting in M3, payments in M4, the console in M5, the research data path in M6, and resilience drills in M7. Infrastructure-as-code is P0, and the flagged enhancements are P2. See `docs/superpowers/plans/2026-11-12-phased-roadmap.md`.
+The Tool 1 flow and triage arrive in M1, dispatch in M2, field reporting in M3, payments in M4, the console in M5, the research data path in M6, and resilience drills in M7. Infrastructure-as-code is P0, and the flagged enhancements are P2. See `docs/superpowers/plans/2026-11-12-phased-roadmap.md`.

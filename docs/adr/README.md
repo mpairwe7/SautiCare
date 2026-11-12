@@ -23,7 +23,3 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0015](ADR-0015-dependency-and-supply-chain-policy.md) | Dependency policy and supply-chain pinning | Accepted | 2026-11-12 |
 | [ADR-0016](ADR-0016-living-documentation-mapping.md) | Living-documentation mapping of the global engineering rules | Accepted | 2026-11-12 |
 | [ADR-0017](ADR-0017-metrics-exposition.md) | In-house Prometheus metrics until the OpenTelemetry SDK | Accepted | 2026-11-12 |
-| [ADR-0018](ADR-0018-session-state-in-postgresql.md) | Tool 1 session state in PostgreSQL; Valkey deferred | Accepted | 2026-11-12 |
-| [ADR-0019](ADR-0019-signed-triage-decision-table.md) | Triage as a signed CEL decision table | Accepted | 2026-11-12 |
-| [ADR-0020](ADR-0020-location-grid-and-gazetteer.md) | UTM 36N grid in Go and a frozen gazetteer with pg_trgm matching | Accepted | 2026-11-12 |
-| [ADR-0021](ADR-0021-sealed-answers-and-keyed-step-keys.md) | Screen-answer identifiers sealed; USSD step keys keyed hashes | Accepted | 2026-11-12 |

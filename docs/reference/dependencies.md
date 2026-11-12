@@ -11,8 +11,6 @@ Every dependency needs a note here before it merges, covering why it is needed, 
 | `github.com/jackc/pgx/v5` | v5.13.0 | MIT | PostgreSQL driver and pool (stack choice) | very active; ≥ 5.12.0 required (two GHSAs fixed) | `database/sql` + lib/pq (degraded) |
 | `go.yaml.in/yaml/v4` | v4.0.0 | Apache-2.0 / MIT | strict YAML decoding of versioned configuration and (M1) triage tables | maintained by the YAML organisation (successor of go-yaml) | JSON configuration via `encoding/json` |
 | indirect: `jackc/pgpassfile`, `jackc/pgservicefile`, `jackc/puddle/v2`, `golang.org/x/text`, `golang.org/x/sync` | pinned in `go.sum` | MIT / BSD-3-Clause | pgx internals | — | — |
-| `cel.dev/cel-go` | v0.33.2 (2026-10-30) | Apache-2.0 | conditions of the signed triage decision table (ADR-0019); the expression language Kubernetes uses for admission policy | Google-maintained, monthly releases; module path moved from `github.com/google/cel-go` | hand-written Go `switch` behind the same `triage.Engine` interface (loses clinician-editable rules) |
-| indirect (cel-go): `cel.dev/expr`, `github.com/antlr4-go/antlr/v4`, `google.golang.org/protobuf`, `google.golang.org/genproto/googleapis/{api,rpc}`, `golang.org/x/exp`, `go.yaml.in/yaml/v3` | pinned in `go.sum` | Apache-2.0 / BSD-3-Clause / MIT | CEL parser, checker and value types | — | — |
 
 The standard library covers UUIDs (`uuid`, Go 1.27), ML-DSA (`crypto/mldsa`), HKDF, AES-GCM, HTTP, logging and metrics.
 
