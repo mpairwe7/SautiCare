@@ -29,7 +29,7 @@ prev_hash of seq 1 = 32 zero bytes
 
 Rules:
 
-- **Absent values.** An absent incident ID, staff ID or logic version is encoded as a zero-length field. A present UUID is always 16 bytes, so absent and present values can never collide. The ledger's `CHECK (logic_version <> '')` keeps an empty logic version distinct from "no logic version".
+- **Absent values.** An absent incident ID, staff ID or logic version is encoded as a zero-length field. A present UUID is always 16 bytes, so absent and present values can never collide. The ledger's `CHECK` requires a present logic version to match `^[a-z0-9][a-z0-9._-]{0,63}\+sha256:[0-9a-f]{12,64}$` (for example `tool1-placeholder-0.1+sha256:1a2b3c4d5e6f`), which keeps it distinct from "no logic version" and keeps free text out of the ledger; the operational write path applies the same rule first.
 - **Timestamp precision.** Timestamps are encoded as microseconds since the Unix epoch, because PostgreSQL stores `timestamptz` at microsecond resolution. Any finer precision from Go is discarded.
 - **Payload hash.** `payload_sha256` is `sha256(payload_salt ‖ payload::text)`, computed by `op.enqueue_audit` (migration `db/operational/migrations/0005_salted_payload_hash.sql`).
   - `payload_salt` is a 16-byte random value stored with the event in the operational store, never in the ledger.
