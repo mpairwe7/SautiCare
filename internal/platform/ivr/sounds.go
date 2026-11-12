@@ -56,10 +56,8 @@ func Sounds(pr intake.Prompt) []string {
 	return out
 }
 
-// InternalError is played when intake cannot take the call.
-func InternalError(lang string) []string {
-	if lang == "" || lang == "*" {
-		lang = "en"
-	}
-	return []string{base(lang) + "internal_error"}
-}
+// Fallback is the bilingual message the dialplan's fallback context plays
+// before it rings a coordinator (telephony/asterisk/extensions.conf): when
+// ivr-controller is down, or hands over a call it cannot serve. The language
+// may not be known yet, so it is one recording in both languages.
+func Fallback() []string { return []string{"sauti/fallback"} }

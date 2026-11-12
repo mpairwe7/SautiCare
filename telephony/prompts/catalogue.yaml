@@ -40,7 +40,6 @@ sounds:
     - sauti/en/first_aid-other
     - sauti/en/first_aid-poisoning
     - sauti/en/first_aid-trauma
-    - sauti/en/internal_error
     - sauti/en/invalid
     - sauti/en/landmark
     - sauti/en/landmark-other
@@ -87,6 +86,7 @@ sounds:
     - sauti/en/ward-w02
     - sauti/en/ward-w03
     - sauti/en/ward-w04
+    - sauti/fallback
     - sauti/invalid
     - sauti/language
     - sauti/lg/age_band
@@ -114,7 +114,6 @@ sounds:
     - sauti/lg/first_aid-other
     - sauti/lg/first_aid-poisoning
     - sauti/lg/first_aid-trauma
-    - sauti/lg/internal_error
     - sauti/lg/invalid
     - sauti/lg/landmark
     - sauti/lg/landmark-other

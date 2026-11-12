@@ -1,6 +1,6 @@
 // Package ari is Sauti's minimal Asterisk REST Interface client (ADR-0023):
-// answer a channel, play prompts, hang up, and receive the Stasis event
-// stream. It deliberately has no recording, snooping or bridging call: the
+// answer a channel, play and stop prompts, hand a call back to the dialplan,
+// hang up, and receive the Stasis event stream. It deliberately has no recording, snooping or bridging call: the
 // IVR records nothing (Build Prompt §10.2). REST goes through the egress
 // allowlist (the configured Asterisk host only); events arrive over one
 // WebSocket that reconnects with backoff.
@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -27,6 +29,7 @@ import (
 const (
 	EventStasisStart      = "StasisStart"
 	EventDTMF             = "ChannelDtmfReceived"
+	EventPlaybackStarted  = "PlaybackStarted"
 	EventPlaybackFinished = "PlaybackFinished"
 	EventStasisEnd        = "StasisEnd"
 	EventHangupRequest    = "ChannelHangupRequest"
@@ -53,10 +56,11 @@ type Config struct {
 
 // Client talks to one Asterisk.
 type Client struct {
-	cfg     Config
-	base    *url.URL
-	http    *http.Client
-	backoff time.Duration
+	cfg       Config
+	base      *url.URL
+	http      *http.Client
+	backoff   time.Duration
+	connected atomic.Bool
 }
 
 // IDs from Asterisk are used in URL paths: allow only their shape.
@@ -130,6 +134,35 @@ func (c *Client) Play(ctx context.Context, channelID, playbackID string, sounds 
 	return c.do(ctx, http.MethodPost, "/ari/channels/"+channelID+"/play/"+playbackID, url.Values{"media": {strings.Join(media, ",")}})
 }
 
+// StopPlayback stops a prompt that is playing (the caller pressed a key:
+// barge-in), or removes it from the channel's queue if it has not started.
+// Asterisk then sends PlaybackFinished for it.
+func (c *Client) StopPlayback(ctx context.Context, playbackID string) error {
+	if err := ids(playbackID); err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodDelete, "/ari/playbacks/"+playbackID, nil)
+}
+
+// Continue hands the channel back to the dialplan at context, extension,
+// priority: it leaves the Stasis application (StasisEnd follows). Sauti uses
+// it to pass a call it cannot serve to the fallback that rings a
+// coordinator (hard constraint 14).
+func (c *Client) Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error {
+	if err := ids(channelID, dialContext, extension); err != nil {
+		return err
+	}
+	if priority < 1 {
+		return fmt.Errorf("ari: priority %d", priority)
+	}
+	return c.do(ctx, http.MethodPost, "/ari/channels/"+channelID+"/continue",
+		url.Values{"context": {dialContext}, "extension": {extension}, "priority": {strconv.Itoa(priority)}})
+}
+
+// EventsConnected reports whether the event stream is up: without it no
+// call can be served (ivr-controller readiness).
+func (c *Client) EventsConnected() bool { return c.connected.Load() }
+
 // Hangup ends the channel.
 func (c *Client) Hangup(ctx context.Context, channelID string) error {
 	if err := ids(channelID); err != nil {
@@ -188,6 +221,7 @@ func (c *Client) Events(ctx context.Context, handle func(Event)) error {
 		}
 		if err == nil {
 			wait = c.backoff
+			c.connected.Store(true)
 			for {
 				_, msg, rerr := conn.Read(ctx)
 				if rerr != nil {
@@ -197,6 +231,7 @@ func (c *Client) Events(ctx context.Context, handle func(Event)) error {
 					handle(e)
 				}
 			}
+			c.connected.Store(false)
 			_ = conn.CloseNow()
 		}
 		select {

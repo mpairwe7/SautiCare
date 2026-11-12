@@ -50,6 +50,27 @@ func main() {
 	}
 }
 
+// eventStream reports whether the ARI event stream is up (ari.Client).
+type eventStream interface{ EventsConnected() bool }
+
+// errNoEvents fails readiness while the ARI event stream is down: no call
+// can be served, and Asterisk's dialplan sends callers to a coordinator.
+var errNoEvents = errors.New("ari event stream disconnected")
+
+// readiness lists what the voice line needs to serve a call: the
+// operational store and the ARI event stream (review I4).
+func readiness(db health.Check, events eventStream) map[string]health.Check {
+	return map[string]health.Check{
+		"operational_db": db,
+		"ari_events": func(context.Context) error {
+			if !events.EventsConnected() {
+				return errNoEvents
+			}
+			return nil
+		},
+	}
+}
+
 func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -102,12 +123,12 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2})
+	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2, OpTimeout: 3 * time.Second})
 
 	reg := metrics.NewRegistry()
 	admin := http.NewServeMux()
 	admin.Handle("/livez", health.Handler(map[string]health.Check{}, nil))
-	admin.Handle("/readyz", health.Handler(nil, map[string]health.Check{"operational_db": pool.Ping}))
+	admin.Handle("/readyz", health.Handler(nil, readiness(pool.Ping, client)))
 	admin.Handle("/metrics", reg.Handler())
 	adminSrv := &http.Server{Addr: env.Default("SAUTI_ADMIN_ADDR", "127.0.0.1:9101"), Handler: admin, ReadHeaderTimeout: 2 * time.Second}
 
