@@ -90,3 +90,24 @@ func TestCheckpointSignedAndWitnessed(t *testing.T) {
 		t.Fatalf("body = %q", cp.Body())
 	}
 }
+
+// The signed_at line of the checkpoint body is normative
+// (docs/reference/audit-canonical-encoding.md): UTC with a "Z" suffix, one
+// to six fractional digits with trailing zeros removed, and no fraction for
+// a whole second. An implementation that writes ".123456000Z" signs a
+// different body (CodeRabbit PR #5).
+func TestCheckpointBodySignedAtFormat(t *testing.T) {
+	kampala := time.FixedZone("EAT", 3*60*60)
+	for want, at := range map[string]time.Time{
+		"2026-11-12T08:30:00Z":        time.Date(2026, 11, 12, 8, 30, 0, 0, time.UTC),
+		"2026-11-12T08:30:00.123456Z": time.Date(2026, 11, 12, 8, 30, 0, 123456000, time.UTC),
+		"2026-11-12T08:30:00.12Z":     time.Date(2026, 11, 12, 8, 30, 0, 120000000, time.UTC),
+		"2026-11-12T05:30:00.000001Z": time.Date(2026, 11, 12, 8, 30, 0, 1000, kampala),
+	} {
+		body := string(Checkpoint{Origin: "o", Seq: 1, SignedAt: at}.Body())
+		lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
+		if got := lines[len(lines)-1]; got != want {
+			t.Errorf("signed_at line = %q, want %q", got, want)
+		}
+	}
+}

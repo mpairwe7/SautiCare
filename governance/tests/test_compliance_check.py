@@ -63,6 +63,24 @@ class ComplianceCheckTest(unittest.TestCase):
         errs = cc.check(self.tree(VALID.replace("MANAGE", "WISH")).root)
         self.assertTrue(any("nist_function" in e for e in errs), errs)
 
+    # PyYAML keeps the last of two equal keys, so a second `risks:` would
+    # silently discard every earlier risk record (CodeRabbit PR #5).
+    def test_duplicate_mapping_key_in_manifest_fails(self):
+        errs = cc.check(self.tree(VALID + "risks: []\n").root)
+        self.assertTrue(any("duplicate key 'risks'" in e for e in errs), errs)
+
+    def test_duplicate_mapping_key_in_flags_fails(self):
+        errs = cc.check(self.tree(flags=FLAGS_OFF + "speech_assist: true\n").root)
+        self.assertTrue(any("duplicate key 'speech_assist'" in e for e in errs), errs)
+
+    def test_missing_aibom_inventory_fails(self):
+        errs = cc.check(self.tree(VALID.split("aibom_inventory:")[0]).root)
+        self.assertTrue(any("aibom_inventory" in e for e in errs), errs)
+
+    def test_empty_aibom_inventory_fails(self):
+        errs = cc.check(self.tree(VALID.split("aibom_inventory:")[0] + "aibom_inventory: []\n").root)
+        self.assertTrue(any("aibom_inventory" in e for e in errs), errs)
+
 
 if __name__ == "__main__":
     unittest.main()
