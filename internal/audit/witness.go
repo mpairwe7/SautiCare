@@ -89,3 +89,34 @@ func LatestWitnessed(notes [][]byte, pub []byte) (*Checkpoint, error) {
 	}
 	return best, nil
 }
+
+// WitnessStore is a witness that can also read back every note it holds.
+type WitnessStore interface {
+	crypto.Witness
+	ReadAll() ([][]byte, error)
+}
+
+// NewAnchoredCheckpointer reads and signature-checks every note in w and
+// returns a Checkpointer anchored on the latest (unanchored only when w
+// holds none), together with that anchor. A note that does not parse or
+// verify is an error (fail closed, as LatestWitnessed).
+//
+// Build one immediately before signing — per leadership term, per CLI run —
+// never once per process: another instance may have witnessed newer history
+// meanwhile, and an older anchor would let a rewrite made after it be
+// signed (CodeRabbit PR #4).
+func NewAnchoredCheckpointer(l Ledger, s crypto.Signer, w WitnessStore, origin string, now func() time.Time) (*Checkpointer, *Checkpoint, error) {
+	notes, err := w.ReadAll()
+	if err != nil {
+		return nil, nil, err
+	}
+	anchor, err := LatestWitnessed(notes, s.PublicKey())
+	if err != nil {
+		return nil, nil, err
+	}
+	cp := NewCheckpointer(l, s, w, origin, now)
+	if anchor != nil {
+		cp.WithAnchor(*anchor)
+	}
+	return cp, anchor, nil
+}

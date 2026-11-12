@@ -187,10 +187,10 @@ func TestMediaRecordingsRequireDestroyByAndKey(t *testing.T) {
 	if _, err := w.Exec(ctx, "INSERT INTO media.recordings (key_id, consent_ref) VALUES ('k1', 'C-1')"); code(err) != "23502" {
 		t.Errorf("recording without destroy_by: %v, want 23502", err)
 	}
-	if _, err := w.Exec(ctx, "INSERT INTO media.recordings (key_id, consent_ref, destroy_by) VALUES ('k1', 'C-1', current_date + 365)"); err != nil {
+	if _, err := w.Exec(ctx, "INSERT INTO media.recordings (key_id, consent_ref, destroy_by) VALUES ('k1', 'C-1', (now() AT TIME ZONE 'UTC')::date + 365)"); err != nil {
 		t.Errorf("valid recording rejected: %v", err)
 	}
-	if _, err := w.Exec(ctx, "INSERT INTO media.recordings (key_id, consent_ref, destroy_by) VALUES ('k1', 'C-1', current_date + 400)"); code(err) != "23514" {
+	if _, err := w.Exec(ctx, "INSERT INTO media.recordings (key_id, consent_ref, destroy_by) VALUES ('k1', 'C-1', (now() AT TIME ZONE 'UTC')::date + 400)"); code(err) != "23514" {
 		t.Errorf("destroy_by beyond 12 months: %v, want 23514", err)
 	}
 }

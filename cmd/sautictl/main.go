@@ -197,6 +197,9 @@ func publicKey(devDir, file string) ([]byte, error) {
 	return nil, errors.New("one of --devkeys-dir or --pubkey-file is required")
 }
 
+// blindWarning ends every warning that verification runs without witnesses.
+const blindWarning = "rewritten-and-recomputed history or deleted checkpoints cannot be detected"
+
 func cmdVerifyLedger(ctx context.Context, args []string, out io.Writer) error {
 	fs := flags("verify-ledger")
 	dsn := fs.String("dsn", "", "audit_reader DSN")
@@ -225,8 +228,12 @@ func cmdVerifyLedger(ctx context.Context, args []string, out io.Writer) error {
 			}
 			witnesses = append(witnesses, cp)
 		}
+		if len(witnesses) == 0 {
+			// Empty, unmounted or mistyped: as blind as --no-witness (CodeRabbit PR #4).
+			fmt.Fprintln(out, "WARNING: --witness-dir holds no checkpoints: "+blindWarning)
+		}
 	case *noWitness:
-		fmt.Fprintln(out, "WARNING: --no-witness: rewritten-and-recomputed history or deleted checkpoints cannot be detected")
+		fmt.Fprintln(out, "WARNING: --no-witness: "+blindWarning)
 	default:
 		return errors.New("--witness-dir is required (the write-once witness is what detects a database owner's rewrite); pass --no-witness to verify the chain only")
 	}
@@ -282,6 +289,9 @@ func cmdCheckpoint(ctx context.Context, args []string, out io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *witness == "" {
+		return errors.New("--witness-dir is required (the checkpoint is anchored on it and written to it)")
+	}
 	senv, err := env.Environment()
 	if err != nil {
 		return err
@@ -295,7 +305,14 @@ func cmdCheckpoint(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer pool.Close()
-	cp, err := audit.NewCheckpointer(auditstore.New(pool), keys.Signer(), devkeys.NewFSWitness(*witness), *origin, time.Now).Checkpoint(ctx)
+	// Anchor on the latest witnessed checkpoint before signing, so a
+	// rewritten or truncated history is refused, never signed and witnessed
+	// (CodeRabbit PR #4). The witness is read before any query.
+	cper, _, err := audit.NewAnchoredCheckpointer(auditstore.New(pool), keys.Signer(), devkeys.NewFSWitness(*witness), *origin, time.Now)
+	if err != nil {
+		return fmt.Errorf("witness store failed verification; refusing to sign (runbook: docs/runbooks/audit-ledger-verification-failure.md): %w", err)
+	}
+	cp, err := cper.Checkpoint(ctx)
 	if err != nil {
 		return err
 	}
@@ -317,12 +334,21 @@ func cmdDemo(ctx context.Context, args []string, out io.Writer) error {
 	if *admin == "" {
 		return errors.New("--admin-dsn (or SAUTI_TEST_PG_DSN) is required; without a server run: go test -tags integration -v ./tests/e2e/")
 	}
+	// Refused before any connection: the demo provisions server-global
+	// roles and databases (CodeRabbit PR #4).
+	senv, err := env.Environment()
+	if err != nil {
+		return err
+	}
+	if senv != "dev" && senv != "test" {
+		return fmt.Errorf("refusing SAUTI_ENV=%s: the demo provisions server-global roles and databases (dev and test only)", senv)
+	}
 	password, err := env.Required("SAUTI_DEV_DB_PASSWORD")
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(out, "Sauti Dispatch — M0 demo (spec §12.2)")
-	_, err = demo.RunM0(ctx, demo.Options{AdminDSN: *admin, RolePassword: password, ConfigDir: *cfgDir, Out: out, Keep: *keep})
+	_, err = demo.RunM0(ctx, demo.Options{AdminDSN: *admin, Env: senv, RolePassword: password, ConfigDir: *cfgDir, Out: out, Keep: *keep})
 	if err == nil {
 		fmt.Fprintln(out, "M0 demo PASSED")
 	}

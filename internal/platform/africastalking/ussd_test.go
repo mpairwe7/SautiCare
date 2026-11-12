@@ -1,13 +1,16 @@
 package africastalking
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -172,6 +175,117 @@ func TestATUnparseablePhoneProceedsAsUnknown(t *testing.T) {
 		}
 		if len(p.got) != 1 || !p.got[0].Phone.IsZero() {
 			t.Fatalf("phone %q: intake got %+v, want one call with an unknown phone", phone, p.got)
+		}
+	}
+}
+
+// logLines decodes every JSON log line written to buf.
+func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// newLoggedHandler logs to buf without the process redactor: what is
+// asserted is what the adapter itself writes.
+func newLoggedHandler(t *testing.T, p *fakePort, buf *bytes.Buffer) http.Handler {
+	t.Helper()
+	h, err := NewUSSDHandler(USSDConfig{
+		Provider: "at", PathToken: token, ServiceCodes: []string{"*384*1#"},
+		MaxBody: 8 << 10, ErrorText: "Sorry. Call 0800 100 200 free.",
+	}, p, slog.New(slog.NewJSONHandler(buf, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+var correlationValue = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// sessionId is free text from the aggregator: a name passes the printable
+// check and the redactor does not mask names, so it is never logged. A keyed
+// correlation value stands in, the same for every callback of one session
+// (CodeRabbit PR #4).
+func TestATLogsAKeyedCorrelationValueNeverTheSessionID(t *testing.T) {
+	const nameLike = "Nakato Achieng Kampala"
+	var buf bytes.Buffer
+	p := &fakePort{screen: intake.Screen{Text: "ok"}}
+	h := newLoggedHandler(t, p, &buf)
+	session := func(id string, mutate func(url.Values)) {
+		f := form("")
+		f.Set("sessionId", id)
+		if mutate != nil {
+			mutate(f)
+		}
+		post(h, "/v1/ussd/at/"+token, f)
+	}
+	session(nameLike, nil)                                                    // the request line
+	session(nameLike, func(f url.Values) { f.Set("phoneNumber", "unknown") }) // unparseable number
+	session(nameLike, func(f url.Values) { f.Set("text", "1\n2") })           // answered with the voice line
+	p.err = errors.New("db down")
+	session(nameLike, nil) // intake failure
+	p.err = nil
+	session("ATUid_other", nil)
+
+	if strings.Contains(buf.String(), "Nakato") || strings.Contains(buf.String(), "Achieng") ||
+		strings.Contains(buf.String(), "ATUid_other") {
+		t.Fatalf("raw sessionId in the logs:\n%s", buf.String())
+	}
+	var values []string
+	for _, l := range logLines(t, &buf) {
+		v, _ := l["session"].(string)
+		if !correlationValue.MatchString(v) {
+			t.Fatalf("session = %q, want 16 hex characters (line %v)", v, l)
+		}
+		values = append(values, v)
+	}
+	// request, number warning + request, voice line, intake failure + request, other request
+	if len(values) != 7 {
+		t.Fatalf("log lines = %d, want 7:\n%s", len(values), buf.String())
+	}
+	mine, other := values[:6], values[6]
+	for _, v := range mine {
+		if v != mine[0] {
+			t.Fatalf("one session logged under different correlation values: %v", mine)
+		}
+	}
+	if other == mine[0] {
+		t.Fatal("two sessions share a correlation value")
+	}
+	if p.got[0].SessionID != nameLike {
+		t.Fatalf("intake must still receive the provider's sessionId, got %q", p.got[0].SessionID)
+	}
+}
+
+// networkCode is MCC+MNC: five or six digits. Anything else is dropped,
+// treated as absent, and never logged (CodeRabbit PR #4).
+func TestATNetworkCodeValidated(t *testing.T) {
+	cases := map[string]string{"64110": "64110", "641100": "641100", "Nakato": "", "6411": "", "6411012345": "", "64 110": "", "": ""}
+	for in, want := range cases {
+		var buf bytes.Buffer
+		p := &fakePort{screen: intake.Screen{Text: "ok"}}
+		f := form("")
+		f.Set("networkCode", in)
+		post(newLoggedHandler(t, p, &buf), "/v1/ussd/at/"+token, f)
+		if len(p.got) != 1 || p.got[0].NetworkCode != want {
+			t.Fatalf("networkCode %q: intake got %+v, want %q", in, p.got, want)
+		}
+		lines := logLines(t, &buf)
+		if got, _ := lines[len(lines)-1]["network"].(string); got != want {
+			t.Fatalf("networkCode %q logged as %q, want %q", in, got, want)
+		}
+		if want == "" && in != "" && strings.Contains(buf.String(), in) {
+			t.Fatalf("invalid networkCode %q logged raw:\n%s", in, buf.String())
 		}
 	}
 }

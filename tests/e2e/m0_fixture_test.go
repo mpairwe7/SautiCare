@@ -32,7 +32,7 @@ func (w logWriter) Write(p []byte) (int, error) {
 // tampering is detected, and a retried callback changes nothing.
 func TestM0FixtureIncident(t *testing.T) {
 	rep, err := demo.RunM0(context.Background(), demo.Options{
-		AdminDSN: pgtest.AdminURL(t), RolePassword: pgtest.RolePassword(t), ConfigDir: "../../config", Out: logWriter{t},
+		AdminDSN: pgtest.AdminURL(t), Env: "test", RolePassword: pgtest.RolePassword(t), ConfigDir: "../../config", Out: logWriter{t},
 	})
 	if err != nil {
 		t.Fatalf("M0 demo failed: %v", err)
@@ -73,7 +73,7 @@ func TestM0FixtureIncident(t *testing.T) {
 func TestM0DemoLeavesSharedRolePasswordsUnchanged(t *testing.T) {
 	c := pgtest.Cluster(t) // roles now carry the test-server password
 	if _, err := demo.RunM0(context.Background(), demo.Options{
-		AdminDSN: pgtest.AdminURL(t), RolePassword: pgtest.RolePassword(t), ConfigDir: "../../config", Out: logWriter{t},
+		AdminDSN: pgtest.AdminURL(t), Env: "test", RolePassword: pgtest.RolePassword(t), ConfigDir: "../../config", Out: logWriter{t},
 	}); err != nil {
 		t.Fatalf("demo: %v", err)
 	}

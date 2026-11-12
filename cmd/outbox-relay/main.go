@@ -53,9 +53,34 @@ type relayMetrics struct {
 	diverged *metrics.Gauge
 }
 
+func newRelayMetrics(reg *metrics.Registry) relayMetrics {
+	return relayMetrics{
+		relayed:  reg.Counter("sauti_outbox_relayed_total", "Outbox rows delivered to the audit ledger."),
+		lag:      reg.Gauge("sauti_outbox_lag_seconds", "Age of the oldest undelivered audit outbox row."),
+		poison:   reg.Counter("sauti_outbox_poison_total", "Outbox rows that violated the audit payload contract."),
+		checkpts: reg.Counter("sauti_audit_checkpoints_total", "Signed audit checkpoints written."),
+		diverged: reg.Gauge("sauti_audit_chain_diverged", "1 when the ledger no longer matches the last witnessed checkpoint."),
+	}
+}
+
 func (m relayMetrics) Relayed(n int)       { m.relayed.Add(float64(n)) }
 func (m relayMetrics) Lag(d time.Duration) { m.lag.Set(d.Seconds()) }
 func (m relayMetrics) Poison()             { m.poison.Add(1) }
+
+// checkpointed records the outcome of one checkpoint attempt.
+func (m relayMetrics) checkpointed(log *slog.Logger, c audit.Checkpoint, err error) {
+	switch {
+	case errors.Is(err, audit.ErrChainDiverged):
+		m.diverged.Set(1)
+		log.Error("AUDIT LEDGER DIVERGED from the witnessed checkpoint; refusing to sign (runbook: docs/runbooks/audit-ledger-verification-failure.md)", "err", err)
+	case err != nil:
+		log.Error("audit checkpoint failed", "err", err)
+	default:
+		m.diverged.Set(0) // the witnessed history holds again
+		m.checkpts.Add(1)
+		log.Info("audit checkpoint signed", "seq", c.Seq)
+	}
+}
 
 func main() {
 	log := slog.New(logging.NewHandler(os.Stderr, slog.LevelInfo))
@@ -107,31 +132,16 @@ func run(log *slog.Logger) error {
 	defer auditPool.Close()
 
 	reg := metrics.NewRegistry()
-	m := relayMetrics{
-		relayed:  reg.Counter("sauti_outbox_relayed_total", "Outbox rows delivered to the audit ledger."),
-		lag:      reg.Gauge("sauti_outbox_lag_seconds", "Age of the oldest undelivered audit outbox row."),
-		poison:   reg.Counter("sauti_outbox_poison_total", "Outbox rows that violated the audit payload contract."),
-		checkpts: reg.Counter("sauti_audit_checkpoints_total", "Signed audit checkpoints written."),
-		diverged: reg.Gauge("sauti_audit_chain_diverged", "1 when the ledger no longer matches the last witnessed checkpoint."),
-	}
+	m := newRelayMetrics(reg)
 	ledger := auditstore.New(auditPool)
 	ops := opstore.New(opPool)
 	relay := audit.NewRelay(ops, ledger, log, m, cfg.Platform.OutboxBatchSize)
 	witness := devkeys.NewFSWitness(env.Default("SAUTI_WITNESS_DIR", "var/witness"))
-	cp := audit.NewCheckpointer(ledger, keys.Signer(), witness, env.Default("SAUTI_ORIGIN", "sauti-dispatch"), time.Now)
-	// Anchor on the last witnessed checkpoint so the relay never signs a
-	// head whose history was rewritten or truncated (review finding C1).
-	notes, err := witness.ReadAll()
-	if err != nil {
-		return err
-	}
-	anchor, err := audit.LatestWitnessed(notes, keys.Signer().PublicKey())
-	if err != nil {
+	origin := env.Default("SAUTI_ORIGIN", "sauti-dispatch")
+	// Fail fast, even as a standby, on a witness store that does not verify.
+	// The anchor itself is read again at each leadership term.
+	if _, _, err := audit.NewAnchoredCheckpointer(ledger, keys.Signer(), witness, origin, time.Now); err != nil {
 		return fmt.Errorf("outbox-relay: witness store failed verification; refusing to start (runbook: docs/runbooks/audit-ledger-verification-failure.md): %w", err)
-	}
-	if anchor != nil {
-		cp.WithAnchor(*anchor)
-		log.Info("checkpointer anchored on witness", "seq", anchor.Seq)
 	}
 
 	mux := http.NewServeMux()
@@ -156,6 +166,17 @@ func run(log *slog.Logger) error {
 	log.Info("outbox-relay waiting for leadership", "env", senv, "config", cfg.Fingerprint)
 	return pg.RunAsLeader(ctx, opPool, leaderKey, 5*time.Second, func(lctx context.Context) error {
 		log.Info("outbox-relay is the active leader")
+		// Anchor on the last witnessed checkpoint so the relay never signs a
+		// head whose history was rewritten or truncated (review finding C1).
+		// Read it now, for this term: while this instance stood by, the
+		// previous leader may have witnessed newer history (CodeRabbit PR #4).
+		cp, anchor, err := audit.NewAnchoredCheckpointer(ledger, keys.Signer(), witness, origin, time.Now)
+		if err != nil {
+			return fmt.Errorf("outbox-relay: witness store failed verification; refusing to checkpoint (runbook: docs/runbooks/audit-ledger-verification-failure.md): %w", err)
+		}
+		if anchor != nil {
+			log.Info("checkpointer anchored on witness", "seq", anchor.Seq)
+		}
 		// Monthly event partitions three months ahead, so no event lands in
 		// the default partition (runbook: event-partition-maintenance.md).
 		go func() {
@@ -171,19 +192,12 @@ func run(log *slog.Logger) error {
 				case <-lctx.Done():
 					return
 				case <-t.C:
-					if c, err := cp.Checkpoint(lctx); errors.Is(err, audit.ErrChainDiverged) {
-						m.diverged.Set(1)
-						log.Error("AUDIT LEDGER DIVERGED from the witnessed checkpoint; refusing to sign (runbook: docs/runbooks/audit-ledger-verification-failure.md)", "err", err)
-					} else if err != nil {
-						log.Error("audit checkpoint failed", "err", err)
-					} else {
-						m.checkpts.Add(1)
-						log.Info("audit checkpoint signed", "seq", c.Seq)
-					}
+					c, err := cp.Checkpoint(lctx)
+					m.checkpointed(log, c, err)
 				}
 			}
 		}()
-		err := relay.Run(lctx, cfg.Platform.RelayPollInterval.Duration)
+		err = relay.Run(lctx, cfg.Platform.RelayPollInterval.Duration)
 		if errors.Is(err, audit.ErrPoisonRow) {
 			return fmt.Errorf("outbox-relay halted on a poison row; see docs/runbooks/outbox-poison-row.md: %w", err)
 		}

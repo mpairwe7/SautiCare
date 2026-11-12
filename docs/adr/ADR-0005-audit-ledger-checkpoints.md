@@ -34,8 +34,9 @@ Chosen option: **SHA-256 chain in PostgreSQL with ML-DSA-65 checkpoints**. `audi
 
 **Witness anchoring (amendment after review C1).**
 - `sautictl verify-ledger` requires `--witness-dir`, unless `--no-witness` explicitly accepts the weaker check. Every witnessed checkpoint must carry a valid signature, lie within the chain, match the chain hash at its sequence, and still be present among the database checkpoints.
-- outbox-relay anchors its checkpointer on the last witnessed checkpoint, verified at start-up. A tampered witness store makes it refuse to start.
-- It refuses to sign a new head if the ledger no longer holds the anchor's hash at the anchor's sequence. It reads that hash through `audit.hash_at`, which is EXECUTE-only for `audit_appender`. A refusal raises `sauti_audit_chain_diverged`.
+- outbox-relay anchors its checkpointer on the last witnessed checkpoint, re-read and verified at the start of **every leadership term** (`audit.NewAnchoredCheckpointer`; CodeRabbit PR #4). A standby taking over therefore never signs with a stale anchor. A witness store that does not verify makes the relay refuse to checkpoint.
+- `sautictl checkpoint` requires `--witness-dir` and anchors the same way, so a manual checkpoint can never sign a rewritten chain. `sautictl verify-ledger` warns, just as for `--no-witness`, when the witness directory holds no notes (an unmounted volume or a mistyped path).
+- It refuses to sign a new head if the ledger no longer holds the anchor's hash at the anchor's sequence. It reads that hash through `audit.hash_at`, which is EXECUTE-only for `audit_appender`. A refusal raises `sauti_audit_chain_diverged`; the next successful checkpoint (after the witnessed history is restored) sets it back to 0.
 
 ## Confirmation
 
