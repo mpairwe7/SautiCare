@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"slices"
 	"time"
 	"uuid"
 )
@@ -16,6 +18,9 @@ import (
 // contract. The relay stops on it rather than skipping it or copying unknown
 // fields into the ledger (runbook: docs/runbooks/outbox-poison-row.md).
 var ErrPoisonRow = errors.New("audit: poison outbox row")
+
+// ErrInvalidPoll reports a non-positive relay polling interval.
+var ErrInvalidPoll = errors.New("audit: relay poll interval must be positive")
 
 // TopicAudit is the outbox topic relayed into the ledger.
 const TopicAudit = "audit"
@@ -53,6 +58,9 @@ func ParseOutboxPayload(r OutboxRow) (AppendRequest, error) {
 	var p outboxPayload
 	if err := dec.Decode(&p); err != nil {
 		return poison("decode: %v", err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return poison("trailing data after the payload")
 	}
 	entryID, err := uuid.Parse(p.EntryID)
 	if err != nil || entryID != r.ID {
@@ -118,12 +126,20 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("relay: claim: %w", err)
 	}
-	rows := batch.Rows()
+	// Ledger order is outbox ID (uuidv7, time) order: across batches by the
+	// single active relay (pg.RunAsLeader) and op.claim_outbox's ORDER BY id,
+	// within a batch by sorting here so no adapter can reorder rows.
+	rows := slices.Clone(batch.Rows())
+	slices.SortFunc(rows, func(a, b OutboxRow) int { return a.ID.Compare(b.ID) })
 	if len(rows) == 0 {
 		if r.metrics != nil {
 			r.metrics.Lag(0)
 		}
-		return 0, batch.Complete(ctx, nil)
+		if err := batch.Complete(ctx, nil); err != nil {
+			batch.Abort(ctx)
+			return 0, fmt.Errorf("relay: complete: %w", err)
+		}
+		return 0, nil
 	}
 	delivered := make([]uuid.UUID, 0, len(rows))
 	for i, row := range rows {
@@ -146,6 +162,7 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 		delivered = append(delivered, row.ID)
 	}
 	if err := batch.Complete(ctx, delivered); err != nil {
+		batch.Abort(ctx) // release the claimed rows; they are redelivered
 		return 0, fmt.Errorf("relay: complete: %w", err)
 	}
 	if r.metrics != nil {
@@ -157,6 +174,9 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 // Run relays until ctx ends: immediately again after a full batch, after
 // poll otherwise, backing off up to 30 s while the ledger is unavailable.
 func (r *Relay) Run(ctx context.Context, poll time.Duration) error {
+	if poll <= 0 {
+		return ErrInvalidPoll
+	}
 	backoff := poll
 	for {
 		n, err := r.RunOnce(ctx)

@@ -64,3 +64,13 @@ func TestEgressDeniesRedirectToUnlistedHost(t *testing.T) {
 		t.Fatalf("redirect err = %v, want ErrDenied", err)
 	}
 }
+
+// CodeRabbit PR #2: every external call has a deadline; a zero timeout
+// must not mean "wait forever".
+func TestNewClientAlwaysHasATimeout(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		if c := NewClient([]string{"x"}, d); c.Timeout <= 0 {
+			t.Fatalf("NewClient(timeout=%v).Timeout = %v, want a positive default", d, c.Timeout)
+		}
+	}
+}

@@ -118,6 +118,11 @@ func (b Bundle) ProductionReady() error {
 	if b.ProtocolStatus != "approved" {
 		problems = append(problems, "protocol_status is "+b.ProtocolStatus)
 	}
+	// Intake falls back to English; without it a caller would get an empty
+	// final screen and no incident reference.
+	if strings.TrimSpace(b.Screens.StartedTestMode["en"]) == "" {
+		problems = append(problems, "screen started_test_mode/en is missing")
+	}
 	for _, e := range b.Screens.All() {
 		for _, m := range placeholderMarkers {
 			if strings.Contains(e[2], m) {

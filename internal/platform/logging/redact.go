@@ -29,7 +29,12 @@ var numberRun = regexp.MustCompile(`\+?\d[\d \-]*\d`)
 var deniedKeys = map[string]bool{
 	"phone": true, "msisdn": true, "phonenumber": true, "phone_number": true,
 	"caller": true, "callback": true, "name": true, "full_name": true,
+	"email": true, "e_mail": true, "mail": true,
 }
+
+const redactedEmail = "[redacted-email]"
+
+var emailAddr = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
 
 // NewHandler returns a JSON slog handler that redacts number-like runs in
 // messages, string values, error values and nested structures, and blanks
@@ -43,6 +48,7 @@ func NewHandler(w io.Writer, level slog.Leveler) slog.Handler {
 
 // RedactString masks every digit run of minDigits or more digits.
 func RedactString(s string) string {
+	s = emailAddr.ReplaceAllString(s, redactedEmail)
 	return numberRun.ReplaceAllStringFunc(s, func(m string) string {
 		n := 0
 		for i := range len(m) {
@@ -74,6 +80,12 @@ func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 		}
 	case slog.KindUint64:
 		if digitCountU(v.Uint64()) >= minDigits {
+			return slog.String(a.Key, redactedNumber)
+		}
+	case slog.KindFloat64:
+		// An identifier logged as an integral float (e.g. 256772123456.0).
+		if f := v.Float64(); f == math.Trunc(f) && math.Abs(f) < 1e18 &&
+			digitCountU(uint64(math.Abs(f))) >= minDigits {
 			return slog.String(a.Key, redactedNumber)
 		}
 	case slog.KindAny:

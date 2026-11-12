@@ -17,6 +17,10 @@ type AAD struct {
 	Store, Table, Column, RowID string
 }
 
+func (a AAD) complete() bool {
+	return a.Store != "" && a.Table != "" && a.Column != "" && a.RowID != ""
+}
+
 // Bytes encodes the AAD unambiguously: a domain tag, then each field as a
 // 4-byte big-endian length followed by its bytes.
 func (a AAD) Bytes() []byte {
@@ -60,6 +64,9 @@ func gcmFor(key []byte) (cipher.AEAD, error) {
 
 // Seal encrypts plaintext under the current key of class, bound to aad.
 func (e *Envelope) Seal(ctx context.Context, class string, plaintext []byte, aad AAD) (Sealed, error) {
+	if !aad.complete() {
+		return Sealed{}, ErrIncompleteAAD
+	}
 	dk, err := e.keys.Current(ctx, class)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("crypto: current key for %s: %w", class, err)
@@ -78,6 +85,9 @@ func (e *Envelope) Seal(ctx context.Context, class string, plaintext []byte, aad
 
 // Open decrypts s, which must have been sealed with the same aad.
 func (e *Envelope) Open(ctx context.Context, s Sealed, aad AAD) ([]byte, error) {
+	if !aad.complete() {
+		return nil, ErrIncompleteAAD
+	}
 	dk, err := e.keys.ByID(ctx, s.KeyID)
 	if err != nil {
 		return nil, err

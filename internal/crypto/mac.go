@@ -19,6 +19,11 @@ type MAC struct {
 }
 
 func macWith(dk DataKey, msg []byte) (MAC, error) {
+	// Never derive a MAC key from a short or empty key: the result would be
+	// computable without any secret.
+	if len(dk.Key) != 32 {
+		return MAC{}, fmt.Errorf("crypto: data key %s must be 32 bytes, got %d", dk.ID, len(dk.Key))
+	}
 	k, err := hkdf.Key(sha256.New, dk.Key, nil, macInfo, 32)
 	if err != nil {
 		return MAC{}, fmt.Errorf("crypto: derive mac key: %w", err)

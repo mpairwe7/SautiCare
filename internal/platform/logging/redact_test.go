@@ -55,3 +55,21 @@ func TestRedactionKeepsNonNumericAttrs(t *testing.T) {
 		t.Fatalf("handler damaged ordinary attributes:\n%s", out)
 	}
 }
+
+// CodeRabbit PR #2: an identifier logged as an integral float, or an email
+// address, must not reach the output.
+func TestRedactionCoversFloatsAndEmail(t *testing.T) {
+	var buf bytes.Buffer
+	log := newLogger(&buf)
+	log.Info("x", "msisdn_as_float", 256772123456.0, "ratio", 0.25, "email", "alice@example.org")
+	log.Info("inline", "detail", "contact alice@example.org now")
+	out := buf.String()
+	for _, leak := range []string{"256772123456", "2.56772123456e+11", "alice@example.org"} {
+		if strings.Contains(out, leak) {
+			t.Fatalf("leaked %q:\n%s", leak, out)
+		}
+	}
+	if !strings.Contains(out, `"ratio":0.25`) {
+		t.Fatalf("ordinary float damaged:\n%s", out)
+	}
+}

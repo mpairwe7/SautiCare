@@ -91,3 +91,19 @@ func TestPersonNameMasks(t *testing.T) {
 		t.Fatalf("Reveal() = %q", n.Reveal())
 	}
 }
+
+// CodeRabbit PR #2: the same Ugandan caller must normalise to one value, or
+// redial lookup hashes differ; country code 0 does not exist.
+func TestParsePhoneNormalisesTrunkPrefixAndRejectsCountryCodeZero(t *testing.T) {
+	for _, in := range []string{"+2560772123456", "+256 0772 123 456", "2560772123456"} {
+		p, err := ParsePhone(in)
+		if err != nil || p.E164() != "+256772123456" {
+			t.Errorf("ParsePhone(%q) = %q, %v; want +256772123456", in, p.E164(), err)
+		}
+	}
+	for _, bad := range []string{"+012345678", "+0772123456"} {
+		if _, err := ParsePhone(bad); err == nil {
+			t.Errorf("ParsePhone(%q) accepted country code 0", bad)
+		}
+	}
+}
