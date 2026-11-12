@@ -26,9 +26,8 @@ import (
 	"sautihealth.com/sauti/db"
 	"sautihealth.com/sauti/internal/audit"
 	"sautihealth.com/sauti/internal/config"
-	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/incident"
-	"sautihealth.com/sauti/internal/intake"
+	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/platform/africastalking"
 	"sautihealth.com/sauti/internal/platform/devkeys"
 	"sautihealth.com/sauti/internal/platform/pg"
@@ -37,6 +36,7 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg/migrate"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/sim"
+	"sautihealth.com/sauti/internal/platform/wiring"
 )
 
 // Options configures a demo run.
@@ -48,6 +48,7 @@ type Options struct {
 	// every other user of the same roles on that server.
 	RolePassword string
 	ConfigDir    string    // path to config/
+	RulesRoot    string    // directory holding triage-rules/ (default: the parent of ConfigDir)
 	Out          io.Writer // step-by-step narration
 	Keep         bool      // keep the demo databases afterwards
 }
@@ -204,8 +205,37 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	}
 
 	ops := opstore.New(intakePool)
-	sealer := crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)}
-	incidents := incident.NewService(ops, sealer, rand.Reader)
+	gazRaw, err := os.ReadFile(filepath.Join(o.ConfigDir, "gated", "gazetteer.yaml"))
+	if err != nil {
+		return rep, err
+	}
+	gaz, err := location.ParseFile(gazRaw)
+	if err != nil {
+		return rep, err
+	}
+	ownerConn, err := pgx.Connect(ctx, r.dsn(pg.StoreOperational, pg.StoreOperational.Owner()))
+	if err != nil {
+		return rep, err
+	}
+	_, err = opstore.LoadGazetteer(ctx, ownerConn, gaz, gazRaw)
+	_ = ownerConn.Close(ctx)
+	if err != nil {
+		return rep, err
+	}
+	root := o.RulesRoot
+	if root == "" {
+		root = filepath.Dir(filepath.Clean(o.ConfigDir))
+	}
+	doc, sig, err := wiring.ReadTriageBundle(root, cfg.Triage.RulesFile)
+	if err != nil {
+		return rep, err
+	}
+	built, err := wiring.BuildIntake(ctx, wiring.IntakeOptions{Config: cfg, Store: ops, Keys: keys, Rand: rand.Reader,
+		TriageDoc: doc, TriageSig: sig})
+	if err != nil {
+		return rep, err
+	}
+	incidents := built.Incidents
 	ledger := auditstore.New(appenderPool)
 	reader := auditstore.New(readerPool)
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -216,22 +246,25 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	token := hex.EncodeToString(tok)
 	handler, err := africastalking.NewUSSDHandler(africastalking.USSDConfig{
 		Provider: "at", PathToken: token, ServiceCodes: []string{"*384*1#"}, ErrorText: cfg.Screens.InternalError["en"],
-	}, intake.NewService(incidents, ops, sealer, cfg.Screens, "en"), quiet)
+	}, built.Service, quiet)
 	if err != nil {
 		return rep, err
 	}
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	// Step 1: dial.
+	// Step 1: dial and complete Tool 1 (placeholder wording): English, danger
+	// yes, trauma, 18-59, no, Test Ward 1, its second landmark, this number.
 	session := sim.NewUSSD(srv.URL, token, "*384*1#", "64110").Dial(demoPhone)
-	first, err := session.Send("")
-	if err != nil {
-		return rep, fmt.Errorf("step 1: dial: %w", err)
+	var last sim.Screen
+	for _, in := range []string{"", "1", "1", "1", "3", "2", "1", "2", "1"} {
+		if last, err = session.Send(in); err != nil {
+			return rep, fmt.Errorf("step 1: dial: %w", err)
+		}
 	}
-	ref, err := incident.ParseReference(spokenRef.FindString(first.Text))
-	if err != nil {
-		return rep, fmt.Errorf("step 1: reply %q carries no valid reference: %w", first.Text, err)
+	ref, err := incident.ParseReference(spokenRef.FindString(last.Text))
+	if err != nil || !last.End {
+		return rep, fmt.Errorf("step 1: closing screen %q carries no valid reference: %w", last.Text, err)
 	}
 	ids, err := opstore.New(roPool).ListIncidentIDs(ctx)
 	if err != nil || len(ids) != 1 {
@@ -243,21 +276,19 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 		return rep, fmt.Errorf("step 1: projection %+v: %w", proj, err)
 	}
 	rep.Reference, rep.T1 = ref.Spoken(), *proj.T[1]
-	r.say("✓ step 1: caller dialled; incident %s opened, T1 = %s (database clock)", ref.Spoken(), rep.T1.Format(time.RFC3339Nano))
+	if proj.Severity != incident.SevRed || proj.T[2] == nil || proj.LastScreen != 8 {
+		return rep, fmt.Errorf("step 1: after Tool 1 the projection is %+v, want red, T2 set, 8 screens", proj)
+	}
+	r.say("✓ step 1: caller completed Tool 1 on USSD; incident %s, T1 = %s, classified %s by %s, T2 after screen 7",
+		ref.Spoken(), rep.T1.Format(time.RFC3339Nano), proj.Severity, proj.LogicVersion)
 
-	// Step 2: fixture events through the single write path.
-	logic := "tool1-pending+" + cfg.Fingerprint
+	// Step 2: dispatch-side fixture events (M2-M3 arrive later) through the
+	// single write path.
 	fixture := []struct {
 		typ          incident.EventType
 		payload      string
 		logicVersion string
 	}{
-		{incident.EvScreenAnswered, `{"screen":2,"field":"danger","value":"yes"}`, ""},
-		{incident.EvScreenAnswered, `{"screen":3,"field":"category","value":"trauma"}`, ""},
-		{incident.EvClassified, `{"severity":"red","category":"trauma"}`, logic},
-		{incident.EvScreenAnswered, `{"screen":7,"field":"landmark","value":"w01_l2"}`, ""},
-		{incident.EvDispatchReady, `{"trigger_screen":7,"zone":{"col":901,"row":70},"location_quality":"landmark"}`, ""},
-		{incident.EvScreenAnswered, `{"screen":8,"field":"callback","value":"same_number"}`, ""},
 		{incident.EvAlertIssued, `{"role":"vht","ring":1}`, ""},
 		{incident.EvAlertIssued, `{"role":"transporter","ring":1}`, ""},
 		{incident.EvAccepted, `{"role":"vht"}`, ""},
@@ -415,7 +446,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 		return rep, err
 	}
 	ids2, _ := opstore.New(roPool).ListIncidentIDs(ctx)
-	rep.RetryIdentical = again == first && len(after) == rep.Events && len(ids2) == 1 && ids2[0] == id
+	rep.RetryIdentical = again == last && len(after) == rep.Events && len(ids2) == 1 && ids2[0] == id
 	if !rep.RetryIdentical {
 		return rep, errors.New("step 8: retried callback changed state or reply")
 	}

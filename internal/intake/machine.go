@@ -3,6 +3,7 @@ package intake
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -383,6 +384,37 @@ func (m *Machine) CheckScreens(limits map[string]int) error {
 	}
 	if len(problems) > 0 {
 		return errors.New("intake: screens: " + strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// CheckTriageDomain fails unless the catalogue's option values for screens
+// 2-5 are exactly the input values the triage bundle declares (values is
+// triage.Engine.Values). intake-gw refuses to start on a mismatch.
+func CheckTriageDomain(cat config.Tool1, values func(input string) []string) error {
+	var problems []string
+	for _, x := range []struct {
+		input string
+		opts  []config.Option
+	}{
+		{"danger", cat.Danger.Options}, {"category", cat.Category.Options},
+		{"age_band", cat.AgeBand.Options}, {"specific_danger", cat.SpecificDanger.Options},
+	} {
+		have := map[string]bool{}
+		for _, o := range x.opts {
+			have[o.Value] = true
+			if !slices.Contains(values(x.input), o.Value) {
+				problems = append(problems, fmt.Sprintf("%s option %q is not in the triage bundle", x.input, o.Value))
+			}
+		}
+		for _, v := range values(x.input) {
+			if !have[v] {
+				problems = append(problems, fmt.Sprintf("triage %s value %q has no catalogue option", x.input, v))
+			}
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New("intake: catalogue and triage bundle disagree: " + strings.Join(problems, "; "))
 	}
 	return nil
 }

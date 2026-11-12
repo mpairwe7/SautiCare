@@ -62,6 +62,10 @@ type Intake struct {
 	DispatchTriggerScreen  int            `yaml:"dispatch_trigger_screen"`
 	DefaultScreenCharLimit int            `yaml:"default_screen_char_limit"`
 	ScreenCharLimits       map[string]int `yaml:"screen_char_limits"`
+	// FuzzyMatchMinSimilarity is the pg_trgm similarity a free-text landmark
+	// needs to count as a match; below it the incident is located at ward
+	// level and flagged for a location call-back (Build Prompt §12).
+	FuzzyMatchMinSimilarity float64 `yaml:"fuzzy_match_min_similarity"`
 }
 
 // Dispatch holds Build Prompt §10.4 parameters.
@@ -94,19 +98,18 @@ type Flags struct {
 	AppAPI       bool `yaml:"app_api"`
 }
 
-// Screens is the caller-facing copy catalogue, keyed by language ("en", "lg").
+// Screens holds adapter-level caller copy, keyed by language ("en", "lg").
+// InternalError is the END screen given when a request cannot be processed:
+// it names the free voice line (fail safe to a human, rule 3.14).
 type Screens struct {
-	StartedTestMode map[string]string `yaml:"started_test_mode"`
-	InternalError   map[string]string `yaml:"internal_error"`
+	InternalError map[string]string `yaml:"internal_error"`
 }
 
 // All returns every catalogue entry as name/lang/text triples.
 func (s Screens) All() [][3]string {
 	var out [][3]string
-	for name, m := range map[string]map[string]string{"started_test_mode": s.StartedTestMode, "internal_error": s.InternalError} {
-		for lang, text := range m {
-			out = append(out, [3]string{name, lang, text})
-		}
+	for lang, text := range s.InternalError {
+		out = append(out, [3]string{"internal_error", lang, text})
 	}
 	return out
 }
@@ -128,10 +131,10 @@ func (b Bundle) ProductionReady() error {
 	if b.ProtocolStatus != "approved" {
 		problems = append(problems, "protocol_status is "+b.ProtocolStatus)
 	}
-	// Intake falls back to English; without it a caller would get an empty
-	// final screen and no incident reference.
-	if strings.TrimSpace(b.Screens.StartedTestMode["en"]) == "" {
-		problems = append(problems, "screen started_test_mode/en is missing")
+	// The adapter falls back to English; without it a failed request would
+	// get an empty END screen and no voice line.
+	if strings.TrimSpace(b.Screens.InternalError["en"]) == "" {
+		problems = append(problems, "screen internal_error/en is missing")
 	}
 	if b.Tool1.Status != "approved" {
 		problems = append(problems, "tool1 status is "+b.Tool1.Status)

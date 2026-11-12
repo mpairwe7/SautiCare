@@ -58,10 +58,10 @@ func minimalFS() fstest.MapFS {
 		"study.yaml":          {Data: []byte("study_window_active: false\n")},
 		"platform.yaml":       {Data: []byte("checkpoint_interval: 5m\noutbox_batch_size: 10\nrelay_poll_interval: 1s\n")},
 		"gated/protocol.yaml": {Data: []byte("protocol_status: approved\nprotocol_version: \"2.0\"\n")},
-		"gated/intake.yaml":   {Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\n")},
+		"gated/intake.yaml":   {Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\n")},
 		"gated/dispatch.yaml": {Data: []byte("mode: protocol\nring_step_metres: 500\nring_interval: 60s\nmax_radius_metres: 2500\ncascade_timeout: 90s\nred_parallel_count: 3\nforward_ack_timeout: 60s\nvoice_fallback_after: 20s\nranking_order: [zone_distance]\nranking_version: v1\n")},
 		"gated/flags.yaml":    {Data: []byte("android_app: false\ncaller_link: false\nspeech_assist: false\napp_api: false\n")},
-		"gated/screens.yaml":  {Data: []byte("started_test_mode: {en: \"Incident {ref}\", lg: \"Ekikolwa {ref}\"}\ninternal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")},
+		"gated/screens.yaml":  {Data: []byte("internal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")},
 		"gated/triage.yaml":   {Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {clinical-1: \"AAAA\"}\n")},
 		"gated/tool1.yaml":    {Data: []byte(approvedTool1)},
 	}
@@ -122,24 +122,40 @@ func TestProductionReadyFailsWhilePending(t *testing.T) {
 		t.Fatalf("approved, fully translated bundle not ready: %v", err)
 	}
 	fs := minimalFS()
-	fs["gated/screens.yaml"] = &fstest.MapFile{Data: []byte("started_test_mode: {en: \"Incident {ref}\", lg: \"PENDING-TRANSLATION\"}\ninternal_error: {en: \"Call 0800-XXX-XXX\", lg: \"x\"}\n")}
+	fs["gated/screens.yaml"] = &fstest.MapFile{Data: []byte("internal_error: {en: \"Call 0800-XXX-XXX\", lg: \"PENDING-TRANSLATION\"}\n")}
 	pending, _ := Load(fs)
 	if err := pending.ProductionReady(); !errors.Is(err, ErrNotProductionReady) {
 		t.Fatalf("placeholder copy accepted for production: %v", err)
 	}
 }
 
-// CodeRabbit PR #2: intake falls back to the English start screen; without
-// it the caller would get an empty END screen and no incident reference.
-func TestProductionReadyRequiresEnglishStartScreen(t *testing.T) {
+// The adapter falls back to the English error screen; without it a caller
+// whose request fails would get an empty END screen and no voice line.
+func TestProductionReadyRequiresEnglishErrorScreen(t *testing.T) {
 	fs := minimalFS()
-	fs["gated/screens.yaml"] = &fstest.MapFile{Data: []byte("started_test_mode: {lg: \"Ekikolwa {ref}\"}\ninternal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")}
+	fs["gated/screens.yaml"] = &fstest.MapFile{Data: []byte("internal_error: {lg: \"Kuba 0800 100 200\"}\n")}
 	b, err := Load(fs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b.ProductionReady(); !errors.Is(err, ErrNotProductionReady) || !strings.Contains(err.Error(), "started_test_mode/en") {
-		t.Fatalf("ProductionReady without an English start screen = %v", err)
+	if err := b.ProductionReady(); !errors.Is(err, ErrNotProductionReady) || !strings.Contains(err.Error(), "internal_error/en") {
+		t.Fatalf("ProductionReady without an English error screen = %v", err)
+	}
+}
+
+// Free-text landmarks are matched only above a similarity threshold strictly
+// between 0 and 1 (Build Prompt §12: low confidence sets the call-back flag).
+func TestLoadValidatesFuzzyThreshold(t *testing.T) {
+	for _, v := range []string{"0", "1", "-0.2", "1.5"} {
+		fs := minimalFS()
+		fs["gated/intake.yaml"] = &fstest.MapFile{Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: " + v + "\n")}
+		if _, err := Load(fs); err == nil {
+			t.Errorf("threshold %s accepted", v)
+		}
+	}
+	b, err := Load(minimalFS())
+	if err != nil || b.Intake.FuzzyMatchMinSimilarity != 0.45 {
+		t.Fatalf("threshold = %v, %v", b.Intake.FuzzyMatchMinSimilarity, err)
 	}
 }
 

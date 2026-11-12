@@ -306,3 +306,17 @@ func TestNewMachineRejectsTooManyWards(t *testing.T) {
 		t.Fatal("9 wards plus Somewhere else accepted on a single-digit menu")
 	}
 }
+
+// The catalogue's option values must be exactly the signed triage bundle's
+// input domain, so no answer can fall outside what the rules classify.
+func TestCatalogueMatchesTriageDomain(t *testing.T) {
+	e := repoTriage(t)
+	cat := repoBundle(t).Tool1
+	if err := CheckTriageDomain(cat, e.Values); err != nil {
+		t.Fatalf("repository catalogue vs bundle: %v", err)
+	}
+	cat.Category.Options = append(cat.Category.Options, config.Option{Value: "snake_bite", Label: config.Text{"en": "x", "lg": "x"}})
+	if err := CheckTriageDomain(cat, e.Values); err == nil || !strings.Contains(err.Error(), "snake_bite") {
+		t.Fatalf("extra category accepted: %v", err)
+	}
+}
