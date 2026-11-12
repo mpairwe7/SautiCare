@@ -300,7 +300,7 @@ These are inputs that no task's happy-path tests would exercise. Each is pinned 
   - `TestBootstrapIsolatesStores`: `op_intake` cannot connect to the audit database; the error has SQLSTATE `42501`.
   - `TestBootstrapRefusesProduction`.
 - [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/...`. Expected: FAIL.
-- [ ] **Step 3:** Implement. Each store gets a one-line placeholder migration `0000_init.sql` (`SELECT 1;`). It is replaced in Tasks 7–9, before any commit that includes those tasks.
+- [ ] **Step 3:** Implement. Each store's first migration is `0000_schema.sql`, which creates its schema and baseline hardening. **As built:** no placeholder migration was ever committed. A migration file, once committed, is never replaced or edited: later tasks add new files (ADR-0010), because a changed file stops every database that already applied it with `ErrChecksumMismatch`.
 - [ ] **Step 4:** Run the tests. Expected: PASS. Then commit: `feat(pg): checksummed forward-only migrator, dev bootstrap, test harness`.
 
 ### Task 7: Operational store: schema, single write path, roles, opstore adapter
@@ -335,7 +335,7 @@ These are inputs that no task's happy-path tests would exercise. Each is pinned 
     - `op.config_versions`, `op.key_periods`.
   - **Partitions:** `op.ensure_event_partitions(months_ahead int)` creates monthly partitions plus `op.incident_events_default`. Migration 0001 calls it with 3. `op.default_partition_rows() RETURNS bigint`.
   - **`op.open_incident(...)`:** the parameters mirror `OpenParams` plus `p_idem_key`. It returns `(incident_id, reference, event_id, t1, created)`. On an existing `(channel, provider_session_id)`, including after catching `unique_violation` from a concurrent insert, it returns the existing incident with `created=false`.
-  - **`op.append_incident_event(...)`:** follows the algorithm in spec §6.2. It locks the incident with `SELECT … FOR UPDATE` and raises `SA404`, `SA409` or `SA422` as appropriate. It writes the audit outbox payload, which has exactly the keys `entry_id` (equal to the outbox `id`), `event_id`, `occurred_at`, `event_type`, `incident_id`, `staff_id`, `logic_version` and `payload_sha256` (hex of `sha256(convert_to(payload::text,'UTF8'))`). `op.open_incident` writes the same payload for `session.started`.
+  - **`op.append_incident_event(...)`:** follows the algorithm in spec §6.2. It locks the incident with `SELECT … FOR UPDATE` and raises `SA404`, `SA409` or `SA422` as appropriate. It writes the audit outbox payload, which has exactly the keys `entry_id` (equal to the outbox `id`), `event_id`, `occurred_at`, `event_type`, `incident_id`, `staff_id`, `logic_version` and `payload_sha256` (hex of `sha256(payload_salt || convert_to(payload::text,'UTF8'))`, where `payload_salt` is the 16-byte random value stored with the event in `op.incident_events` and never written to the ledger; as built, migration `0005_salted_payload_hash.sql` replaced the unsalted hash of `0002_write_path.sql`, review finding I3). `op.open_incident` writes the same payload for `session.started`.
   - **`op.claim_outbox(p_topic text, p_limit int)`:** returns `SETOF op.outbox`, locked `FOR UPDATE SKIP LOCKED`, ordered by `id`. `op.mark_outbox_delivered(p_ids uuid[]) RETURNS int`.
   - **Grants:**
     - `op_intake`: EXECUTE on `open_incident` and `append_incident_event`; SELECT on `incidents`, `sessions` and `incident_events`; SELECT and INSERT on `ussd_steps`.

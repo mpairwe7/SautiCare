@@ -26,8 +26,8 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `incident.flagged` | — | `flag` | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
 | `incident.escalated` | — | exactly `reason` (a code), optional `role` | sets `escalated`; dispatch (`op.dispatch_escalate`, once per reason): `no_eligible_responder`, `red_no_acceptance`, `forwarded_to_facility`, `no_facility_acknowledged`, `dispatch_suspended`, `dispatch_error` (see [no-eligible-responders](../runbooks/no-eligible-responders.md)); intake: `dispatch_suspended` at the closing screen while dispatch is suspended (ADR-0026), `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch`; deduplication: `merged_call_escalated` (an escalated call merged into a survivor that was not) |
 | `incident.merged` | — | `into` (incident UUID: existing, open, not itself) | on the later call, at T2 (ADR-0022); a merged call then accepts only its own caller's answers and its unmerge |
-| `incident.merge_absorbed` | T1 (earliest) | exactly `from` (incident UUID), `t1` (RFC 3339, ≤ µs) | on the survivor; T1 = earliest of its own call and every absorbed call |
-| `incident.severity_raised` | — | exactly `severity` (`red`/`yellow`/`green`), `from` (the merged call's incident UUID) | on the survivor, in the merge's transaction, when the merged call is more urgent; the severity must rise strictly; sets severity, not `logic_version` |
+| `incident.merge_absorbed` | T1 (earliest) | exactly `from` (incident UUID), `t1` (RFC 3339, ≤ µs) | on the survivor, after the call's own `incident.merged` into it; `t1` must equal the call's stored T1 (the database checks the call's row); T1 = earliest of its own call and every absorbed call |
+| `incident.severity_raised` | — | exactly `severity` (`red`/`yellow`/`green`), `from` (the merged call's incident UUID) | on the survivor, in the merge's transaction, when the merged call is more urgent; `from` must be in the survivor's `absorbed` set and `severity` must be that call's own (the database checks the call's row); the severity must rise strictly; sets severity, not `logic_version` |
 | `incident.split` | T1 (recomputed) | exactly `from` | staff only, from the console role only (`op.split_incident`; the database refuses every other role); the call leaves the survivor's `absorbed` set |
 | `incident.unmerged` | — | exactly `from` (the survivor) | staff, console role only; `merged` → `dispatching`; needs T2 |
 | `incident.closed` | — | `reason` | terminal |
@@ -42,7 +42,7 @@ Intake uses two kinds of key (see [tool1-flow.md](tool1-flow.md)):
 
 Dispatch keys its events by the fact: `alert:<responder>`, `accept:<alert>`, `decline:<alert>`, `no_response:<alert>`, `stood_down:<alert>`, `forward:<facility>`, `forward_ack:<facility>`, `forward_timeout:<facility>`, `notify:<kind>` and `escalate:<reason>`.
 
-A merge at T2 (ADR-0022) keys its events by the merged call: `intake:<call>:dispatch_ready:merge` (`incident.merged`), and on the survivor `dedup:absorb:<call>`, `dedup:raise:<call>` (`incident.severity_raised`) and `dedup:escalate:<call>`. A coordinator's split uses `split:<survivor>:<call>:split` and `…:unmerge`.
+A merge at T2 (ADR-0022) keys its events by the merged call: `intake:<call>:dispatch_ready:merge` (`incident.merged`), and on the survivor `dedup:absorb:<call>`, `dedup:raise:<call>` (`incident.severity_raised`) and `dedup:escalate:<call>`. A coordinator's split is keyed by the merge it undoes (the call's latest `incident.merged` event): `split:<survivor>:<call>:<merge event>:split` and `…:unmerge`. A retried split is a no-op; a call merged into the same survivor again and split again gets new keys.
 
 **Staff actions.** An event with actor `staff`, `incident.split` and `incident.unmerged` are accepted only from a session of the console role (`op_console`); intake, IVR and every other role get `SA422`.
 

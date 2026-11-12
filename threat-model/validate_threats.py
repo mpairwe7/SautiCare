@@ -3,18 +3,18 @@
 
 Validates threat-model/threats.yaml: every threat has an id, title, a STRIDE
 or LINDDUN category, an asset, mitigations and `verified_by` pointers that
-resolve (or are `planned:<milestone>`), and every one of Build Prompt §3's
-fourteen hard constraints is covered by at least one threat.
+resolve (or are `planned:<milestone>`) and the hard constraints it protects,
+and every one of Build Prompt §3's fourteen hard constraints is covered by at
+least one threat. Duplicate mapping keys are rejected.
 Usage: python3 threat-model/validate_threats.py [--root .]
 """
 import argparse
 import sys
 from pathlib import Path
 
-import yaml
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from tools import strict_yaml  # noqa: E402
 from tools.freshness.pointers import is_planned, resolve  # noqa: E402
 
 STRIDE = {"Spoofing", "Tampering", "Repudiation", "Information disclosure", "Denial of service",
@@ -26,12 +26,15 @@ HARD_CONSTRAINTS = range(1, 15)
 
 def check(root: Path) -> list[str]:
     root = Path(root)
-    data = yaml.safe_load((root / "threat-model" / "threats.yaml").read_text(encoding="utf-8")) or {}
+    try:
+        data = strict_yaml.load(root / "threat-model" / "threats.yaml") or {}
+    except strict_yaml.YAMLError as e:
+        return [strict_yaml.describe(e)]
     errors: list[str] = []
     covered: set[int] = set()
     for t in data.get("threats") or []:
         tid = t.get("id", "<no id>")
-        for f in ("id", "title", "asset", "mitigations", "verified_by"):
+        for f in ("id", "title", "asset", "hard_constraints", "mitigations", "verified_by"):
             if not t.get(f):
                 errors.append(f"{tid}: missing {f}")
         stride, linddun = t.get("stride"), t.get("linddun")
@@ -54,7 +57,10 @@ def main() -> int:
     errors = check(root)
     for e in errors:
         print("THREAT-MODEL:", e)
-    data = yaml.safe_load((root / "threat-model" / "threats.yaml").read_text(encoding="utf-8")) or {}
+    try:
+        data = strict_yaml.load(root / "threat-model" / "threats.yaml") or {}
+    except strict_yaml.YAMLError:
+        data = {}
     ptrs = [p for t in data.get("threats") or [] for p in t.get("verified_by") or []]
     planned = sum(1 for p in ptrs if is_planned(p))
     print(f"validate_threats: {len(data.get('threats') or [])} threats, {len(ptrs) - planned} verified pointers, "
