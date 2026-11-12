@@ -26,7 +26,7 @@ threats:
     hard_constraints: [2, 14]
     mitigations:
       - The incident exists from the first screen; replies are idempotent per session and input
-      - Internal errors still answer the caller and give the free voice line
+      - Internal errors still answer the caller and give the free voice line; a voice call Sauti cannot serve goes to a recorded message and the on-call coordinators (dialplan fallback), never a bare hang-up
       - An answer and its consequences (classification, rule-error flag and escalation, out-of-area closure) are one transaction; a retried callback or a redial on either channel records a missing classification or T2 before anything else; the closing "help is coming" screen is never shown without T2
       - Second USSD route (UCC code) and second SIP carrier (M7)
     verified_by:
@@ -35,6 +35,11 @@ threats:
       - internal/intake/atomicity_test.go::TestEveryWriteFailureConverges
       - internal/intake/atomicity_test.go::TestRedialAfterLostT2Dispatches
       - internal/intake/atomicity_test.go::TestCompleteWithoutT2IsAnError
+      - internal/intake/ivr_atomicity_test.go::TestIVRStartRecordsALostT2
+      - internal/platform/ivr/dialplan_test.go::TestDialplanFallsBackToACoordinator
+      - internal/platform/ivr/controller_test.go::TestControllerIntakeErrorHandsOverToACoordinator
+      - internal/platform/ivr/controller_test.go::TestControllerSlowCallDoesNotBlockOthers
+      - cmd/ivr-controller/main_test.go::TestReadinessIncludesTheARIEventStream
       - internal/platform/pg/opstore/batch_integration_test.go::TestAppendBatchIsAllOrNothing
       - "planned:M7 second-route failover scenario"
 
@@ -327,8 +332,12 @@ threats:
       - The ARI client has no record, snoop, bridge or external-media call; the dialplan has no Monitor/Record
       - ARI on loopback only, basic auth with an OpenBao-held password, egress allowlist to the Asterisk host
       - IDs from events restricted to Asterisk's shape before use in a path; event decoding fuzzed
+      - A key counts only for the prompt the caller has heard start (playback tracked; the old prompt stopped on the first key)
     verified_by:
       - internal/platform/ari/client_test.go::TestNoRecordingEndpointsUsed
+      - internal/platform/ivr/dialplan_test.go::TestDialplanFallsBackToACoordinator
+      - internal/platform/ivr/controller_test.go::TestControllerKeyStopsThePromptAndADoublePressAnswersOnce
+      - internal/platform/ivr/asterisk_test.go::TestControllerOverAsteriskQueue
       - internal/platform/ari/client_test.go::TestClientRejectsWrongCredentials
       - internal/platform/ari/client_test.go::TestClientAnswersPlaysAndHangsUp
       - tests/e2e/m1_ivr_test.go::TestScenario5FinishOnIVR

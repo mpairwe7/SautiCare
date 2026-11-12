@@ -97,7 +97,7 @@ Three properties follow from this design:
 | Idempotency at every boundary | `op.event_keys`, `op.ussd_steps`, `audit.entries.entry_id` |
 | Optimistic concurrency | `expected_version` in `op.append_incident_event` |
 | Single active relay with automatic failover | `internal/platform/pg/leader.go` |
-| Fail safe to a human | intake always answers with the voice line; escalation port (M2) |
+| Fail safe to a human | USSD always answers with the voice line; a voice call Sauti cannot serve goes to the on-call coordinators (dialplan fallback); escalation port (M2) |
 | Dispatch-only readiness | `internal/platform/health/health.go` |
 | Defence in depth for PII | `internal/pii/pii.go` masking types, `internal/platform/logging/redact.go`, typed audit columns |
 | Egress allowlist | `internal/platform/egress/egress.go` |
