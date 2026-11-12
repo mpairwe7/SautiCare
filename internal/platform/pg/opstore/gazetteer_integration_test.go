@@ -26,6 +26,12 @@ landmarks:
   - {id: w01_l2, ward: w01, name: {en: "Clinic", lg: "Ddwaliro"}, point: {lat: 0.3790, lon: 32.5612}, menu: 2}
   - {id: w01_x, ward: w01, name: {en: "Old Taxi Stage", lg: "Siteegi"}, point: {lat: 0.3700, lon: 32.5500}}
   - {id: w02_l1, ward: w02, name: {en: "Mosque", lg: "Muzikiti"}, point: {lat: 0.3960, lon: 32.5660}, menu: 1}
+stages:
+  - {id: w01_stage, ward: w01, name: {en: "Stage 1", lg: "Siteegi 1"}, point: {lat: 0.3805, lon: 32.5595}}
+  - {id: w02_stage, ward: w02, name: {en: "Stage 2", lg: "Siteegi 2"}, point: {lat: 0.3955, lon: 32.5655}}
+facilities:
+  - {id: hc_1, name: {en: "Health Centre 1", lg: "Health Centre 1"}, point: {lat: 0.3790, lon: 32.5610}, forwarding_enabled: true, phone: "+256000000001"}
+  - {id: hc_2, name: {en: "Clinic 2", lg: "Clinic 2"}, point: {lat: 0.3700, lon: 32.5700}}
 `
 
 func loadGaz(t *testing.T, c *pgtest.TestCluster, doc string) (location.File, bool, error) {
@@ -122,6 +128,8 @@ func TestGazetteerIsFrozen(t *testing.T) {
 		"DELETE FROM op.landmark_aliases WHERE landmark_id = 'w01_l1'",
 		"UPDATE op.wards SET centre_col = 1",
 		"DELETE FROM op.gazetteer_versions",
+		"UPDATE op.stages SET zone_col = 1",
+		"DELETE FROM op.facilities",
 	} {
 		if _, err := owner.Exec(context.Background(), q); err == nil || !strings.Contains(err.Error(), "frozen") {
 			t.Errorf("%s: err = %v, want frozen", q, err)

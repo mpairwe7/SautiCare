@@ -32,6 +32,20 @@ type OpEventKey struct {
 	RecordedAt pgtype.Timestamptz
 }
 
+type OpFacility struct {
+	Version           string
+	ID                string
+	ListOrder         int32
+	NameEn            string
+	NameLg            string
+	Lat               float64
+	Lon               float64
+	ZoneCol           int32
+	ZoneRow           int32
+	Phone             string
+	ForwardingEnabled bool
+}
+
 type OpGazetteerVersion struct {
 	Version  string
 	Sha256   string
@@ -185,6 +199,19 @@ type OpSession struct {
 	PhoneMacKeyID     *string
 	NetworkCode       *string
 	StartedAt         pgtype.Timestamptz
+}
+
+type OpStage struct {
+	Version   string
+	ID        string
+	ListOrder int32
+	WardID    string
+	NameEn    string
+	NameLg    string
+	Lat       float64
+	Lon       float64
+	ZoneCol   int32
+	ZoneRow   int32
 }
 
 type OpUssdStep struct {

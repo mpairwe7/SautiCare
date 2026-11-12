@@ -67,6 +67,16 @@ func LoadGazetteer(ctx context.Context, owner Beginner, f location.File, raw []b
 				f.Version, l.ID, j+1, l.WardID, a)
 		}
 	}
+	for i, st := range f.Stages {
+		batch.Queue(`INSERT INTO op.stages (version, id, list_order, ward_id, name_en, name_lg, lat, lon, zone_col, zone_row)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			f.Version, st.ID, i+1, st.WardID, st.Name.EN, st.Name.LG, st.Point.Lat, st.Point.Lon, st.Cell.Col, st.Cell.Row)
+	}
+	for i, fc := range f.Facilities {
+		batch.Queue(`INSERT INTO op.facilities (version, id, list_order, name_en, name_lg, lat, lon, zone_col, zone_row, phone, forwarding_enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			f.Version, fc.ID, i+1, fc.Name.EN, fc.Name.LG, fc.Point.Lat, fc.Point.Lon, fc.Cell.Col, fc.Cell.Row, fc.Phone, fc.ForwardingEnabled)
+	}
 	batch.Queue("INSERT INTO op.config_versions (kind, version, fingerprint) VALUES ('gazetteer', $1, $2)", f.Version, "sha256:"+digest)
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 		return false, fmt.Errorf("opstore: load gazetteer %s: %w", f.Version, err)
@@ -124,6 +134,23 @@ func (s *Store) Snapshot(ctx context.Context) (location.File, error) {
 	for _, a := range aliases {
 		l := &f.Landmarks[lidx[a.LandmarkID]]
 		l.Aliases = append(l.Aliases, a.AliasNorm)
+	}
+	stages, err := s.q.ListStages(ctx, v)
+	if err != nil {
+		return location.File{}, err
+	}
+	for _, st := range stages {
+		f.Stages = append(f.Stages, location.Stage{ID: st.ID, WardID: st.WardID, Name: location.Names{EN: st.NameEn, LG: st.NameLg},
+			Point: location.Point{Lat: st.Lat, Lon: st.Lon}, Cell: location.Cell{Col: int(st.ZoneCol), Row: int(st.ZoneRow)}})
+	}
+	facilities, err := s.q.ListFacilities(ctx, v)
+	if err != nil {
+		return location.File{}, err
+	}
+	for _, fc := range facilities {
+		f.Facilities = append(f.Facilities, location.Facility{ID: fc.ID, Name: location.Names{EN: fc.NameEn, LG: fc.NameLg},
+			Point: location.Point{Lat: fc.Lat, Lon: fc.Lon}, Cell: location.Cell{Col: int(fc.ZoneCol), Row: int(fc.ZoneRow)},
+			Phone: fc.Phone, ForwardingEnabled: fc.ForwardingEnabled})
 	}
 	return f, nil
 }

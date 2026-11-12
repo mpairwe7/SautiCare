@@ -12,6 +12,8 @@
 //	sautictl triage keygen --out <seed file> --key-id dev-<name>                  (dev/CI only)
 //	sautictl triage sign --key <seed file> --key-id <id> --rules triage-rules/tool1.yaml
 //	sautictl incident split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff subject UUID>
+//	sautictl responder add --dsn <op_console DSN> --devkeys-dir D --role vht|transporter --name N --phone P --ward W --stage S   (dev/CI only)
+//	sautictl responder available --dsn <op_console DSN> --id <responder id> [--off]                                             (dev/CI only)
 package main
 
 import (
@@ -32,7 +34,9 @@ import (
 
 	"sautihealth.com/sauti/db"
 	"sautihealth.com/sauti/internal/audit"
+	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/location"
+	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/demo"
 	"sautihealth.com/sauti/internal/platform/devkeys"
 	"sautihealth.com/sauti/internal/platform/env"
@@ -41,6 +45,7 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg/bootstrap"
 	"sautihealth.com/sauti/internal/platform/pg/migrate"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
+	"sautihealth.com/sauti/internal/responder"
 	"sautihealth.com/sauti/internal/triage"
 )
 
@@ -58,6 +63,7 @@ var commands = map[string]command{
 	"checkpoint":         {"--dsn <audit_appender DSN> --devkeys-dir D --witness-dir W [--origin O]", cmdCheckpoint},
 	"demo":               {"m0 --admin-dsn <DSN> [--config-dir config] [--keep]", cmdDemo},
 	"gazetteer":          {"load --file <gazetteer.yaml> --dsn <operational owner DSN>", cmdGazetteer},
+	"responder":          {"add --dsn <op_console DSN> --devkeys-dir D --role R --name N --phone P --ward W --stage S | available --dsn <DSN> --id <id> [--off]", cmdResponder},
 	"incident":           {"split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff UUID>", cmdIncident},
 	"triage":             {"keygen --out <file> --key-id dev-<name> | sign --key <file> --key-id <id> --rules <bundle>", cmdTriage},
 }
@@ -514,4 +520,88 @@ func cmdIncident(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "split %s from %s (logged with staff %s)\n", ids[1], ids[0], ids[2])
 	return nil
+}
+
+// cmdResponder registers synthetic responders and switches availability for
+// development and tests. Real registration is the console's (M5), with the
+// production key provider.
+func cmdResponder(ctx context.Context, args []string, out io.Writer) error {
+	if senv, err := env.Environment(); err != nil {
+		return err
+	} else if senv != "dev" && senv != "test" {
+		return devkeys.ErrProductionForbidden
+	}
+	if len(args) == 0 || (args[0] != "add" && args[0] != "available") {
+		return errors.New("usage: sautictl responder add|available [flags]")
+	}
+	fs := flags("responder " + args[0])
+	dsn := fs.String("dsn", "", "operational store DSN as op_console")
+	switch args[0] {
+	case "add":
+		keysDir := fs.String("devkeys-dir", ".devkeys", "development key directory")
+		roleFlag := fs.String("role", "", "vht or transporter")
+		name := fs.String("name", "", "display name (synthetic in development)")
+		phoneFlag := fs.String("phone", "", "phone number")
+		ward := fs.String("ward", "", "gazetteer ward ID")
+		stage := fs.String("stage", "", "gazetteer stage ID")
+		insuredDays := fs.Int("insured-days", 365, "insurance cover from today, in days")
+		kit := fs.Bool("kit", true, "kit OK")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		role, err := responder.ParseRole(*roleFlag)
+		if err != nil {
+			return err
+		}
+		phone, err := pii.ParsePhone(*phoneFlag)
+		if err != nil {
+			return fmt.Errorf("--phone: %w", err)
+		}
+		if *dsn == "" || *name == "" || *ward == "" || *stage == "" {
+			return errors.New("--dsn, --name, --ward and --stage are required")
+		}
+		keys, err := devkeys.Open(*keysDir, "dev")
+		if err != nil {
+			return err
+		}
+		pool, err := pg.Connect(ctx, *dsn, "sautictl", 2)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		now := time.Now()
+		insured := now.AddDate(0, 0, *insuredDays)
+		reg, err := responder.NewService(opstore.New(pool), crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)}).Register(ctx,
+			responder.RegisterCmd{Role: role, Name: pii.NewPersonName(*name), Phone: phone, Ward: *ward, Stage: *stage,
+				CertifiedAt: &now, InsuredUntil: &insured, KitOK: *kit})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "registered %s responder %s\n", role, reg.ID)
+		return nil
+	default:
+		idFlag := fs.String("id", "", "responder ID")
+		off := fs.Bool("off", false, "switch off instead of on")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		id, err := uuid.Parse(*idFlag)
+		if err != nil {
+			return errors.New("--id must be a UUID")
+		}
+		if *dsn == "" {
+			return errors.New("--dsn is required")
+		}
+		pool, err := pg.Connect(ctx, *dsn, "sautictl", 2)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		p, err := opstore.New(pool).SetAvailability(ctx, id, !*off, "console")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "responder %s available until %s\n", id, p.Until.Format(time.RFC3339))
+		return nil
+	}
 }

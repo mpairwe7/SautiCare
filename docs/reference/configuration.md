@@ -18,7 +18,7 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `dedup_window` / `dedup_max_zone_distance` | `15m` / `1` | Build Prompt §10.3: same category, within one zone, 15 minutes (ADR-0022) |
 | `config/gated/tool1.yaml` | the eight screens' copy, options, danger questions, first-aid lines, messages | **placeholder** (`status: placeholder`, `PENDING-TOOL1`) | Tool 1 not received; [tool1-flow.md](tool1-flow.md); blocks production |
 | `config/gated/triage.yaml` | `rules_file`, `trusted_keys` | `triage-rules/tool1.yaml`; one `dev-` key | ADR-0019: who may sign clinical rules; a `dev-` key blocks production |
-| `config/gated/gazetteer.yaml` | wards, landmarks, aliases (versioned) | synthetic `placeholder-2026-11-12` | ADR-0020; separately versioned (not in the fingerprint); `sautictl gazetteer load` |
+| `config/gated/gazetteer.yaml` | wards, landmarks, aliases, stages, facilities (versioned) | synthetic `placeholder-2026-11-13` | ADR-0020; separately versioned (not in the fingerprint); `sautictl gazetteer load` |
 | `triage-rules/tool1.yaml` (+ `.sig`, `scenarios.yaml`) | signed decision table | `tool1-placeholder-0.1`, `protocol_status: pending` | ADR-0019; gated |
 | `config/gated/dispatch.yaml` | `mode` | `protocol` | ring 1 only until the decisions 1, 2, 6 amendment |
 | | `ring_step_metres` / `ring_interval` | `500` / `60s` | Build Prompt §10.4, decision 2 |

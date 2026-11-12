@@ -77,7 +77,7 @@ func TestBuildIntakeWiresTheRepositoryConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if in.Service == nil || in.Gazetteer.Version != "placeholder-2026-11-12" || !strings.HasPrefix(in.Triage.LogicVersion(), "tool1-placeholder-0.1+") {
+	if in.Service == nil || in.Gazetteer.Version != "placeholder-2026-11-13" || !strings.HasPrefix(in.Triage.LogicVersion(), "tool1-placeholder-0.1+") {
 		t.Fatalf("built = %+v", in)
 	}
 }

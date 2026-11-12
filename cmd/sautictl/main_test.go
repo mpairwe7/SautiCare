@@ -132,3 +132,26 @@ func TestIncidentSplitValidatesBeforeConnecting(t *testing.T) {
 		}
 	}
 }
+
+// Responder registration from the CLI is for development and tests only, and
+// validates its input before any connection.
+func TestResponderCommandsRefuseProductionAndValidate(t *testing.T) {
+	t.Setenv("SAUTI_ENV", "production")
+	var out, errOut bytes.Buffer
+	if code := Main([]string{"responder", "add", "--dsn", "postgres://invalid.invalid/x"}, &out, &errOut); code != 1 ||
+		strings.Contains(errOut.String(), "invalid.invalid") {
+		t.Fatalf("production: exit %d, %s", code, errOut.String())
+	}
+	t.Setenv("SAUTI_ENV", "dev")
+	for _, args := range [][]string{
+		{"responder", "add", "--dsn", "postgres://invalid.invalid/x", "--role", "doctor", "--name", "A", "--phone", "0772000123", "--ward", "w01", "--stage", "w01_stage_a"},
+		{"responder", "add", "--dsn", "postgres://invalid.invalid/x", "--role", "vht", "--name", "A", "--phone", "12", "--ward", "w01", "--stage", "w01_stage_a"},
+		{"responder", "available", "--dsn", "postgres://invalid.invalid/x", "--id", "not-a-uuid"},
+	} {
+		out.Reset()
+		errOut.Reset()
+		if code := Main(args, &out, &errOut); code != 1 || strings.Contains(errOut.String(), "invalid.invalid") {
+			t.Errorf("%v: exit %d, %s", args, code, errOut.String())
+		}
+	}
+}
