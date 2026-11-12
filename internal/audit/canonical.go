@@ -10,7 +10,8 @@ import (
 const entryDomain = "sauti-audit-entry/v1"
 
 func appendLP(dst, b []byte) []byte {
-	dst = binary.BigEndian.AppendUint32(dst, uint32(len(b)))
+	// Fields are at most a few hundred bytes (CHECKs in the ledger schema).
+	dst = binary.BigEndian.AppendUint32(dst, uint32(len(b))) //nolint:gosec // bounded length
 	return append(dst, b...)
 }
 
@@ -23,9 +24,10 @@ func Canonical(e Entry) []byte {
 	out := make([]byte, 0, 160)
 	out = append(out, entryDomain...)
 	out = append(out, 0)
-	out = appendLP(out, binary.BigEndian.AppendUint64(nil, uint64(e.Seq)))
+	// int8send in SQL is two's complement; the bit-identical conversion matches it.
+	out = appendLP(out, binary.BigEndian.AppendUint64(nil, uint64(e.Seq))) //nolint:gosec // two's-complement encoding
 	out = appendLP(out, e.EntryID[:])
-	out = appendLP(out, binary.BigEndian.AppendUint64(nil, uint64(e.OccurredAt.UnixMicro())))
+	out = appendLP(out, binary.BigEndian.AppendUint64(nil, uint64(e.OccurredAt.UnixMicro()))) //nolint:gosec // two's-complement encoding
 	out = appendLP(out, []byte(e.EventType))
 	var inc, staff []byte
 	if e.IncidentID != nil {

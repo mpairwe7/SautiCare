@@ -35,7 +35,7 @@ func TestPhoneMasksEverywhere(t *testing.T) {
 		"%v":      fmt.Sprintf("%v", p),
 		"%+v":     fmt.Sprintf("%+v", p),
 		"%#v":     fmt.Sprintf("%#v", p),
-		"%s":      fmt.Sprintf("%s", p),
+		"%s":      fmt.Sprintf("%s", p), //nolint:staticcheck // exercises the %s verb deliberately
 		"json":    string(js),
 		"slog":    logBuf.String(),
 		"pointer": fmt.Sprintf("%v", &p),

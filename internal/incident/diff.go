@@ -43,7 +43,7 @@ func Diff(a, b Projection) string {
 	if a.Escalated != b.Escalated {
 		add("escalated", a.Escalated, b.Escalated)
 	}
-	if !slices.Equal(a.Flags, b.Flags) && !(len(a.Flags) == 0 && len(b.Flags) == 0) {
+	if !slices.Equal(a.Flags, b.Flags) && (len(a.Flags) != 0 || len(b.Flags) != 0) {
 		add("flags", a.Flags, b.Flags)
 	}
 	if (a.MergedInto == nil) != (b.MergedInto == nil) || (a.MergedInto != nil && *a.MergedInto != *b.MergedInto) {

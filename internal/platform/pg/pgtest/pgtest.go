@@ -56,12 +56,12 @@ func Main(m *testing.M) {
 }
 
 func freePort() (uint32, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
-	defer l.Close()
-	return uint32(l.Addr().(*net.TCPAddr).Port), nil
+	defer func() { _ = l.Close() }()
+	return uint32(l.Addr().(*net.TCPAddr).Port), nil //nolint:gosec // TCP ports fit in 16 bits
 }
 
 func start() {
@@ -128,7 +128,7 @@ func connect(tb testing.TB, dsn string) *pgx.Conn {
 	if err != nil {
 		tb.Fatalf("pgtest: connect: %v", err)
 	}
-	tb.Cleanup(func() { c.Close(context.Background()) })
+	tb.Cleanup(func() { _ = c.Close(context.Background()) })
 	return c
 }
 
@@ -164,7 +164,7 @@ func dropDB(tb testing.TB, name string) {
 	if err != nil {
 		return
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 	_, _ = c.Exec(context.Background(), "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
 }
 

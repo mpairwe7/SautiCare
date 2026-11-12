@@ -1,0 +1,33 @@
+# golangci-lint v2 (pinned v2.15.0 in CI).
+version: "2"
+run:
+  timeout: 5m
+  build-tags: [integration]
+linters:
+  default: standard        # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - gosec
+    - errorlint
+    - bodyclose
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - misspell
+    - nilerr
+    - unconvert
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+    gosec:
+      excludes:
+        - G304   # file paths come from operator configuration, not requests
+  exclusions:
+    generated: strict
+    rules:
+      - path: _test\.go
+        linters: [gosec, noctx, errcheck, bodyclose]
+formatters:
+  enable: [gofmt]

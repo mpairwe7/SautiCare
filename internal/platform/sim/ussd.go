@@ -6,6 +6,7 @@
 package sim
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -82,11 +83,16 @@ func (s *USSDSession) Retry() (Screen, error) {
 }
 
 func (s *USSDSession) post(form url.Values) (Screen, error) {
-	resp, err := s.u.client.PostForm(s.u.endpoint, form)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.u.endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return Screen{}, err
 	}
-	defer resp.Body.Close()
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := s.u.client.Do(req)
+	if err != nil {
+		return Screen{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if err != nil {
 		return Screen{}, err

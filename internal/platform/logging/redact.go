@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -85,10 +86,13 @@ func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 }
 
 func digitCount(n int64) int {
+	if n == math.MinInt64 {
+		return 19
+	}
 	if n < 0 {
 		n = -n
 	}
-	return digitCountU(uint64(n))
+	return digitCountU(uint64(n)) //nolint:gosec // n is non-negative here
 }
 
 func digitCountU(n uint64) int {

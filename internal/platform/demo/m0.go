@@ -122,7 +122,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if err != nil {
 		return rep, fmt.Errorf("demo: connect admin: %w", err)
 	}
-	defer adminConn.Close(context.WithoutCancel(ctx))
+	defer func() { _ = adminConn.Close(context.WithoutCancel(ctx)) }()
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
 	r.dbs, err = bootstrap.Run(ctx, adminConn, bootstrap.Options{Suffix: "_demo" + hex.EncodeToString(suffix), Password: r.password, Env: "dev"})
@@ -150,7 +150,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 			return rep, err
 		}
 		_, err = migrate.Run(ctx, c, string(s), fsys)
-		c.Close(ctx)
+		_ = c.Close(ctx)
 		if err != nil {
 			return rep, err
 		}
@@ -161,7 +161,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if err != nil {
 		return rep, err
 	}
-	defer os.RemoveAll(work)
+	defer func() { _ = os.RemoveAll(work) }()
 	if err := devkeys.Generate(filepath.Join(work, "keys"), rand.Reader); err != nil {
 		return rep, err
 	}
@@ -224,12 +224,12 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	}
 	ids, err := opstore.New(roPool).ListIncidentIDs(ctx)
 	if err != nil || len(ids) != 1 {
-		return rep, fmt.Errorf("step 1: expected one incident, got %d (%v)", len(ids), err)
+		return rep, fmt.Errorf("step 1: expected one incident, got %d: %w", len(ids), err)
 	}
 	id := ids[0]
 	proj, err := opstore.New(roPool).Projection(ctx, id)
 	if err != nil || proj.T[1] == nil || proj.Reference != ref {
-		return rep, fmt.Errorf("step 1: projection %+v (%v)", proj, err)
+		return rep, fmt.Errorf("step 1: projection %+v: %w", proj, err)
 	}
 	rep.Reference, rep.T1 = ref.Spoken(), *proj.T[1]
 	r.say("✓ step 1: caller dialled; incident %s opened, T1 = %s (database clock)", ref.Spoken(), rep.T1.Format(time.RFC3339Nano))
@@ -297,7 +297,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if err != nil {
 		return rep, err
 	}
-	defer super.Close(context.WithoutCancel(ctx))
+	defer func() { _ = super.Close(context.WithoutCancel(ctx)) }()
 	var leaks int
 	if err := super.QueryRow(ctx, "SELECT count(*) FROM audit.entries e WHERE e::text LIKE '%772123456%'").Scan(&leaks); err != nil {
 		return rep, err

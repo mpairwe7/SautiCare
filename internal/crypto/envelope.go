@@ -23,7 +23,7 @@ func (a AAD) Bytes() []byte {
 	out := make([]byte, 0, 64)
 	out = append(out, aadDomain...)
 	for _, f := range []string{a.Store, a.Table, a.Column, a.RowID} {
-		out = binary.BigEndian.AppendUint32(out, uint32(len(f)))
+		out = binary.BigEndian.AppendUint32(out, uint32(len(f))) //nolint:gosec // identifiers are short
 		out = append(out, f...)
 	}
 	return out

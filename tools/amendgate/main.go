@@ -10,6 +10,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -94,7 +95,7 @@ func readGlobs(p string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -107,7 +108,7 @@ func readGlobs(p string) ([]string, error) {
 }
 
 func gitOutput(args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(context.Background(), "git", args...) //nolint:gosec // fixed binary; args built internally
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()

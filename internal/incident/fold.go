@@ -62,7 +62,7 @@ func Apply(p Projection, e Event) (Projection, error) {
 		}
 		into, err := uuid.Parse(pl.Into)
 		if err != nil {
-			return p, fmt.Errorf("%w: merge target: %v", ErrIllegalTransition, err)
+			return p, fmt.Errorf("%w: merge target: %w", ErrIllegalTransition, err)
 		}
 		next.MergedInto = &into
 	}
@@ -86,11 +86,11 @@ func applyStart(e Event) (Projection, error) {
 		Channel   string `json:"channel"`
 	}
 	if err := json.Unmarshal(e.Payload, &pl); err != nil {
-		return Projection{}, fmt.Errorf("%w: session.started payload: %v", ErrIllegalTransition, err)
+		return Projection{}, fmt.Errorf("%w: session.started payload: %w", ErrIllegalTransition, err)
 	}
 	ref, err := ParseReference(pl.Reference)
 	if err != nil {
-		return Projection{}, fmt.Errorf("%w: session.started reference: %v", ErrIllegalTransition, err)
+		return Projection{}, fmt.Errorf("%w: session.started reference: %w", ErrIllegalTransition, err)
 	}
 	at := e.RecordedAt
 	p := Projection{ID: e.IncidentID, Reference: ref, State: StateIntake, Version: 1, Channel: pl.Channel}

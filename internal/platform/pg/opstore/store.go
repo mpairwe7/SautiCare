@@ -226,7 +226,7 @@ func (s *Store) Claim(ctx context.Context, topic string, limit int) (audit.Outbo
 		return nil, err
 	}
 	q := opdb.New(tx)
-	rows, err := q.ClaimOutbox(ctx, opdb.ClaimOutboxParams{Topic: topic, MaxRows: int32(limit)})
+	rows, err := q.ClaimOutbox(ctx, opdb.ClaimOutboxParams{Topic: topic, MaxRows: int32(max(1, min(limit, 10000)))}) //nolint:gosec // clamped
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, err

@@ -90,7 +90,7 @@ func cmdMigrate(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	applied, err := migrate.Run(ctx, conn, *store, fsys)
 	fmt.Fprintf(out, "%s: applied %d migration(s) %v\n", *store, len(applied), applied)
 	return err
@@ -112,7 +112,7 @@ func cmdBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	dbs, err := bootstrap.Run(ctx, conn, bootstrap.Options{Suffix: *suffix, Password: password, Env: env.Default("SAUTI_ENV", "dev")})
 	if err != nil {
 		return err
@@ -133,7 +133,7 @@ func cmdBootstrap(ctx context.Context, args []string, out io.Writer) error {
 		}
 		fsys, _ := db.Migrations(string(s))
 		applied, err := migrate.Run(ctx, oc, string(s), fsys)
-		oc.Close(ctx)
+		_ = oc.Close(ctx)
 		if err != nil {
 			return err
 		}
