@@ -12,3 +12,12 @@ sql:
         out: internal/platform/pg/auditstore/auditdb
         sql_package: pgx/v5
         emit_pointers_for_null_types: true
+  - engine: postgresql
+    schema: db/operational/migrations
+    queries: db/operational/queries
+    gen:
+      go:
+        package: opdb
+        out: internal/platform/pg/opstore/opdb
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
