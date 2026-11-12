@@ -29,7 +29,7 @@ Chosen option: **application-level AES-256-GCM** with `AAD = sauti-aad/v1 ‖ le
 
 ## Consequences
 
-* Good: destroying a period key makes every copy unreadable, including backups.
+* Good: destroying a period key makes every ciphertext under it unreadable wherever it is stored, including database backups, because the key is never stored with the data. This holds only once **every** copy of the key is destroyed. Backups of the key store and retained OpenBao key versions can still hold the period key after the active key is deleted, so until the destruction procedure (M6 retention agent; RMRP §4) also covers those copies, destroying the active key alone does not make the data unreadable.
 * Guards added after the CodeRabbit review of PR #2:
   * `Seal`/`Open` refuse an AAD without a complete location (store, table, column, row ID), which would not bind the ciphertext to a row.
   * The MAC path refuses data keys that are not 32 bytes, so a missing key can never yield a MAC derived from public input.
