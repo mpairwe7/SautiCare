@@ -5,9 +5,17 @@
 #   /db/analytic/             Principal Investigator
 #   /config/  /governance/    Principal Investigator (study window, amendments, flags)
 #   /db/linkage/              Principal Investigator
+#   /tools/amendgate/ /scripts/ci/ /.github/
+#                             Principal Investigator (the amendment gate's code and
+#                             the CI wiring that runs it: CI runs the gate from the
+#                             change under review, so it cannot protect itself;
+#                             ADR-0014)
 *                 @mpairwe7
 /triage-rules/    @mpairwe7
 /db/analytic/     @mpairwe7
 /db/linkage/      @mpairwe7
 /config/          @mpairwe7
 /governance/      @mpairwe7
+/tools/amendgate/ @mpairwe7
+/scripts/ci/      @mpairwe7
+/.github/         @mpairwe7
