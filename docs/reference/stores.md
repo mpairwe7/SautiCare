@@ -18,12 +18,12 @@ There are five PostgreSQL 18 databases (`sauti_<store>`). Each has an owner role
 
 | Role | Store | Tables | Functions |
 |---|---|---|---|
-| `op_intake` | operational | SELECT `incidents`, `incident_events`, `sessions`; SELECT/INSERT `ussd_steps` | EXECUTE `open_incident`, `append_incident_event` (never a staff actor, `incident.split` or `incident.unmerged`: the function refuses them to every role but `op_console`); M2: `set_availability`, `accept_alert`, `decline_alert`; SELECT `responders` (`id`, `phone_mac`, `status` only), `stages`, `facilities` |
+| `op_intake` | operational | SELECT `incidents`, `incident_events`, `sessions`; SELECT/INSERT `ussd_steps` | EXECUTE `open_incident`, `append_incident_event` (never a staff actor, `incident.split` or `incident.unmerged`: the function refuses them to every role but `op_console`); M2: `set_availability`, `accept_alert`, `decline_alert`; SELECT `responders` (`id`, `phone_mac`, `status` only), `stages`, `facilities`; EXECUTE `dispatch_suspended` |
 | `op_relay` | operational | — | EXECUTE `claim_outbox`, `mark_outbox_delivered`, `default_partition_rows`, `ensure_event_partitions` (the leader keeps partitions three months ahead) |
-| `op_readonly` | operational | SELECT `incidents`, `incident_events`, `event_keys`, `incident_transitions`, `outbox`, `config_versions`, `key_periods`, the registry without identifiers (`responders` minus name, phone and MAC columns; `availability`), `stages`, `facilities`, `alerts`, `assignments`, `alert_attempts`, `forwards`, `caller_notices`, `dispatch_timers` (not `sessions`) | EXECUTE `default_partition_rows` |
-| `op_console` | operational | SELECT `incidents`, `incident_events` | EXECUTE `split_incident` (coordinator split, M1); `register_responder`, `set_responder_gates`, `set_availability` (registry, M2) |
-| `op_ivr` | operational | SELECT `incidents`, `incident_events`, `sessions`, gazetteer tables, `config_versions` (never `ussd_steps`) | EXECUTE `open_incident`, `append_incident_event`, `resume_session`, `store_identifier`, `match_landmark` (M1 voice line); M2: `set_availability`, `accept_alert`, `decline_alert`; `acknowledge_forward`; SELECT `responders` (`id`, `phone_mac`, `status` only), `stages`, `facilities` |
-| `op_dispatch` | operational | SELECT `incidents`, `incident_events`, `responders`, `availability`, `alerts`, `assignments`, `alert_attempts`, `forwards`, `caller_notices`, `dispatch_timers`, `stages`, `facilities`, `config_versions` | EXECUTE `issue_alert`, `close_alert`, `record_forward`, `time_out_forward`, `notify_caller`, `dispatch_escalate`, `begin_attempt`, `finish_attempt`, `claim_due_dispatch`, `schedule_dispatch` (M2; never the generic append) |
+| `op_readonly` | operational | SELECT `incidents`, `incident_events`, `event_keys`, `incident_transitions`, `outbox`, `config_versions`, `key_periods`, the registry without identifiers (`responders` minus name, phone and MAC columns; `availability`), `stages`, `facilities`, `alerts`, `assignments`, `alert_attempts`, `forwards`, `caller_notices`, `dispatch_timers`, `dispatch_control`, `dispatch_control_log` (not `sessions`) | EXECUTE `default_partition_rows` |
+| `op_console` | operational | SELECT `incidents`, `incident_events` | EXECUTE `split_incident` (coordinator split, M1); `register_responder`, `set_responder_gates`, `set_availability` (registry, M2); `suspend_dispatch`, `resume_dispatch` (staff identity required), `dispatch_suspended`; SELECT `dispatch_control`, `dispatch_control_log` |
+| `op_ivr` | operational | SELECT `incidents`, `incident_events`, `sessions`, gazetteer tables, `config_versions` (never `ussd_steps`) | EXECUTE `open_incident`, `append_incident_event`, `resume_session`, `store_identifier`, `match_landmark` (M1 voice line); M2: `set_availability`, `accept_alert`, `decline_alert`; `acknowledge_forward`; SELECT `responders` (`id`, `phone_mac`, `status` only), `stages`, `facilities`; EXECUTE `dispatch_suspended` |
+| `op_dispatch` | operational | SELECT `incidents`, `incident_events`, `responders`, `availability`, `alerts`, `assignments`, `alert_attempts`, `forwards`, `caller_notices`, `dispatch_timers`, `stages`, `facilities`, `config_versions` | EXECUTE `issue_alert`, `close_alert`, `record_forward`, `time_out_forward`, `notify_caller`, `dispatch_escalate`, `begin_attempt`, `finish_attempt`, `claim_due_dispatch`, `schedule_dispatch`, `auto_suspend_dispatch` (stopping rule only), `dispatch_suspended` (M2; never the generic append) |
 | `op_payments`, `op_pseudonymiser`, `op_retention` | operational | none yet: granted in their milestones | — |
 | `audit_appender` | audit | — | EXECUTE `append`, `head`, `save_checkpoint` |
 | `audit_reader` | audit | SELECT `entries`, `checkpoints` | — |
@@ -38,12 +38,13 @@ No runtime role holds UPDATE or DELETE on events, audit entries or consent rows.
 ## Database-enforced invariants
 
 - **Dispatch (M2, ADR-0025):**
-  - availability periods of one responder never overlap (PostgreSQL 18 `PRIMARY KEY (responder_id, period WITHOUT OVERLAPS)`), half-open, 8 hours on the database clock;
+  - availability periods of one responder never overlap (PostgreSQL 18 `PRIMARY KEY (responder_id, period WITHOUT OVERLAPS)`, which needs the contrib extension `btree_gist`; like `pg_trgm` it lives in its own schema, `gist`, with no USAGE for runtime roles), half-open, 8 hours on the database clock;
   - one alert per responder per incident (`UNIQUE (incident_id, responder_id)`); the database refuses an alert to a responder who is not active, certified, insured, kit OK and available now, who is assigned to another open incident, or whose role is taken, and an alert on a merged or closed incident;
   - first acceptance per role wins: a partial unique index on `assignments (incident_id, role) WHERE released_at IS NULL`;
   - each delivery attempt is claimed once (`UNIQUE (alert_id, purpose, channel)`) before the provider call;
   - an incident cannot close while an alert is pending;
-  - every dispatch fact and its event are written together by one function; the generic append refuses dispatch event types.
+  - every dispatch fact and its event are written together by one function; the generic append refuses dispatch event types;
+  - one dispatch control row; the control log (the reportable-events register) is append-only (`SA403` even for the owner); resuming always carries a staff identity; every change is an audit entry without an incident (ADR-0026).
 - **Operational:**
   - 10-digit reference with a `CHECK` and `UNIQUE`.
   - A logic version must be `<code>+sha256:<12–64 hex>` (the same rule as the ledger); a merge target must exist, differ from the incident and be open.

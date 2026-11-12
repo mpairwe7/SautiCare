@@ -10,7 +10,7 @@ In the pilot, **no machine-learning model makes or influences a dispatch decisio
 | Component | Kind | Status (M0) |
 |---|---|---|
 | Tool 1 triage decision table | deterministic ordered table, CEL conditions, ML-DSA-65 signed, totality-checked (`triage-rules/tool1.yaml`, ADR-0019) | **built (M1)**; input lists are placeholders until Tool 1; dev-signed, `protocol_status: pending` (production refuses) |
-| Responder ranking | deterministic: zone distance, then response history, then least recently dispatched (decision 4 default) | planned (M2) |
+| Responder ranking | deterministic: zone distance, then response history (smoothed accept rate over 90 days), then least recently dispatched (decision 4 default, gated); the responder ID breaks ties; version stamped on every dispatch fact | active (M2, `internal/dispatch`, [ADR-0024](adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md)) |
 | Sunbird `asr-whisper-large-v3-salt` speech assist | machine-learning model, self-hosted in Uganda | **flagged off** (`speech_assist: false`) |
 | Reinforcement-learning dispatcher | machine-learning model | not built: post-study only |
 

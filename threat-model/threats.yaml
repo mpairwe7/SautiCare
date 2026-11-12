@@ -342,3 +342,56 @@ threats:
       - internal/platform/ari/client_test.go::TestClientAnswersPlaysAndHangsUp
       - tests/e2e/m1_ivr_test.go::TestScenario5FinishOnIVR
       - "planned:P0 nftables keeps Asterisk HTTP on loopback; ARI credential in OpenBao"
+
+  - id: T-023
+    title: A role taken twice, or a responder alerted twice, by concurrent accepts, retries, a crash or a failover
+    stride: Tampering
+    linddun: Non-repudiation
+    asset: dispatch decisions (alerts, assignments, deliveries)
+    hard_constraints: [3, 14]
+    mitigations:
+      - First acceptance per role is a partial unique index; accepts serialise on the incident row
+      - One alert per responder per incident (UNIQUE); every dispatch fact and its event in one function
+      - Each delivery attempt is claimed in the store before the provider call and never sent again
+      - The worker keeps no dispatch state; leases and a generation guard make every pass retry-safe
+    verified_by:
+      - internal/platform/pg/opstore/dispatch_integration_test.go::TestConcurrentAcceptsOneAssignment
+      - internal/platform/pg/opstore/dispatch_integration_test.go::TestAttemptsAreClaimedOnce
+      - internal/platform/pg/opstore/dispatch_integration_test.go::TestDispatchTimers
+      - internal/platform/wiring/dispatch_integration_test.go::TestEngineCrashBetweenRecordAndDelivery
+      - internal/platform/wiring/dispatch_integration_test.go::TestEngineFailoverMidCascade
+
+  - id: T-024
+    title: Dispatch facts forged or bypassed (direct table writes, generic appends, another responder's alert)
+    stride: Elevation of privilege
+    linddun: Non-compliance
+    asset: dispatch store and incident log
+    hard_constraints: [3, 8, 14]
+    mitigations:
+      - No runtime role writes a dispatch table; each command is a SECURITY DEFINER function granted to one role
+      - The generic append refuses dispatch event types; payloads are identifiers and codes only
+      - A responder may accept or decline only their own alert (SA403); the database refuses alerts to ineligible or busy responders
+    verified_by:
+      - internal/platform/pg/opstore/dispatch_integration_test.go::TestDispatchFactsOnlyThroughTheirFunctions
+      - internal/platform/pg/opstore/dispatch_integration_test.go::TestIssueAlertGuards
+      - internal/incident/dispatch_test.go::TestDispatchEventPayloads
+
+  - id: T-025
+    title: Dispatch silently stopped, or suspended or resumed without a trace
+    stride: Repudiation
+    linddun: Non-compliance
+    asset: dispatch control and the reportable-events register
+    hard_constraints: [8, 14]
+    mitigations:
+      - Suspending and resuming need the console role and a staff identity; the leader may only suspend on a stopping-rule breach
+      - The control log is append-only (SA403); every change is an audit-ledger entry
+      - While suspended every incident is escalated to a coordinator; production refuses the unapproved suspended message
+      - A pass the worker cannot process is escalated (dispatch_error)
+    verified_by:
+      - internal/platform/pg/opstore/control_integration_test.go::TestSuspensionControl
+      - internal/platform/pg/opstore/control_integration_test.go::TestAutoSuspendRegistersTheBreach
+      - internal/dispatch/stopping_test.go::TestStoppingRuleBoundaries
+      - internal/intake/suspension_test.go::TestSuspendedDispatchChangesTheClosingMessageAndEscalates
+      - cmd/sautictl/main_test.go::TestDispatchCommandsGateAndValidate
+      - internal/platform/wiring/dispatch_integration_test.go::TestEngineRunOnceEscalatesAnUnprocessableIncident
+
