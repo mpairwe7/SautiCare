@@ -392,7 +392,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	_, cerr := audit.NewCheckpointer(ledger, keys.Signer(), witness, "sauti-demo", time.Now).WithAnchor(cp).Checkpoint(ctx)
 	rep.CheckpointRefused = errors.Is(cerr, audit.ErrChainDiverged)
 	if !rep.WitnessCaught || !rep.CheckpointRefused {
-		return rep, fmt.Errorf("step 7b: rewrite not caught (db-only ok=%v, witness ok=%v, checkpoint err=%v)", dbOnly.OK(), wv.OK(), cerr)
+		return rep, fmt.Errorf("step 7b: rewrite not caught (db-only ok=%v, witness ok=%v, checkpoint err=%w)", dbOnly.OK(), wv.OK(), cerr)
 	}
 	r.say("✓ step 7b: entry 3 rewritten, chain recomputed, checkpoints deleted → chain-only check is fooled, but the witness fails it (%s) and the checkpointer refuses to sign", wv.Problem)
 
