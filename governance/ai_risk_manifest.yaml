@@ -1,0 +1,128 @@
+# AI risk register and AI bill of materials (spec §10; ADR-0016).
+# Frameworks: ISO/IEC 42001:2023 (AI management system), NIST AI RMF 1.0
+# (GOVERN / MAP / MEASURE / MANAGE), EU AI Act Art. 11/12 documentation
+# practice, CycloneDX AIBOM. Validated by governance/compliance_check.py:
+# every risk's verified_by must resolve to a real test or be an explicit
+# planned:<milestone> marker; every AIBOM entry must be resident in Uganda.
+#
+# Pilot position (Build Prompt rule 3.3): triage and dispatch are
+# deterministic. No model ranks responders, sets severity or lowers it.
+risks:
+  - id: AIR-001
+    title: Triage misclassification harms a patient (DPIA risk 8)
+    nist_function: MANAGE
+    iso42001_clause: "8.3"
+    owner_role: Medical Director (clinical lead of record)
+    mitigation: >-
+      Deterministic decision table authored by the emergency-medicine
+      co-investigators; severity can only rise, enforced in Go and in the SQL
+      write path; a rule error makes the incident red and alerts a coordinator.
+    verified_by:
+      - internal/incident/fold_test.go::TestApplyRejectsSeverityLowering
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering
+      - "planned:M1 signed CEL decision table with clinical scenario suite and rule-error-is-red test"
+  - id: AIR-002
+    title: Logic version not recorded, so a mid-study amendment corrupts the dataset
+    nist_function: GOVERN
+    iso42001_clause: "7.5.3"
+    owner_role: Principal Investigator
+    mitigation: >-
+      Versioned configuration with a content fingerprint; the logic version is
+      stamped on the classification event, the projection and the audit entry.
+    verified_by:
+      - internal/config/config_test.go::TestFingerprintStableAndSensitive
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestProjectionMatchesFold
+  - id: AIR-003
+    title: An adaptive model ranks responders or sets severity during the pilot
+    nist_function: GOVERN
+    iso42001_clause: "A.6.2.4"
+    owner_role: Principal Investigator
+    mitigation: >-
+      Ranking is deterministic configuration (decision 4 default order); all
+      section 11 flags are off and gated; any change needs an amendment record.
+    verified_by:
+      - internal/config/config_test.go::TestLoadRepoConfigDefaults
+      - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
+      - "planned:M2 ranking determinism and stamped parameter version test"
+  - id: AIR-004
+    title: Luganda speech recognition misreads a landmark (Sunbird WER 14.2%)
+    nist_function: MEASURE
+    iso42001_clause: "8.4"
+    owner_role: Data Protection Officer
+    mitigation: >-
+      Flagged off for the study (decision 10). If enabled after an ethics
+      amendment: landmark only, read back for keypad confirmation, two failures
+      fall back to the keypad menu, never decides severity or dispatch, audio
+      processed in memory and discarded.
+    verified_by:
+      - internal/config/config_test.go::TestLoadRepoConfigDefaults
+      - "planned:P2 speech-assist read-back and fallback tests"
+  - id: AIR-005
+    title: Personal data reaches a foreign AI, speech or cloud service
+    nist_function: GOVERN
+    iso42001_clause: "A.7.2"
+    owner_role: Data Protection Officer
+    mitigation: >-
+      All outbound HTTP passes the egress allowlist; models run on Sauti's
+      servers in Uganda; nftables default-deny in production.
+    verified_by:
+      - internal/platform/egress/egress_test.go::TestEgressDeniesUnlistedHost
+      - internal/platform/egress/egress_test.go::TestEgressDeniesRedirectToUnlistedHost
+      - "planned:P0 nftables default-deny drill"
+  - id: AIR-006
+    title: An automated step fails silently instead of reaching a human
+    nist_function: MANAGE
+    iso42001_clause: "8.3"
+    owner_role: Medical Director
+    mitigation: >-
+      Fail safe to a human (rule 3.14): intake always answers and gives the
+      voice line on error; durable escalation workflow places a coordinator
+      voice call on any error or timeout.
+    verified_by:
+      - internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine
+      - "planned:M2 escalation port and durable escalation workflow tests"
+  - id: AIR-007
+    title: Learned dispatch introduced without approved data or ethics approval
+    nist_function: GOVERN
+    iso42001_clause: "6.1.4"
+    owner_role: Principal Investigator
+    mitigation: >-
+      Out of scope for the pilot; only after the study on approved data
+      (Build Prompt §11.4), behind the amendment gate.
+    verified_by:
+      - tools/amendgate/check_test.go::TestCheckFailsWhenHashDiffersFromAmendment
+
+aibom_inventory:
+  - bom-ref: triage-decision-table
+    type: application
+    name: Tool 1 triage decision table (CEL)
+    version: protocol-pending
+    supplier: Sauti emergency-medicine co-investigators
+    status: planned
+    data_residency: UG
+    description: Deterministic, signed, versioned rules (M1). Not machine learning.
+  - bom-ref: zone-ranking
+    type: application
+    name: Zone-distance / history / fairness ranking
+    version: default-2026-11-12
+    supplier: Sauti engineering (parameters owned by PI, decision 4)
+    status: planned
+    data_residency: UG
+    description: Deterministic ranking (M2). Not machine learning.
+  - bom-ref: sunbird-asr-whisper-large-v3-salt
+    type: machine-learning-model
+    name: Sunbird asr-whisper-large-v3-salt (Luganda and English ASR)
+    version: large-v3-salt
+    supplier: Sunbird AI
+    status: flagged-off
+    flag: speech_assist
+    data_residency: UG
+    description: Self-hosted on a GPU server in Uganda; landmark capture only (section 11.3).
+  - bom-ref: dqn-dispatch
+    type: machine-learning-model
+    name: Reinforcement-learning dispatcher (deep Q-network)
+    version: not-built
+    supplier: Sauti engineering
+    status: planned
+    data_residency: UG
+    description: Post-study only, trained on approved pilot data with an equity term (Guide §6).
