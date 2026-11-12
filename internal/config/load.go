@@ -23,10 +23,35 @@ var gatedFiles = []string{
 	"gated/screens.yaml",
 }
 
+// separatelyVersioned are gated files with their own version, stamped where
+// they are used rather than in Fingerprint: the gazetteer is loaded into the
+// operational store and recorded in op.config_versions (kind gazetteer).
+var separatelyVersioned = []string{
+	"gated/gazetteer.yaml",
+}
+
+// checkGatedDir fails on any file under gated/ that Load would not use.
+func checkGatedDir(fsys fs.FS) error {
+	entries, err := fs.ReadDir(fsys, "gated")
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	for _, e := range entries {
+		p := "gated/" + e.Name()
+		if !slices.Contains(gatedFiles, p) && !slices.Contains(separatelyVersioned, p) {
+			return fmt.Errorf("config: unknown gated file %s: add it to Load or to separatelyVersioned", p)
+		}
+	}
+	return nil
+}
+
 // Load reads the configuration directory (fsys rooted at config/). Decoding
 // is strict: an unknown key is an error, so a typo cannot silently disable a
 // parameter.
 func Load(fsys fs.FS) (Bundle, error) {
+	if err := checkGatedDir(fsys); err != nil {
+		return Bundle{}, err
+	}
 	var b Bundle
 	var proto protocolFile
 	targets := []struct {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -45,5 +46,23 @@ func TestVerifyLedgerRequiresWitnessOrExplicitOptOut(t *testing.T) {
 	code := Main([]string{"verify-ledger", "--dsn", "postgres://x@127.0.0.1:1/x", "--devkeys-dir", dir}, &out, &errOut)
 	if code != 1 || !strings.Contains(errOut.String(), "--witness-dir is required") {
 		t.Fatalf("exit=%d err=%s", code, errOut.String())
+	}
+}
+
+// A malformed gazetteer is refused before any database connection, so a
+// typo can never reach the store.
+func TestGazetteerLoadValidatesBeforeConnecting(t *testing.T) {
+	bad := t.TempDir() + "/g.yaml"
+	if err := os.WriteFile(bad, []byte("version: v\nstatus: draft\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := Main([]string{"gazetteer", "load", "--file", bad, "--dsn", "postgres://invalid.invalid/x"}, &out, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "status") {
+		t.Fatalf("exit = %d, err = %s", code, errOut.String())
+	}
+	if code := Main([]string{"gazetteer", "load", "--file", "../../config/gated/gazetteer.yaml"}, &out, &errOut); code != 1 ||
+		!strings.Contains(errOut.String(), "--dsn") {
+		t.Fatalf("missing --dsn: exit = %d, err = %s", code, errOut.String())
 	}
 }

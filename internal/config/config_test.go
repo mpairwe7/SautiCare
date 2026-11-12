@@ -177,3 +177,19 @@ func TestFingerprintCoversTheDecodedBytes(t *testing.T) {
 		t.Fatalf("fingerprint does not match the decoded content (reads=%d, cascade=%v)", c.reads, b.Dispatch.CascadeTimeout)
 	}
 }
+
+// Every file under gated/ is either part of the fingerprint or declared as
+// separately versioned; an unknown gated file would otherwise be frozen by
+// the amendment gate yet silently unused.
+func TestLoadRejectsUnknownGatedFile(t *testing.T) {
+	fs := minimalFS()
+	fs["gated/extra.yaml"] = &fstest.MapFile{Data: []byte("x: 1\n")}
+	if _, err := Load(fs); err == nil || !strings.Contains(err.Error(), "gated/extra.yaml") {
+		t.Fatalf("unknown gated file: err = %v", err)
+	}
+	fs = minimalFS()
+	fs["gated/gazetteer.yaml"] = &fstest.MapFile{Data: []byte("version: v\n")}
+	if _, err := Load(fs); err != nil {
+		t.Fatalf("separately versioned gated file refused: %v", err)
+	}
+}
