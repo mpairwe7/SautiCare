@@ -31,7 +31,14 @@ func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
 // NewClient returns an *http.Client that refuses every host not in allow.
 // Redirects are re-checked hop by hop because each hop passes through the
 // guarded transport.
+// DefaultTimeout applies when a caller passes a non-positive timeout: every
+// external call has a deadline (spec §7.5).
+const DefaultTimeout = 10 * time.Second
+
 func NewClient(allow []string, timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
 	set := make(map[string]bool, len(allow))
 	for _, h := range allow {
 		set[strings.ToLower(strings.TrimSpace(h))] = true

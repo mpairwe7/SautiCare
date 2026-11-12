@@ -21,6 +21,9 @@ var (
 	// ErrUnknownKey reports a key ID the provider does not hold, for example
 	// because its period was destroyed (crypto-shredding).
 	ErrUnknownKey = errors.New("crypto: unknown or destroyed key")
+	// ErrIncompleteAAD reports associated data without a full storage
+	// location; it would not bind the ciphertext to one row.
+	ErrIncompleteAAD = errors.New("crypto: AAD must name store, table, column and row")
 	// ErrDecrypt reports a ciphertext that fails authentication: wrong key,
 	// tampered bytes, or associated data that does not match its row.
 	ErrDecrypt = errors.New("crypto: decryption failed")

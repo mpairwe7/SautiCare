@@ -41,20 +41,24 @@ func Load(fsys fs.FS) (Bundle, error) {
 		{"gated/flags.yaml", &b.Flags},
 		{"gated/screens.yaml", &b.Screens},
 	}
-	h := sha256.New()
+	// Each file is read exactly once; the fingerprint covers the very bytes
+	// that were decoded, so it always identifies the parameters in force.
+	read := map[string][]byte{}
 	for _, t := range targets {
 		data, err := fs.ReadFile(fsys, t.path)
 		if err != nil {
 			return Bundle{}, fmt.Errorf("config: %w", err)
 		}
+		read[t.path] = data
 		if err := decodeStrict(data, t.dst); err != nil {
 			return Bundle{}, fmt.Errorf("config: %s: %w", t.path, err)
 		}
 	}
+	h := sha256.New()
 	for _, p := range slices.Sorted(slices.Values(gatedFiles)) {
-		data, err := fs.ReadFile(fsys, p)
-		if err != nil {
-			return Bundle{}, fmt.Errorf("config: %w", err)
+		data, ok := read[p]
+		if !ok {
+			return Bundle{}, fmt.Errorf("config: gated file %s was not loaded", p)
 		}
 		sum := sha256.Sum256(data)
 		h.Write([]byte(p))

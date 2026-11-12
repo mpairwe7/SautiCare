@@ -82,16 +82,16 @@ func (r *Registry) Gauge(name, help string) *Gauge { return &Gauge{r.add(name, h
 // Handler serves the Prometheus text exposition format.
 func (r *Registry) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Snapshot names and metric pointers under the lock; format after.
 		r.mu.Lock()
-		names := make([]string, 0, len(r.metrics))
-		for n := range r.metrics {
-			names = append(names, n)
+		snap := make([]*metric, 0, len(r.metrics))
+		for _, m := range r.metrics {
+			snap = append(snap, m)
 		}
 		r.mu.Unlock()
-		sort.Strings(names)
+		sort.Slice(snap, func(i, j int) bool { return snap[i].name < snap[j].name })
 		var b strings.Builder
-		for _, n := range names {
-			m := r.metrics[n]
+		for _, m := range snap {
 			fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s %s\n%s %s\n",
 				m.name, m.help, m.name, m.kind, m.name, strconv.FormatFloat(m.load(), 'g', -1, 64))
 		}

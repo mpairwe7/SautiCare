@@ -3,6 +3,7 @@ package devkeys
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -102,5 +103,70 @@ func TestDevkeysRefuseNonDevEnvironments(t *testing.T) {
 	}
 	if _, err := Open(dir, "test"); err != nil {
 		t.Errorf("Open(test) = %v", err)
+	}
+}
+
+// CodeRabbit PR #2: regenerating must never replace existing key material —
+// ciphertexts and checkpoint signatures would no longer verify.
+func TestGenerateNeverOverwritesKeys(t *testing.T) {
+	dir := generated(t)
+	before, _ := os.ReadFile(filepath.Join(dir, "keys.json"))
+	if err := Generate(dir, rand.Reader); err == nil {
+		t.Fatal("second Generate in the same directory succeeded")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "keys.json"))
+	if string(before) != string(after) {
+		t.Fatal("existing keys.json was modified")
+	}
+}
+
+func TestOpenRejectsMalformedKeyLengths(t *testing.T) {
+	dir := generated(t)
+	p := filepath.Join(dir, "keys.json")
+	b, _ := os.ReadFile(p)
+	var kf map[string]any
+	if err := json.Unmarshal(b, &kf); err != nil {
+		t.Fatal(err)
+	}
+	classes := kf["classes"].(map[string]any)
+	for _, v := range classes {
+		v.(map[string]any)["current"].(map[string]any)["key"] = "AAEC" // 3 bytes
+	}
+	b, _ = json.Marshal(kf)
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir, "dev"); err == nil {
+		t.Fatal("Open accepted a 3-byte data key")
+	}
+}
+
+// A witness note becomes visible only complete: nothing partial, nothing
+// temporary is ever returned by ReadAll (CodeRabbit PR #2).
+func TestWitnessPublishesOnlyCompleteNotes(t *testing.T) {
+	dir := t.TempDir()
+	w := NewFSWitness(dir)
+	ctx := context.Background()
+	if err := w.Put(ctx, "checkpoint-1-1.txt", []byte("note")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Put(ctx, "checkpoint-1-1.txt", []byte("other")); err == nil {
+		t.Fatal("existing note replaced")
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("directory holds %v, want only the published note (no temporary files)", names)
+	}
+	// A leftover temporary file from a crash is never read as a note.
+	if err := os.WriteFile(filepath.Join(dir, ".tmp-checkpoint-2-2.txt"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notes, err := w.ReadAll()
+	if err != nil || len(notes) != 1 || string(notes[0]) != "note" {
+		t.Fatalf("ReadAll = %q, %v", notes, err)
 	}
 }

@@ -92,6 +92,11 @@ type OutboxBatch interface {
 }
 
 // Outbox is the operational store's transactional outbox (spec §6.3).
+//
+// Ordering contract: Claim returns rows in outbox ID order (uuidv7, i.e.
+// creation order) and locks them until Complete or Abort; exactly one relay
+// is active at a time (pg.RunAsLeader), so ledger order is outbox order
+// across batches. RunOnce also sorts each batch defensively.
 type Outbox interface {
 	Claim(ctx context.Context, topic string, limit int) (OutboxBatch, error)
 }

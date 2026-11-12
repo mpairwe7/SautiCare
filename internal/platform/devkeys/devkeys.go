@@ -84,7 +84,17 @@ func Generate(dir string, rand io.Reader) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, fileName), b, 0o600)
+	// Never replace existing keys: ciphertexts and checkpoint signatures made
+	// with them would no longer open or verify.
+	f, err := os.OpenFile(filepath.Join(dir, fileName), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("devkeys: %w (refusing to overwrite existing keys)", err)
+	}
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // Store implements crypto.KeyProvider from a dev key file.
@@ -118,11 +128,18 @@ func Open(dir, env string) (*Store, error) {
 		return nil, fmt.Errorf("devkeys: parse %s: %w", fileName, err)
 	}
 	s := &Store{kf: kf, byID: map[string]crypto.DataKey{}}
-	for _, ck := range kf.Classes {
+	for class, ck := range kf.Classes {
+		if ck.Current.ID == "" || len(ck.Current.Key) != 32 {
+			return nil, fmt.Errorf("devkeys: class %s: current key must be 32 bytes", class)
+		}
 		for _, k := range []dataKey{ck.Current, ck.Previous} {
-			if k.ID != "" {
-				s.byID[k.ID] = crypto.DataKey{ID: k.ID, Key: k.Key}
+			if k.ID == "" {
+				continue
 			}
+			if len(k.Key) != 32 {
+				return nil, fmt.Errorf("devkeys: key %s must be 32 bytes, got %d", k.ID, len(k.Key))
+			}
+			s.byID[k.ID] = crypto.DataKey{ID: k.ID, Key: k.Key}
 		}
 	}
 	sk, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), kf.Signer.Seed)

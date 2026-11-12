@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
+	"uuid"
 )
 
 func newRelay(o Outbox, l Ledger) *Relay {
@@ -112,6 +114,79 @@ func TestRelayCatchesUpAfterLedgerOutage(t *testing.T) {
 	for i, e := range l.entries {
 		if e.Seq != int64(i+1) || e.EntryID != want[i].ID {
 			t.Fatalf("entry %d: seq %d id %v", i, e.Seq, e.EntryID)
+		}
+	}
+}
+
+// CodeRabbit PR #2: a payload followed by extra bytes does not match the
+// strict contract and must be treated as poison.
+func TestParseOutboxPayloadRejectsTrailingData(t *testing.T) {
+	r := outboxRow(1)
+	r.Payload = append(append([]byte{}, r.Payload...), []byte(` {"x":1}`)...)
+	if _, err := ParseOutboxPayload(r); !errors.Is(err, ErrPoisonRow) {
+		t.Fatalf("trailing data: err = %v, want ErrPoisonRow", err)
+	}
+	ok := outboxRow(2)
+	ok.Payload = append(append([]byte{}, ok.Payload...), []byte(" \n")...)
+	if _, err := ParseOutboxPayload(ok); err != nil {
+		t.Fatalf("trailing whitespace rejected: %v", err)
+	}
+}
+
+type failingCompleteOutbox struct{ fakeOutbox }
+
+type failingBatch struct {
+	*fakeBatch
+	aborted *int
+}
+
+func (o *failingCompleteOutbox) Claim(ctx context.Context, topic string, limit int) (OutboxBatch, error) {
+	b, _ := o.fakeOutbox.Claim(ctx, topic, limit)
+	return &failingBatch{fakeBatch: b.(*fakeBatch), aborted: &o.aborts}, nil
+}
+func (b *failingBatch) Complete(context.Context, []uuid.UUID) error {
+	return errors.New("commit failed")
+}
+func (b *failingBatch) Abort(context.Context) { *b.aborted++ }
+
+// CodeRabbit PR #2: a failed Complete must still release the claimed rows.
+func TestRelayAbortsWhenCompleteFails(t *testing.T) {
+	o := &failingCompleteOutbox{}
+	o.pending = []OutboxRow{outboxRow(1)}
+	if _, err := newRelay(o, newFakeLedger()).RunOnce(context.Background()); err == nil {
+		t.Fatal("Complete failure not reported")
+	}
+	if o.aborts != 1 {
+		t.Fatalf("aborts = %d, want 1", o.aborts)
+	}
+	empty := &failingCompleteOutbox{}
+	if _, err := newRelay(empty, newFakeLedger()).RunOnce(context.Background()); err == nil || empty.aborts != 1 {
+		t.Fatalf("empty batch: err=%v aborts=%d, want error and 1 abort", err, empty.aborts)
+	}
+}
+
+// CodeRabbit PR #2: a zero poll interval would spin against the database
+// (the error backoff doubles from it, so it would spin there too).
+func TestRelayRunRejectsNonPositivePoll(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		if err := newRelay(&fakeOutbox{}, newFakeLedger()).Run(context.Background(), d); !errors.Is(err, ErrInvalidPoll) {
+			t.Fatalf("Run(poll=%v) = %v, want ErrInvalidPoll", d, err)
+		}
+	}
+}
+
+// Rows are appended in outbox ID (uuidv7, time) order even if an adapter
+// returns them unordered.
+func TestRelayAppendsInOutboxIDOrder(t *testing.T) {
+	rows := []OutboxRow{outboxRow(1), outboxRow(2), outboxRow(3)}
+	o := &fakeOutbox{pending: []OutboxRow{rows[2], rows[0], rows[1]}}
+	l := newFakeLedger()
+	if _, err := newRelay(o, l).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for i, e := range l.entries {
+		if e.EntryID != rows[i].ID {
+			t.Fatalf("entry %d = %v, want %v (outbox ID order)", i, e.EntryID, rows[i].ID)
 		}
 	}
 }

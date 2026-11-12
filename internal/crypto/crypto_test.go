@@ -176,3 +176,29 @@ func TestVerifyRejectsTamperedBody(t *testing.T) {
 		t.Fatal("context-free signature accepted")
 	}
 }
+
+// CodeRabbit PR #2: an empty storage location makes the AAD identical for
+// every row, so a ciphertext could move between rows undetected.
+func TestSealAndOpenRequireACompleteLocation(t *testing.T) {
+	env := NewEnvelope(newMemKeys(t), rand.Reader)
+	ctx := context.Background()
+	for _, bad := range []AAD{{}, {Store: "operational", Table: "sessions", Column: "phone"}, {Table: "t", Column: "c", RowID: "r"}} {
+		if _, err := env.Seal(ctx, ClassIdentifiers, []byte("x"), bad); !errors.Is(err, ErrIncompleteAAD) {
+			t.Errorf("Seal(%+v) = %v, want ErrIncompleteAAD", bad, err)
+		}
+		if _, err := env.Open(ctx, Sealed{KeyID: "p2", Ciphertext: make([]byte, 40)}, bad); !errors.Is(err, ErrIncompleteAAD) {
+			t.Errorf("Open(%+v) = %v, want ErrIncompleteAAD", bad, err)
+		}
+	}
+}
+
+// A provider returning a short or empty key must not yield a MAC derived
+// from public input (CodeRabbit PR #2).
+func TestMACRejectsInvalidKeyLength(t *testing.T) {
+	for _, key := range [][]byte{nil, {}, make([]byte, 16), make([]byte, 33)} {
+		env := NewEnvelope(&memKeys{cur: DataKey{ID: "bad", Key: key}}, rand.Reader)
+		if _, err := env.MAC(context.Background(), ClassIdentifiers, []byte("+256772123456")); err == nil {
+			t.Errorf("MAC accepted a %d-byte key", len(key))
+		}
+	}
+}

@@ -2,6 +2,8 @@ package config
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -122,5 +124,56 @@ func TestProductionReadyFailsWhilePending(t *testing.T) {
 	pending, _ := Load(fs)
 	if err := pending.ProductionReady(); !errors.Is(err, ErrNotProductionReady) {
 		t.Fatalf("placeholder copy accepted for production: %v", err)
+	}
+}
+
+// CodeRabbit PR #2: intake falls back to the English start screen; without
+// it the caller would get an empty END screen and no incident reference.
+func TestProductionReadyRequiresEnglishStartScreen(t *testing.T) {
+	fs := minimalFS()
+	fs["gated/screens.yaml"] = &fstest.MapFile{Data: []byte("started_test_mode: {lg: \"Ekikolwa {ref}\"}\ninternal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")}
+	b, err := Load(fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ProductionReady(); !errors.Is(err, ErrNotProductionReady) || !strings.Contains(err.Error(), "started_test_mode/en") {
+		t.Fatalf("ProductionReady without an English start screen = %v", err)
+	}
+}
+
+// changingFS returns different content for a path on every read, to prove
+// Load fingerprints exactly the bytes it decoded (CodeRabbit PR #2).
+type changingFS struct {
+	fstest.MapFS
+	path  string
+	reads int
+}
+
+func (c *changingFS) ReadFile(name string) ([]byte, error) {
+	if name == c.path {
+		c.reads++
+		return []byte(strings.Replace(string(c.MapFS[name].Data), "90s", fmt.Sprintf("%ds", 90+c.reads), 1)), nil
+	}
+	return c.MapFS.ReadFile(name)
+}
+
+func (c *changingFS) Open(name string) (fs.File, error) { return c.MapFS.Open(name) }
+
+func TestFingerprintCoversTheDecodedBytes(t *testing.T) {
+	c := &changingFS{MapFS: minimalFS(), path: "gated/dispatch.yaml"}
+	b, err := Load(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recompute the fingerprint from a stable FS holding what was decoded.
+	stable := minimalFS()
+	stable["gated/dispatch.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(string(stable["gated/dispatch.yaml"].Data),
+		"90s", fmt.Sprintf("%ds", int(b.Dispatch.CascadeTimeout.Seconds())), 1))}
+	want, err := Load(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Fingerprint != want.Fingerprint {
+		t.Fatalf("fingerprint does not match the decoded content (reads=%d, cascade=%v)", c.reads, b.Dispatch.CascadeTimeout)
 	}
 }

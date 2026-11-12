@@ -18,6 +18,9 @@ func Apply(p Projection, e Event) (Projection, error) {
 		}
 		return applyStart(e)
 	}
+	if e.IncidentID != p.ID {
+		return p, fmt.Errorf("%w: event %s belongs to another incident", ErrIllegalTransition, e.ID)
+	}
 	if e.Seq != p.Version+1 {
 		return p, fmt.Errorf("%w: seq %d after version %d", ErrSequenceGap, e.Seq, p.Version)
 	}

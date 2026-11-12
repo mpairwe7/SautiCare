@@ -177,6 +177,13 @@ func TestCheckpointerAdvancesItsAnchor(t *testing.T) {
 			t.Fatalf("checkpoint %d on an intact chain: %v", i, err)
 		}
 	}
+	// The anchor has advanced to seq 9: rewriting seq 6 (after the first
+	// checkpoint at seq 5, before the latest) must now be refused
+	// (CodeRabbit PR #2).
+	rewriteFrom(l, 6, "incident.closed")
+	if _, err := cp.Checkpoint(ctx); !errors.Is(err, ErrChainDiverged) {
+		t.Fatalf("rewrite behind the advanced anchor: err = %v, want ErrChainDiverged", err)
+	}
 }
 
 func TestLatestWitnessedPicksHighestValidAndFailsClosed(t *testing.T) {

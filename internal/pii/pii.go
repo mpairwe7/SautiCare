@@ -44,12 +44,20 @@ func ParsePhone(s string) (Phone, error) {
 	}
 	d := b.String()
 	switch {
+	case plus && strings.HasPrefix(d, "0"):
+		return Phone{}, ErrInvalidPhone // country code 0 does not exist
+	case strings.HasPrefix(d, ugCountryCode) && (plus || len(d) <= len(ugCountryCode)+1+ugNationalLen):
+		// Uganda: drop a national trunk 0 written after the country code
+		// (+256 0772…), so every form of one number normalises identically.
+		national := strings.TrimPrefix(d[len(ugCountryCode):], "0")
+		if len(national) != ugNationalLen {
+			return Phone{}, ErrInvalidPhone
+		}
+		return Phone{e164: "+" + ugCountryCode + national}, nil
 	case plus:
 		if len(d) < e164MinDigits || len(d) > e164MaxDigits {
 			return Phone{}, ErrInvalidPhone
 		}
-		return Phone{e164: "+" + d}, nil
-	case strings.HasPrefix(d, ugCountryCode) && len(d) == len(ugCountryCode)+ugNationalLen:
 		return Phone{e164: "+" + d}, nil
 	case strings.HasPrefix(d, "0") && len(d) == 1+ugNationalLen:
 		return Phone{e164: "+" + ugCountryCode + d[1:]}, nil

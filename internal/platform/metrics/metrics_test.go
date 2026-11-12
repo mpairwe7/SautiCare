@@ -43,3 +43,21 @@ func TestDuplicateNamePanics(t *testing.T) {
 	}()
 	r.Gauge("x_total", "h")
 }
+
+// CodeRabbit PR #2: registering a metric while /metrics is served must not
+// race on the registry map (run with -race in CI).
+func TestHandlerIsSafeDuringRegistration(t *testing.T) {
+	r := NewRegistry()
+	h := r.Handler()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			r.Counter("c_"+strings.Repeat("x", i%7)+string(rune('a'+i%26))+strings.Repeat("y", i/26), "h")
+		}
+	}()
+	for range 200 {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	}
+	<-done
+}
