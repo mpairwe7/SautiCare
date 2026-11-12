@@ -23,6 +23,7 @@ var gatedFiles = []string{
 	"gated/screens.yaml",
 	"gated/triage.yaml",
 	"gated/tool1.yaml",
+	"gated/sms.yaml",
 }
 
 // separatelyVersioned are gated files with their own version, stamped where
@@ -69,6 +70,7 @@ func Load(fsys fs.FS) (Bundle, error) {
 		{"gated/screens.yaml", &b.Screens},
 		{"gated/triage.yaml", &b.Triage},
 		{"gated/tool1.yaml", &b.Tool1},
+		{"gated/sms.yaml", &b.SMS},
 	}
 	// Each file is read exactly once; the fingerprint covers the very bytes
 	// that were decoded, so it always identifies the parameters in force.
@@ -108,6 +110,9 @@ func Load(fsys fs.FS) (Bundle, error) {
 	}
 	if err := b.Tool1.Validate(); err != nil {
 		return Bundle{}, err
+	}
+	if err := b.SMS.Validate(); err != nil {
+		return Bundle{}, fmt.Errorf("config: gated/sms.yaml: %w", err)
 	}
 	if b.Triage.RulesFile == "" || len(b.Triage.TrustedKeys) == 0 {
 		return Bundle{}, errors.New("config: gated/triage.yaml needs rules_file and at least one trusted key")

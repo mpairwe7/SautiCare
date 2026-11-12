@@ -20,6 +20,7 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | `config/gated/triage.yaml` | `rules_file`, `trusted_keys` | `triage-rules/tool1.yaml`; one `dev-` key | ADR-0019: who may sign clinical rules; a `dev-` key blocks production |
 | `config/gated/gazetteer.yaml` | wards, landmarks, aliases, stages, facilities (versioned) | synthetic `placeholder-2026-11-13` | ADR-0020; separately versioned (not in the fingerprint); `sautictl gazetteer load` |
 | `triage-rules/tool1.yaml` (+ `.sig`, `scenarios.yaml`) | signed decision table | `tool1-placeholder-0.1`, `protocol_status: pending` | ADR-0019; gated |
+| `config/gated/sms.yaml` | `templates` (alert, alert_amended, stand_down, availability_expiring, helper_on_the_way, forwarded_to_facility, facility_forward; en, lg) | `PENDING-SMS` placeholders, `status: placeholder` | hard constraint 6, decision 1: only the incident number, colour, category, and — in the amended templates — ward and landmark; one GSM-7 segment; production refuses placeholders |
 | `config/gated/dispatch.yaml` | `mode` | `protocol` | ring 1 only until the decisions 1, 2, 6 amendment |
 | | `ring_step_metres` / `ring_interval` | `500` / `60s` | Build Prompt §10.4, decision 2 |
 | | `max_radius_metres` | `2500` | decision 2 |
