@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review configuration for a safety-critical emergency dispatch
+# system. Findings must be resolved before merge (global PR gate rules).
+language: en-GB
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+    # Phases ship as stacked PRs (each <= 100 files); review PRs whose base is
+    # another phase branch, not only main.
+    base_branches:
+      - ".*"
+  path_filters:
+    - "!**/opdb/**"
+    - "!**/auditdb/**"
+    - "!go.sum"
+    - "!build/tools.sum"
+  path_instructions:
+    - path: "db/**/migrations/**"
+      instructions: >-
+        Migrations are forward-only and checksummed: an already-merged migration
+        must never be edited; fixes go in a new file. Check least-privilege
+        GRANTs, REVOKE from PUBLIC (functions default to EXECUTE for PUBLIC),
+        SECURITY DEFINER functions pinning search_path, database-set timestamps
+        (clock_timestamp), and that no phone number, name or free text can reach
+        the audit, analytic or outbox payloads.
+    - path: "db/analytic/**"
+      instructions: >-
+        Analytic schema changes need a protocol amendment and PI approval. Only
+        pseudonymised data; location at parish/landmark level; consent gate.
+    - path: "triage-rules/**"
+      instructions: >-
+        Clinical logic owned by the emergency-medicine co-investigators. No rule
+        may lower a severity; every change needs a version bump, passing clinical
+        scenarios and, during the study window, an amendment record.
+    - path: "config/**"
+      instructions: >-
+        Gated configuration: while study_window_active is true any change needs a
+        matching governance/amendments.yaml record. Section 11 flags stay off.
+    - path: "internal/audit/**"
+      instructions: >-
+        Tamper-evident ledger: the canonical encoding must stay byte-identical to
+        audit.canonical() in SQL; entries carry only event type, incident ID,
+        staff ID, logic version and hashes; the relay must never skip or copy
+        unknown fields.
+    - path: "internal/crypto/**"
+      instructions: >-
+        AES-256-GCM with row-bound AAD, unique nonces, ML-DSA-65 with a context
+        string. No key material in code or logs; dev keys never in production.
+    - path: "internal/platform/**"
+      instructions: >-
+        Adapters translate, the domain decides. Outbound HTTP only through
+        platform/egress; no PII in logs; every external call has a deadline;
+        dispatch never waits on payments, analytics, audit or monitoring.
+chat:
+  auto_reply: true

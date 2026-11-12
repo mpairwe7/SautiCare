@@ -1,0 +1,44 @@
+# --- Governing documents: confidential, never committed (public repo) ---
+# ISP v3.0 is classified "Confidential, internal"; see docs/adr/ADR-0008.
+/*.pdf
+/sa/
+/protocol/
+/agreements/
+*.docx
+
+# --- Secrets and keys: never in Git (OpenBao delivers them at runtime) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+/.devkeys/
+/var/
+
+# --- Go ---
+/bin/
+/dist/
+/vendor/
+*.test
+*.out
+coverage.*
+/tmp/
+
+# --- Node / console ---
+node_modules/
+/web/console/dist/
+/web/console/.vite/
+/web/console/test-results/
+/web/console/playwright-report/
+
+# --- Python (governance tooling, analytics) ---
+__pycache__/
+*.pyc
+.venv/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,13 @@
+# Code owners (Build Prompt rule 3.11; spec §10).
+# INTERIM: every path is owned by the repository owner until the role holders
+# have accounts. Intended owners, to substitute when they do:
+#   /triage-rules/            emergency-medicine co-investigator
+#   /db/analytic/             Principal Investigator
+#   /config/  /governance/    Principal Investigator (study window, amendments, flags)
+#   /db/linkage/              Principal Investigator
+*                 @mpairwe7
+/triage-rules/    @mpairwe7
+/db/analytic/     @mpairwe7
+/db/linkage/      @mpairwe7
+/config/          @mpairwe7
+/governance/      @mpairwe7
