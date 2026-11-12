@@ -22,7 +22,8 @@ There are five PostgreSQL 18 databases (`sauti_<store>`). Each has an owner role
 | `op_relay` | operational | — | EXECUTE `claim_outbox`, `mark_outbox_delivered`, `default_partition_rows`, `ensure_event_partitions` (the leader keeps partitions three months ahead) |
 | `op_readonly` | operational | SELECT `incidents`, `incident_events`, `event_keys`, `incident_transitions`, `outbox`, `config_versions`, `key_periods` (not `sessions`) | EXECUTE `default_partition_rows` |
 | `op_console` | operational | SELECT `incidents`, `incident_events` | EXECUTE `split_incident` (coordinator split, M1) |
-| `op_ivr`, `op_dispatch`, `op_payments`, `op_pseudonymiser`, `op_retention` | operational | none yet: granted in their milestones | — |
+| `op_ivr` | operational | SELECT `incidents`, `incident_events`, `sessions`, gazetteer tables, `config_versions` (never `ussd_steps`) | EXECUTE `open_incident`, `append_incident_event`, `resume_session`, `store_identifier`, `match_landmark` (M1 voice line) |
+| `op_dispatch`, `op_payments`, `op_pseudonymiser`, `op_retention` | operational | none yet: granted in their milestones | — |
 | `audit_appender` | audit | — | EXECUTE `append`, `head`, `save_checkpoint` |
 | `audit_reader` | audit | SELECT `entries`, `checkpoints` | — |
 | `an_writer` | analytic | SELECT/DELETE `meds_records`, INSERT on its data columns only (not `exported_at`); SELECT `suppression_ledger`, INSERT on its data columns only (not `withdrawn_at`) | — |

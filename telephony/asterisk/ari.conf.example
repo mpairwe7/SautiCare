@@ -1,0 +1,13 @@
+; ARI user for ivr-controller. The password is provisioned from OpenBao by
+; Ansible (P0) and given to ivr-controller as SAUTI_ARI_PASSWORD; it is never
+; committed. read_only must stay "no": the controller answers, plays and hangs
+; up. ARI exposes recording endpoints too; the Sauti client never calls them
+; (internal/platform/ari, TestNoRecordingEndpointsUsed).
+[general]
+enabled = yes
+pretty = no
+allowed_origins =
+
+[sauti]
+type = user
+read_only = no

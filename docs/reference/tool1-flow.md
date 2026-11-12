@@ -30,6 +30,8 @@ The eight screens of Data Collection Tool 1 (Build Prompt §10.1). The wording, 
 
 **Resume** applies when the caller redials from the same number within `resume_window` (10 min), on either channel, while the incident is open and unfinished (`last_screen < 8`, not closed or merged). The redial continues at the first unanswered screen through a new session row and a `session.resumed` event; reference and T1 are unchanged. A withheld number never resumes.
 
+**Voice line** (ADR-0023). The same screens are played as recorded prompts and answered on the keypad, through the same machine and events (channel `ivr`). On screen 7, option 6 is "another landmark": there is no free text on the keypad, so the incident is located at ward level and flagged `needs_location_callback`. A withheld number is asked for a callback number, typed and ended with `#`. A caller who dropped on USSD and rings the line within 10 minutes resumes the same incident. After 15 s of silence the prompt is replayed; after two replays the call ends, and the abandonment sweeper and resume take over. Nothing is recorded.
+
 **USSD input.** Each step stores the prompt it showed and the input length it consumed. The next callback's answer is the text after that prefix, and the prefix is verified by its keyed hash. Invalid input repeats the screen with `messages.invalid`.
 
 **Abandonment.** A session silent for `abandon_after` (120 s) is flagged `abandoned`, and also `abandoned_before_category` if it never reached a category. After a danger `yes`, before T2, it is escalated with reason `abandoned_after_danger_yes` (runbook `abandoned-danger-callback.md`).

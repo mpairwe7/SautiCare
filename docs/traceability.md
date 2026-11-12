@@ -36,7 +36,7 @@ Policy documents are cited by section only (they are confidential, ADR-0008).
 | # | Constraint | Status | Proof (M0) | Remaining |
 |---|---|---|---|---|
 | 1 | Data stays in Uganda | Verified | `internal/platform/egress/egress_test.go::TestEgressDeniesRedirectToUnlistedHost` | P0 network controls |
-| 2 | Basic phone first | Partial | `internal/platform/africastalking/ussd_test.go::TestATParsesFormAndRendersCONEND`<br>`internal/intake/machine_test.go::TestEveryRenderedScreenFitsLimitAndGSM7`<br>`tests/e2e/m1_intake_test.go::TestScenario5ResumedSessionCompletes` | M1 Part C IVR; M2 responder channels |
+| 2 | Basic phone first | Partial | `internal/platform/africastalking/ussd_test.go::TestATParsesFormAndRendersCONEND`<br>`internal/intake/machine_test.go::TestEveryRenderedScreenFitsLimitAndGSM7`<br>`tests/e2e/m1_intake_test.go::TestScenario5ResumedSessionCompletes`<br>`tests/e2e/m1_ivr_test.go::TestScenario5FinishOnIVR` | M2 responder channels |
 | 3 | Deterministic triage and dispatch; no model lowers severity | Partial | `internal/incident/fold_test.go::TestApplyRejectsSeverityLowering`<br>`internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering`<br>`internal/triage/triage_test.go::TestRuleTableFromBuildPrompt`<br>`internal/triage/triage_test.go::TestLoadRejectsNonTotalTable` | M2 ranking |
 | 4 | Server-side time | Verified | `internal/platform/pg/opstore/opstore_integration_test.go::TestOpenIncidentSetsT1FromDatabase` | M3 attested T5 verification |
 | 5 | Never reveal the caller's number | Partial | `internal/pii/pii_test.go::TestPhoneMasksEverywhere`<br>`internal/platform/logging/redact_test.go::TestRedactionMasksPhoneInsideErrorValues`<br>`internal/intake/service_test.go::TestCallbackNumberNeverInPayloadOrSteps`<br>`internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRejectsWhatFoldRejects`<br>`tests/e2e/m1_intake_test.go::TestNoCallerNumberInLogs` | M2 masked bridge; M5 audited reveal |
@@ -60,7 +60,7 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 | 2 | Yellow obstetric cascade depth 3 | M2 |
 | 3 | Poisoning with screen 5 = no is yellow | M1 — **verified:** `tests/e2e/m1_intake_test.go::TestScenario3PoisoningIsYellow` |
 | 4 | Three bystanders, one crash: merge; coordinator split | M1 — **verified:** `tests/e2e/m1_dedup_test.go::TestScenario4ThreeBystandersOneIncident` |
-| 5 | USSD drops at screen 6: resume within 10 min or finish on IVR | M1 — **USSD part verified:** `tests/e2e/m1_intake_test.go::TestScenario5RedialResumesAtScreen6`, `tests/e2e/m1_intake_test.go::TestScenario5ResumedSessionCompletes`; IVR finish: M1 Part C |
+| 5 | USSD drops at screen 6: resume within 10 min or finish on IVR | M1 — **verified:** `tests/e2e/m1_intake_test.go::TestScenario5RedialResumesAtScreen6`, `tests/e2e/m1_intake_test.go::TestScenario5ResumedSessionCompletes`, `tests/e2e/m1_ivr_test.go::TestScenario5FinishOnIVR` |
 | 6 | Somewhere else: 999/112 message; record kept and flagged | M1 — **verified:** `tests/e2e/m1_intake_test.go::TestScenario6SomewhereElse` |
 | 7 | Nobody accepts: rings to 2.5 km, health centre acknowledges | M2 |
 | 8 | First health centre silent: next nearest called | M2 |

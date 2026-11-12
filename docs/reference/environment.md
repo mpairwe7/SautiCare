@@ -12,7 +12,11 @@ Processes read deployment settings from the environment (12-factor), so a later 
 | `SAUTI_OP_DSN` | intake-gw (`op_intake`), outbox-relay (`op_relay`) | operational store DSN, least-privileged role | — (required) |
 | `SAUTI_AUDIT_DSN` | outbox-relay (`audit_appender`) | audit store DSN | — (required) |
 | `SAUTI_HTTP_ADDR` | intake-gw / outbox-relay | callback listener / health and metrics listener | `:8080` / `127.0.0.1:9101` |
-| `SAUTI_ADMIN_ADDR` | intake-gw | health and metrics listener | `127.0.0.1:9100` |
+| `SAUTI_ADMIN_ADDR` | intake-gw / ivr-controller | health and metrics listener | `127.0.0.1:9100` / `127.0.0.1:9101` |
+| `SAUTI_ARI_URL` | ivr-controller | Asterisk HTTP server carrying ARI; loopback only | `http://127.0.0.1:8088` |
+| `SAUTI_ARI_USER` | ivr-controller | ARI user | `sauti` |
+| `SAUTI_ARI_PASSWORD` | ivr-controller | ARI password (secret: OpenBao in production) | required |
+| `SAUTI_ARI_APP` | ivr-controller | Stasis application the dialplan hands calls to | `sauti-ivr` |
 | `SAUTI_AT_PATH_TOKEN` | intake-gw | secret callback path token, ≥ 24 characters | — (required) |
 | `SAUTI_USSD_SERVICE_CODES` | intake-gw | comma-separated accepted service codes | — (required) |
 | `SAUTI_RULES_ROOT` | intake-gw | directory holding `triage-rules/` (the signed bundle named by `config/gated/triage.yaml`) | `.` |

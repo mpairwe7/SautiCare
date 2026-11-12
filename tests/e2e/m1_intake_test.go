@@ -51,6 +51,7 @@ type intakeRig struct {
 	ussd *sim.USSD
 	ro   *opstore.Store
 	logs *syncBuffer
+	keys *devkeys.Store // shared by every process, as OpenBao is in production
 }
 
 // newIntakeRig runs intake-gw's components (wiring.BuildIntake behind the
@@ -114,7 +115,7 @@ func newIntakeRig(t *testing.T) *intakeRig {
 		t.Fatal(err)
 	}
 	t.Cleanup(ro.Close)
-	return &intakeRig{c: c, ussd: sim.NewUSSD(srv.URL, token, "*384*1#", "64110"), ro: opstore.New(ro), logs: logs}
+	return &intakeRig{c: c, ussd: sim.NewUSSD(srv.URL, token, "*384*1#", "64110"), ro: opstore.New(ro), logs: logs, keys: keys}
 }
 
 func walk(t *testing.T, s *sim.USSDSession, inputs ...string) sim.Screen {

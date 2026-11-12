@@ -302,3 +302,20 @@ threats:
       - internal/platform/pg/opstore/dedup_integration_test.go::TestConcurrentCompletionsOneSurvivor
       - internal/platform/pg/opstore/dedup_integration_test.go::TestSplitIncident
       - tests/e2e/m1_dedup_test.go::TestScenario4ThreeBystandersOneIncident
+
+  - id: T-022
+    title: Calls recorded, or the voice line driven by forged ARI events
+    stride: Spoofing
+    linddun: Disclosure of information
+    asset: callers' voices and the voice intake
+    hard_constraints: [1, 5, 13]
+    mitigations:
+      - The ARI client has no record, snoop, bridge or external-media call; the dialplan has no Monitor/Record
+      - ARI on loopback only, basic auth with an OpenBao-held password, egress allowlist to the Asterisk host
+      - IDs from events restricted to Asterisk's shape before use in a path; event decoding fuzzed
+    verified_by:
+      - internal/platform/ari/client_test.go::TestNoRecordingEndpointsUsed
+      - internal/platform/ari/client_test.go::TestClientRejectsWrongCredentials
+      - internal/platform/ari/client_test.go::TestClientAnswersPlaysAndHangsUp
+      - tests/e2e/m1_ivr_test.go::TestScenario5FinishOnIVR
+      - "planned:P0 nftables keeps Asterisk HTTP on loopback; ARI credential in OpenBao"
