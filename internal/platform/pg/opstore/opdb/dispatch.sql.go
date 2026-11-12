@@ -50,6 +50,46 @@ func (q *Queries) AcknowledgeForward(ctx context.Context, arg AcknowledgeForward
 	return changed, err
 }
 
+const alertForAttempt = `-- name: AlertForAttempt :one
+SELECT a.id, a.incident_id, a.responder_id, a.role, a.outcome, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
+FROM op.alert_attempts x JOIN op.alerts a ON a.id = x.alert_id JOIN op.incidents i ON i.id = a.incident_id
+WHERE x.id = $1::uuid AND x.channel = 'voice'
+`
+
+type AlertForAttemptRow struct {
+	ID          pgtype.UUID
+	IncidentID  pgtype.UUID
+	ResponderID pgtype.UUID
+	Role        string
+	Outcome     string
+	Reference   string
+	Severity    *string
+	Category    *string
+	Ward        *string
+	Landmark    *string
+	Language    *string
+}
+
+// The alert an answered voice call is about (by its attempt).
+func (q *Queries) AlertForAttempt(ctx context.Context, attemptID pgtype.UUID) (AlertForAttemptRow, error) {
+	row := q.db.QueryRow(ctx, alertForAttempt, attemptID)
+	var i AlertForAttemptRow
+	err := row.Scan(
+		&i.ID,
+		&i.IncidentID,
+		&i.ResponderID,
+		&i.Role,
+		&i.Outcome,
+		&i.Reference,
+		&i.Severity,
+		&i.Category,
+		&i.Ward,
+		&i.Landmark,
+		&i.Language,
+	)
+	return i, err
+}
+
 const autoSuspendDispatch = `-- name: AutoSuspendDispatch :one
 SELECT op.auto_suspend_dispatch($1::int, $2::int)::boolean AS changed
 `
@@ -594,6 +634,45 @@ func (q *Queries) DispatchSuspended(ctx context.Context) (bool, error) {
 	var suspended bool
 	err := row.Scan(&suspended)
 	return suspended, err
+}
+
+const dueVoiceAlerts = `-- name: DueVoiceAlerts :many
+SELECT a.id, a.responder_id FROM op.alerts a
+WHERE a.outcome = 'pending' AND a.sent_at <= clock_timestamp() - $1::interval AND NOT op.dispatch_suspended()
+  AND NOT EXISTS (SELECT 1 FROM op.alert_attempts x WHERE x.alert_id = a.id AND x.channel = 'voice')
+ORDER BY a.sent_at LIMIT $2::int
+`
+
+type DueVoiceAlertsParams struct {
+	After   pgtype.Interval
+	MaxRows int32
+}
+
+type DueVoiceAlertsRow struct {
+	ID          pgtype.UUID
+	ResponderID pgtype.UUID
+}
+
+// Alerts due a voice call (ivr-controller): pending, sent at least `after`
+// ago, no voice attempt yet, dispatch not suspended.
+func (q *Queries) DueVoiceAlerts(ctx context.Context, arg DueVoiceAlertsParams) ([]DueVoiceAlertsRow, error) {
+	rows, err := q.db.Query(ctx, dueVoiceAlerts, arg.After, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DueVoiceAlertsRow
+	for rows.Next() {
+		var i DueVoiceAlertsRow
+		if err := rows.Scan(&i.ID, &i.ResponderID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const finishAttempt = `-- name: FinishAttempt :one

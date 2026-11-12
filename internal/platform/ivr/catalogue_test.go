@@ -50,6 +50,9 @@ func requiredSounds(t *testing.T) []string {
 	for _, s := range Fallback() {
 		set[s] = true
 	}
+	for _, s := range AlertSounds(b.Tool1, b.Responder) {
+		set[s] = true
+	}
 	for d := '0'; d <= '9'; d++ {
 		set["sauti/digits/"+string(d)] = true
 	}

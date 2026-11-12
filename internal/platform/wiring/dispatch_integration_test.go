@@ -102,6 +102,7 @@ type engineRig struct {
 	cfg        config.Bundle
 	ids        crypto.Identifiers
 	intake     *opstore.Store
+	ivr        *opstore.Store
 	console    *opstore.Store
 	store      *hooked
 	deliveries *recorder
@@ -139,7 +140,7 @@ func newEngineRig(t *testing.T, mutate func(*config.Bundle)) *engineRig {
 		return opstore.New(p)
 	}
 	r := &engineRig{c: c, cfg: cfg, ids: crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)},
-		intake: pool("op_intake"), console: pool("op_console"), deliveries: &recorder{}, suspension: &flag{}}
+		intake: pool("op_intake"), ivr: pool("op_ivr"), console: pool("op_console"), deliveries: &recorder{}, suspension: &flag{}}
 	r.store = &hooked{Store: pool("op_dispatch")}
 	r.rebuild(t)
 	return r

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -43,6 +44,7 @@ type Event struct {
 	CallerNumber string
 	Digit        string
 	PlaybackID   string
+	Args         []string // StasisStart: the application arguments of an originated call
 }
 
 // Config configures the client.
@@ -82,23 +84,61 @@ func New(cfg Config) (*Client, error) {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values) error {
+	_, err := c.doBody(ctx, method, path, q)
+	return err
+}
+
+func (c *Client) doBody(ctx context.Context, method, path string, q url.Values) ([]byte, error) {
 	u := *c.base
 	u.Path = strings.TrimRight(u.Path, "/") + path
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("ari: %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("ari: %s %s: %w", method, path, err)
 	}
-	_ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil, fmt.Errorf("ari: %s %s: %w", method, path, err)
+	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("ari: %s %s: status %d", method, path, resp.StatusCode)
+		return nil, fmt.Errorf("ari: %s %s: status %d", method, path, resp.StatusCode)
 	}
-	return nil
+	return body, nil
+}
+
+// Originate dials endpoint into this client's Stasis application with
+// args, for an outbound alert call (M2 Part B); it returns the new
+// channel's ID. When the callee answers, the channel's StasisStart carries
+// args. timeout is how long it rings.
+func (c *Client) Originate(ctx context.Context, endpoint, callerID string, args []string, timeout time.Duration) (string, error) {
+	if endpoint == "" || len(endpoint) > 256 || strings.ContainsAny(endpoint, "\r\n&") {
+		return "", errors.New("ari: invalid endpoint")
+	}
+	if err := ids(args...); err != nil {
+		return "", err
+	}
+	q := url.Values{"endpoint": {endpoint}, "app": {c.cfg.App}, "appArgs": {strings.Join(args, ",")},
+		"timeout": {strconv.Itoa(max(1, int(timeout.Seconds())))}}
+	if callerID != "" {
+		q.Set("callerId", callerID)
+	}
+	body, err := c.doBody(ctx, http.MethodPost, "/ari/channels", q)
+	if err != nil {
+		return "", err
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &ch); err != nil || !safeID.MatchString(ch.ID) {
+		return "", errors.New("ari: originate returned no channel")
+	}
+	return ch.ID, nil
 }
 
 func ids(xs ...string) error {
@@ -172,8 +212,9 @@ func (c *Client) Hangup(ctx context.Context, channelID string) error {
 }
 
 type rawEvent struct {
-	Type    string `json:"type"`
-	Digit   string `json:"digit"`
+	Type    string   `json:"type"`
+	Digit   string   `json:"digit"`
+	Args    []string `json:"args"`
 	Channel *struct {
 		ID     string `json:"id"`
 		Caller struct {
@@ -191,7 +232,7 @@ func decodeEvent(b []byte) (Event, error) {
 	if err := json.Unmarshal(b, &r); err != nil {
 		return Event{}, err
 	}
-	e := Event{Type: r.Type, Digit: r.Digit}
+	e := Event{Type: r.Type, Digit: r.Digit, Args: r.Args}
 	if r.Channel != nil {
 		e.ChannelID, e.CallerNumber = r.Channel.ID, r.Channel.Caller.Number
 	}

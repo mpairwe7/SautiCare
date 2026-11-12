@@ -13,6 +13,7 @@ import (
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/pg/opstore/opdb"
+	"sautihealth.com/sauti/internal/responder"
 )
 
 // CallerContact returns the caller's sealed number for SMS (op_dispatch):
@@ -118,4 +119,30 @@ func (s *Store) NoticeFacility(ctx context.Context, incidentID uuid.UUID, kind s
 		return "", fmt.Errorf("opstore: notice facility: %w", notFound(err))
 	}
 	return f, nil
+}
+
+// DueVoiceAlerts lists alerts due a voice call (ivr-controller, op_ivr).
+func (s *Store) DueVoiceAlerts(ctx context.Context, after time.Duration, limit int) ([]dispatch.VoiceAlert, error) {
+	rows, err := s.q.DueVoiceAlerts(ctx, opdb.DueVoiceAlertsParams{After: pgtype.Interval{Microseconds: after.Microseconds(), Valid: true},
+		MaxRows: int32(min(limit, 1000))}) //nolint:gosec // bounded above
+	if err != nil {
+		return nil, fmt.Errorf("opstore: due voice alerts: %w", err)
+	}
+	out := make([]dispatch.VoiceAlert, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, dispatch.VoiceAlert{AlertID: uuid.UUID(r.ID.Bytes), ResponderID: uuid.UUID(r.ResponderID.Bytes)})
+	}
+	return out, nil
+}
+
+// AlertForAttempt returns the alert a voice attempt is about and its
+// responder (ivr-controller: an answered alert call).
+func (s *Store) AlertForAttempt(ctx context.Context, attempt uuid.UUID) (dispatch.ResponderAlert, uuid.UUID, error) {
+	r, err := s.q.AlertForAttempt(ctx, pgID(attempt))
+	if err != nil {
+		return dispatch.ResponderAlert{}, uuid.UUID{}, fmt.Errorf("opstore: alert for attempt: %w", notFound(err))
+	}
+	return dispatch.ResponderAlert{AlertID: uuid.UUID(r.ID.Bytes), IncidentID: uuid.UUID(r.IncidentID.Bytes), Role: responder.Role(r.Role),
+		Outcome: r.Outcome, Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference), Severity: incident.Severity(deref(r.Severity)),
+			Category: deref(r.Category), Ward: deref(r.Ward), Landmark: deref(r.Landmark), Language: deref(r.Language)}}, uuid.UUID(r.ResponderID.Bytes), nil
 }

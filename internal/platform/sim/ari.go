@@ -3,8 +3,10 @@ package sim
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +28,7 @@ import (
 // with SetPlaybackDuration, when stopped (DELETE /ari/playbacks/{id}), or
 // when the test calls FinishPlayback.
 type FakeARI struct {
+	originated []url.Values
 	srv        *httptest.Server
 	user, pass string
 	mu         sync.Mutex
@@ -150,6 +153,14 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		f.connected <- struct{}{}
 		_, _, _ = c.Read(r.Context()) // hold until the client goes away
+	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "channels":
+		f.mu.Lock()
+		f.originated = append(f.originated, r.URL.Query())
+		id := fmt.Sprintf("out-%d", len(f.originated))
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":%q}`, id)
+		return
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "channels" && parts[3] == "answer":
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "channels" && parts[3] == "continue":
@@ -279,4 +290,17 @@ func (f *FakeARI) Continued(channelID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.continued[channelID]
+}
+
+// Originated returns the originate requests' query parameters, in order.
+func (f *FakeARI) Originated() []url.Values {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.originated)
+}
+
+// Answered emits the StasisStart of an originated call the callee answered,
+// with the application arguments it was originated with.
+func (f *FakeARI) Answered(channelID string, args ...string) {
+	f.Emit(map[string]any{"type": "StasisStart", "args": args, "channel": map[string]any{"id": channelID}})
 }

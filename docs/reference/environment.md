@@ -17,6 +17,9 @@ Processes read deployment settings from the environment (12-factor), so a later 
 | `SAUTI_ARI_USER` | ivr-controller | ARI user | `sauti` |
 | `SAUTI_ARI_PASSWORD` | ivr-controller | ARI password (secret: OpenBao in production) | required |
 | `SAUTI_ARI_APP` | ivr-controller | Stasis application the dialplan hands calls to | `sauti-ivr` |
+| `SAUTI_ARI_ALERT_APP` | ivr-controller | Stasis application of outbound alert calls | `sauti-alerts` |
+| `SAUTI_ARI_DIAL` | ivr-controller | endpoint template for alert calls with `{number}` (e.g. `PJSIP/{number}@sauti-trunk`; the trunk is provisioned in P0); unset: no voice alerts | — |
+| `SAUTI_ARI_CALLER_ID` | ivr-controller | the number responders see on an alert call (placeholder until P0) | — |
 | `SAUTI_AT_PATH_TOKEN` | intake-gw | secret callback path token, ≥ 24 characters | — (required) |
 | `SAUTI_AT_DELIVERY_TOKEN` | intake-gw | secret path token of the SMS delivery-report callback (`/v1/sms/delivery/at/<token>`), ≥ 24 characters; unset: not served | — |
 | `SAUTI_AT_API_KEY` | dispatch-worker | Africa's Talking API key (secret: OpenBao in production); unset: simulated delivery, development and tests only | — |

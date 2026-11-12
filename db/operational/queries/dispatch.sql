@@ -189,3 +189,17 @@ WHERE responder_id = sqlc.arg(responder_id)::uuid AND period @> clock_timestamp(
 -- name: ResponderAlertHistory :many
 SELECT id, incident_id, role, sent_at, outcome, decline_reason, responded_at FROM op.alerts
 WHERE responder_id = sqlc.arg(responder_id)::uuid ORDER BY sent_at DESC LIMIT sqlc.arg(max_rows)::int;
+
+-- Alerts due a voice call (ivr-controller): pending, sent at least `after`
+-- ago, no voice attempt yet, dispatch not suspended.
+-- name: DueVoiceAlerts :many
+SELECT a.id, a.responder_id FROM op.alerts a
+WHERE a.outcome = 'pending' AND a.sent_at <= clock_timestamp() - sqlc.arg(after)::interval AND NOT op.dispatch_suspended()
+  AND NOT EXISTS (SELECT 1 FROM op.alert_attempts x WHERE x.alert_id = a.id AND x.channel = 'voice')
+ORDER BY a.sent_at LIMIT sqlc.arg(max_rows)::int;
+
+-- The alert an answered voice call is about (by its attempt).
+-- name: AlertForAttempt :one
+SELECT a.id, a.incident_id, a.responder_id, a.role, a.outcome, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
+FROM op.alert_attempts x JOIN op.alerts a ON a.id = x.alert_id JOIN op.incidents i ON i.id = a.incident_id
+WHERE x.id = sqlc.arg(attempt_id)::uuid AND x.channel = 'voice';

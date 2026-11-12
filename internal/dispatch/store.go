@@ -131,3 +131,9 @@ type AlertHistory struct {
 	DeclineReason       string
 	RespondedAt         *time.Time
 }
+
+// VoiceAlert is an alert due a voice call (the ladder: SMS at once, voice
+// when still pending after voice_fallback_after).
+type VoiceAlert struct {
+	AlertID, ResponderID uuid.UUID
+}

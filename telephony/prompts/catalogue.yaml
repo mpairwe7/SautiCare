@@ -21,6 +21,21 @@ sounds:
     - sauti/en/age_band-age_60_plus
     - sauti/en/age_band-under_5
     - sauti/en/age_band-unknown
+    - sauti/en/alert-accepted
+    - sauti/en/alert-already-assigned
+    - sauti/en/alert-already-taken
+    - sauti/en/alert-category-acute_medical
+    - sauti/en/alert-category-obstetric
+    - sauti/en/alert-category-other
+    - sauti/en/alert-category-poisoning
+    - sauti/en/alert-category-trauma
+    - sauti/en/alert-colour-green
+    - sauti/en/alert-colour-red
+    - sauti/en/alert-colour-yellow
+    - sauti/en/alert-declined
+    - sauti/en/alert-intro
+    - sauti/en/alert-no-longer-needed
+    - sauti/en/alert-options
     - sauti/en/callback
     - sauti/en/callback-same_number
     - sauti/en/callback-withheld
@@ -35,6 +50,8 @@ sounds:
     - sauti/en/danger-no
     - sauti/en/danger-unknown
     - sauti/en/danger-yes
+    - sauti/en/decline-reasons-transporter
+    - sauti/en/decline-reasons-vht
     - sauti/en/first_aid-acute_medical
     - sauti/en/first_aid-obstetric
     - sauti/en/first_aid-other
@@ -96,6 +113,21 @@ sounds:
     - sauti/lg/age_band-age_60_plus
     - sauti/lg/age_band-under_5
     - sauti/lg/age_band-unknown
+    - sauti/lg/alert-accepted
+    - sauti/lg/alert-already-assigned
+    - sauti/lg/alert-already-taken
+    - sauti/lg/alert-category-acute_medical
+    - sauti/lg/alert-category-obstetric
+    - sauti/lg/alert-category-other
+    - sauti/lg/alert-category-poisoning
+    - sauti/lg/alert-category-trauma
+    - sauti/lg/alert-colour-green
+    - sauti/lg/alert-colour-red
+    - sauti/lg/alert-colour-yellow
+    - sauti/lg/alert-declined
+    - sauti/lg/alert-intro
+    - sauti/lg/alert-no-longer-needed
+    - sauti/lg/alert-options
     - sauti/lg/callback
     - sauti/lg/callback-same_number
     - sauti/lg/callback-withheld
@@ -110,6 +142,8 @@ sounds:
     - sauti/lg/danger-no
     - sauti/lg/danger-unknown
     - sauti/lg/danger-yes
+    - sauti/lg/decline-reasons-transporter
+    - sauti/lg/decline-reasons-vht
     - sauti/lg/first_aid-acute_medical
     - sauti/lg/first_aid-obstetric
     - sauti/lg/first_aid-other
