@@ -113,3 +113,20 @@ type MessageFacts struct {
 	Landmark  string // gazetteer landmark ID ("other": a free-text landmark, never sent)
 	Language  string // the caller's Tool 1 language
 }
+
+// ResponderAlert is a responder's own pending alert, as their menu shows it.
+type ResponderAlert struct {
+	AlertID, IncidentID uuid.UUID
+	Role                responder.Role
+	Facts               MessageFacts
+}
+
+// AlertHistory is one line of a responder's history (scenario 10).
+type AlertHistory struct {
+	AlertID, IncidentID uuid.UUID
+	Role                responder.Role
+	SentAt              time.Time
+	Outcome             string
+	DeclineReason       string
+	RespondedAt         *time.Time
+}

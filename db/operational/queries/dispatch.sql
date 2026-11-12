@@ -171,3 +171,19 @@ SELECT reference, severity, category, ward, landmark, language FROM op.incidents
 -- name: NoticeFacility :one
 SELECT coalesce(facility_id, '')::text AS facility_id FROM op.caller_notices
 WHERE incident_id = sqlc.arg(incident_id)::uuid AND kind = sqlc.arg(kind)::text;
+
+-- The responder's own latest pending alert, with what the menu may show.
+-- name: PendingAlertFor :many
+SELECT a.id, a.incident_id, a.role, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
+FROM op.alerts a JOIN op.incidents i ON i.id = a.incident_id
+WHERE a.responder_id = sqlc.arg(responder_id)::uuid AND a.outcome = 'pending'
+ORDER BY a.sent_at DESC LIMIT 1;
+
+-- name: AvailableUntil :many
+SELECT upper(period)::timestamptz AS until FROM op.availability
+WHERE responder_id = sqlc.arg(responder_id)::uuid AND period @> clock_timestamp();
+
+-- A responder's alerts, newest first (scenario 10: decline reasons shown).
+-- name: ResponderAlertHistory :many
+SELECT id, incident_id, role, sent_at, outcome, decline_reason, responded_at FROM op.alerts
+WHERE responder_id = sqlc.arg(responder_id)::uuid ORDER BY sent_at DESC LIMIT sqlc.arg(max_rows)::int;

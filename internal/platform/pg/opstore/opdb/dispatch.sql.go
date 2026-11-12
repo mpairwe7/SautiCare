@@ -66,6 +66,31 @@ func (q *Queries) AutoSuspendDispatch(ctx context.Context, arg AutoSuspendDispat
 	return changed, err
 }
 
+const availableUntil = `-- name: AvailableUntil :many
+SELECT upper(period)::timestamptz AS until FROM op.availability
+WHERE responder_id = $1::uuid AND period @> clock_timestamp()
+`
+
+func (q *Queries) AvailableUntil(ctx context.Context, responderID pgtype.UUID) ([]pgtype.Timestamptz, error) {
+	rows, err := q.db.Query(ctx, availableUntil, responderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.Timestamptz
+	for rows.Next() {
+		var until pgtype.Timestamptz
+		if err := rows.Scan(&until); err != nil {
+			return nil, err
+		}
+		items = append(items, until)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const beginAttempt = `-- name: BeginAttempt :one
 SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
 FROM op.begin_attempt($1::uuid, $2::text, $3::text) AS a(attempt_id, fresh)
@@ -718,6 +743,56 @@ func (q *Queries) OldestOverdueDispatch(ctx context.Context) (float64, error) {
 	return seconds, err
 }
 
+const pendingAlertFor = `-- name: PendingAlertFor :many
+SELECT a.id, a.incident_id, a.role, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
+FROM op.alerts a JOIN op.incidents i ON i.id = a.incident_id
+WHERE a.responder_id = $1::uuid AND a.outcome = 'pending'
+ORDER BY a.sent_at DESC LIMIT 1
+`
+
+type PendingAlertForRow struct {
+	ID         pgtype.UUID
+	IncidentID pgtype.UUID
+	Role       string
+	Reference  string
+	Severity   *string
+	Category   *string
+	Ward       *string
+	Landmark   *string
+	Language   *string
+}
+
+// The responder's own latest pending alert, with what the menu may show.
+func (q *Queries) PendingAlertFor(ctx context.Context, responderID pgtype.UUID) ([]PendingAlertForRow, error) {
+	rows, err := q.db.Query(ctx, pendingAlertFor, responderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PendingAlertForRow
+	for rows.Next() {
+		var i PendingAlertForRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IncidentID,
+			&i.Role,
+			&i.Reference,
+			&i.Severity,
+			&i.Category,
+			&i.Ward,
+			&i.Landmark,
+			&i.Language,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordDeliveryReport = `-- name: RecordDeliveryReport :one
 SELECT op.record_delivery_report($1::text, $2::text, $3::text,
                                  $4::boolean)::boolean AS known
@@ -811,6 +886,55 @@ func (q *Queries) RedDispatchOutcomes(ctx context.Context, arg RedDispatchOutcom
 			return nil, err
 		}
 		items = append(items, succeeded)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const responderAlertHistory = `-- name: ResponderAlertHistory :many
+SELECT id, incident_id, role, sent_at, outcome, decline_reason, responded_at FROM op.alerts
+WHERE responder_id = $1::uuid ORDER BY sent_at DESC LIMIT $2::int
+`
+
+type ResponderAlertHistoryParams struct {
+	ResponderID pgtype.UUID
+	MaxRows     int32
+}
+
+type ResponderAlertHistoryRow struct {
+	ID            pgtype.UUID
+	IncidentID    pgtype.UUID
+	Role          string
+	SentAt        pgtype.Timestamptz
+	Outcome       string
+	DeclineReason *string
+	RespondedAt   pgtype.Timestamptz
+}
+
+// A responder's alerts, newest first (scenario 10: decline reasons shown).
+func (q *Queries) ResponderAlertHistory(ctx context.Context, arg ResponderAlertHistoryParams) ([]ResponderAlertHistoryRow, error) {
+	rows, err := q.db.Query(ctx, responderAlertHistory, arg.ResponderID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ResponderAlertHistoryRow
+	for rows.Next() {
+		var i ResponderAlertHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IncidentID,
+			&i.Role,
+			&i.SentAt,
+			&i.Outcome,
+			&i.DeclineReason,
+			&i.RespondedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -40,11 +40,51 @@ func (s *Store) AcceptAlert(ctx context.Context, alert, responderID uuid.UUID) (
 		Role: responder.Role(r.Role)}, nil
 }
 
-// DeclineAlert records a decline (no reason until decision 6's list arrives)
-// and returns the alert's outcome (op_intake, op_ivr).
-func (s *Store) DeclineAlert(ctx context.Context, alert, responderID uuid.UUID) (string, error) {
-	out, err := s.q.DeclineAlert(ctx, opdb.DeclineAlertParams{AlertID: pgID(alert), ResponderID: pgID(responderID)})
+// DeclineAlert records a decline, with a reason code from the configured
+// list once decision 6 is approved ("" for none), and returns the alert's
+// outcome (op_intake, op_ivr).
+func (s *Store) DeclineAlert(ctx context.Context, alert, responderID uuid.UUID, reason string) (string, error) {
+	out, err := s.q.DeclineAlert(ctx, opdb.DeclineAlertParams{AlertID: pgID(alert), ResponderID: pgID(responderID), Reason: strPtr(reason)})
 	return out, mapErr(err)
+}
+
+// PendingAlertFor returns the responder's own latest pending alert (op_intake,
+// op_ivr: the responder menu).
+func (s *Store) PendingAlertFor(ctx context.Context, responderID uuid.UUID) (dispatch.ResponderAlert, bool, error) {
+	rows, err := s.q.PendingAlertFor(ctx, pgID(responderID))
+	if err != nil || len(rows) == 0 {
+		return dispatch.ResponderAlert{}, false, err
+	}
+	r := rows[0]
+	return dispatch.ResponderAlert{AlertID: uuid.UUID(r.ID.Bytes), IncidentID: uuid.UUID(r.IncidentID.Bytes), Role: responder.Role(r.Role),
+		Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference), Severity: incident.Severity(deref(r.Severity)),
+			Category: deref(r.Category), Ward: deref(r.Ward), Landmark: deref(r.Landmark), Language: deref(r.Language)}}, true, nil
+}
+
+// AvailableUntil returns when the responder's current availability period
+// ends; false when they are off.
+func (s *Store) AvailableUntil(ctx context.Context, responderID uuid.UUID) (time.Time, bool, error) {
+	rows, err := s.q.AvailableUntil(ctx, pgID(responderID))
+	if err != nil || len(rows) == 0 {
+		return time.Time{}, false, err
+	}
+	return rows[0].Time.UTC(), true, nil
+}
+
+// AlertHistoryFor returns a responder's alerts, newest first (op_readonly,
+// op_console; scenario 10: decline reasons shown).
+func (s *Store) AlertHistoryFor(ctx context.Context, responderID uuid.UUID, n int) ([]dispatch.AlertHistory, error) {
+	rows, err := s.q.ResponderAlertHistory(ctx, opdb.ResponderAlertHistoryParams{ResponderID: pgID(responderID), MaxRows: int32(min(n, 1000))}) //nolint:gosec // bounded above
+	if err != nil {
+		return nil, fmt.Errorf("opstore: responder history: %w", err)
+	}
+	out := make([]dispatch.AlertHistory, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, dispatch.AlertHistory{AlertID: uuid.UUID(r.ID.Bytes), IncidentID: uuid.UUID(r.IncidentID.Bytes),
+			Role: responder.Role(r.Role), SentAt: r.SentAt.Time.UTC(), Outcome: r.Outcome, DeclineReason: deref(r.DeclineReason),
+			RespondedAt: tsOpt(r.RespondedAt)})
+	}
+	return out, nil
 }
 
 // CloseAlert settles a pending alert as no_response or stood_down; false if

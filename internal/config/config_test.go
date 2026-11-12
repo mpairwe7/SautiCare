@@ -57,16 +57,17 @@ func TestLoadRepoConfigDefaults(t *testing.T) {
 
 func minimalFS() fstest.MapFS {
 	return fstest.MapFS{
-		"study.yaml":          {Data: []byte("study_window_active: false\n")},
-		"platform.yaml":       {Data: []byte("checkpoint_interval: 5m\noutbox_batch_size: 10\nrelay_poll_interval: 1s\n")},
-		"gated/protocol.yaml": {Data: []byte("protocol_status: approved\nprotocol_version: \"2.0\"\n")},
-		"gated/intake.yaml":   {Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 120s\ndedup_window: 15m\ndedup_max_zone_distance: 1\n")},
-		"gated/dispatch.yaml": {Data: []byte("mode: protocol\nring_step_metres: 500\nring_interval: 60s\nmax_radius_metres: 2500\ncascade_timeout: 90s\nred_parallel_count: 3\nforward_ack_timeout: 60s\nvoice_fallback_after: 20s\nranking_order: [zone_distance]\nranking_version: v1\n")},
-		"gated/flags.yaml":    {Data: []byte("android_app: false\ncaller_link: false\nspeech_assist: false\napp_api: false\n")},
-		"gated/screens.yaml":  {Data: []byte("internal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")},
-		"gated/triage.yaml":   {Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {clinical-1: \"AAAA\"}\n")},
-		"gated/tool1.yaml":    {Data: []byte(approvedTool1)},
-		"gated/sms.yaml":      {Data: []byte(approvedSMS)},
+		"study.yaml":           {Data: []byte("study_window_active: false\n")},
+		"platform.yaml":        {Data: []byte("checkpoint_interval: 5m\noutbox_batch_size: 10\nrelay_poll_interval: 1s\n")},
+		"gated/protocol.yaml":  {Data: []byte("protocol_status: approved\nprotocol_version: \"2.0\"\n")},
+		"gated/intake.yaml":    {Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 120s\ndedup_window: 15m\ndedup_max_zone_distance: 1\n")},
+		"gated/dispatch.yaml":  {Data: []byte("mode: protocol\nring_step_metres: 500\nring_interval: 60s\nmax_radius_metres: 2500\ncascade_timeout: 90s\nred_parallel_count: 3\nforward_ack_timeout: 60s\nvoice_fallback_after: 20s\nranking_order: [zone_distance]\nranking_version: v1\n")},
+		"gated/flags.yaml":     {Data: []byte("android_app: false\ncaller_link: false\nspeech_assist: false\napp_api: false\n")},
+		"gated/screens.yaml":   {Data: []byte("internal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")},
+		"gated/triage.yaml":    {Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {clinical-1: \"AAAA\"}\n")},
+		"gated/tool1.yaml":     {Data: []byte(approvedTool1)},
+		"gated/sms.yaml":       {Data: []byte(approvedSMS)},
+		"gated/responder.yaml": {Data: []byte(approvedResponder)},
 	}
 }
 
