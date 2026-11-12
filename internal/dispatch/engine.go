@@ -34,6 +34,9 @@ type Store interface {
 	BeginAttempt(ctx context.Context, alert uuid.UUID, purpose, channel string) (uuid.UUID, bool, error)
 	FinishAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
 
+	BeginNoticeAttempt(ctx context.Context, incidentID uuid.UUID, kind, channel string) (uuid.UUID, bool, error)
+	FinishNoticeAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
+
 	RedDispatchOutcomes(ctx context.Context, window int, redWindow time.Duration) ([]bool, error)
 	AutoSuspendDispatch(ctx context.Context, failures, window int) (bool, error)
 }
@@ -56,6 +59,11 @@ type Deliverer interface {
 // message (the attempt failed; nothing was sent).
 var ErrRejected = errors.New("dispatch: delivery rejected by the provider")
 
+// Notifier delivers caller notices (the SMS channel); errors as Deliverer.
+type Notifier interface {
+	Notify(ctx context.Context, n Notice) (providerRef string, err error)
+}
+
 // Suspension reports whether dispatch is suspended (O6); the operational
 // store implements it.
 type Suspension interface {
@@ -69,6 +77,7 @@ type Suspension interface {
 type Engine struct {
 	store      Store
 	deliverer  Deliverer
+	notifier   Notifier
 	suspension Suspension
 	params     Params
 	ranker     Ranker
@@ -98,6 +107,7 @@ func (e *Engine) LastPass() time.Time {
 type EngineConfig struct {
 	Store        Store
 	Deliverer    Deliverer
+	Notifier     Notifier
 	Suspension   Suspension
 	Params       Params
 	Ranker       Ranker
@@ -109,8 +119,8 @@ type EngineConfig struct {
 
 // NewEngine validates the configuration.
 func NewEngine(c EngineConfig) (*Engine, error) {
-	if c.Store == nil || c.Deliverer == nil || c.Suspension == nil || c.LogicVersion == "" || c.Gazetteer.Version == "" {
-		return nil, errors.New("dispatch: engine needs a store, deliverer, suspension source, logic version and gazetteer")
+	if c.Store == nil || c.Deliverer == nil || c.Notifier == nil || c.Suspension == nil || c.LogicVersion == "" || c.Gazetteer.Version == "" {
+		return nil, errors.New("dispatch: engine needs a store, deliverer, notifier, suspension source, logic version and gazetteer")
 	}
 	if err := c.Params.Validate(); err != nil {
 		return nil, err
@@ -129,7 +139,7 @@ func NewEngine(c EngineConfig) (*Engine, error) {
 	if timeout <= 0 {
 		timeout = DefaultPassTimeout
 	}
-	return &Engine{store: c.Store, deliverer: c.Deliverer, suspension: c.Suspension, params: c.Params, ranker: c.Ranker,
+	return &Engine{store: c.Store, deliverer: c.Deliverer, notifier: c.Notifier, suspension: c.Suspension, params: c.Params, ranker: c.Ranker,
 		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells, rule: c.StoppingRule, passTimeout: timeout}, nil
 }
 
@@ -313,14 +323,21 @@ func (e *Engine) deliver(ctx context.Context, snap Snapshot) error {
 		}
 		ref, derr := e.deliverer.Deliver(ctx, Delivery{AttemptID: attempt, AlertID: a.ID, IncidentID: snap.IncidentID,
 			ResponderID: a.ResponderID, Role: a.Role, Purpose: purpose, Channel: ChannelSMS})
-		status := "sent"
-		switch {
-		case errors.Is(derr, ErrRejected):
-			status = "failed"
-		case derr != nil:
-			status = "unknown"
+		if _, err := e.store.FinishAttempt(ctx, attempt, settlement(derr), ref); err != nil {
+			return err
 		}
-		if _, err := e.store.FinishAttempt(ctx, attempt, status, ref); err != nil {
+	}
+	// Caller notices the same way: each claimed once, never re-sent.
+	for _, kind := range snap.CallerNotified {
+		attempt, fresh, err := e.store.BeginNoticeAttempt(ctx, snap.IncidentID, kind, ChannelSMS)
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			continue
+		}
+		ref, nerr := e.notifier.Notify(ctx, Notice{AttemptID: attempt, IncidentID: snap.IncidentID, Kind: kind, Channel: ChannelSMS})
+		if _, err := e.store.FinishNoticeAttempt(ctx, attempt, settlement(nerr), ref); err != nil {
 			return err
 		}
 	}
@@ -404,4 +421,16 @@ func (e *Engine) Run(ctx context.Context, poll time.Duration, batch int, lease t
 		case <-time.After(poll):
 		}
 	}
+}
+
+// settlement is how an attempt settles after the provider call: sent,
+// failed (the provider refused: nothing went out) or unknown (never re-sent).
+func settlement(err error) string {
+	switch {
+	case err == nil:
+		return "sent"
+	case errors.Is(err, ErrRejected):
+		return "failed"
+	}
+	return "unknown"
 }

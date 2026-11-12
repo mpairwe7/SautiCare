@@ -89,3 +89,33 @@ func (s *Store) ClaimAvailabilityReminders(ctx context.Context, within time.Dura
 	}
 	return out, nil
 }
+
+// ResponderPhone returns a responder's sealed number bound to their row
+// (op_dispatch: the SMS and voice channels).
+func (s *Store) ResponderPhone(ctx context.Context, responderID uuid.UUID) (incident.SealedContact, error) {
+	r, err := s.q.ResponderPhone(ctx, pgID(responderID))
+	if err != nil {
+		return incident.SealedContact{}, fmt.Errorf("opstore: responder phone: %w", notFound(err))
+	}
+	return incident.SealedContact{Sealed: crypto.Sealed{KeyID: r.PhoneKeyID, Ciphertext: r.PhoneCt},
+		AAD: crypto.AAD{Store: "operational", Table: "responders", Column: "phone", RowID: responderID.String()}}, nil
+}
+
+// MessageFacts returns the coded facts a message may show about an incident.
+func (s *Store) MessageFacts(ctx context.Context, incidentID uuid.UUID) (dispatch.MessageFacts, error) {
+	r, err := s.q.MessageFacts(ctx, pgID(incidentID))
+	if err != nil {
+		return dispatch.MessageFacts{}, fmt.Errorf("opstore: message facts: %w", notFound(err))
+	}
+	return dispatch.MessageFacts{Reference: incident.Reference(r.Reference), Severity: incident.Severity(deref(r.Severity)),
+		Category: deref(r.Category), Ward: deref(r.Ward), Landmark: deref(r.Landmark), Language: deref(r.Language)}, nil
+}
+
+// NoticeFacility returns the facility a caller notice names ("" if none).
+func (s *Store) NoticeFacility(ctx context.Context, incidentID uuid.UUID, kind string) (string, error) {
+	f, err := s.q.NoticeFacility(ctx, opdb.NoticeFacilityParams{IncidentID: pgID(incidentID), Kind: kind})
+	if err != nil {
+		return "", fmt.Errorf("opstore: notice facility: %w", notFound(err))
+	}
+	return f, nil
+}

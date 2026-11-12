@@ -13,6 +13,7 @@
 //	SAUTI_HTTP_ADDR           callback listener (default :8080, behind HAProxy)
 //	SAUTI_ADMIN_ADDR          health and metrics (default 127.0.0.1:9100)
 //	SAUTI_AT_PATH_TOKEN       secret callback path token (>= 24 characters)
+//	SAUTI_AT_DELIVERY_TOKEN   secret path token of the SMS delivery-report callback (>= 24 characters; unset: not served)
 //	SAUTI_USSD_SERVICE_CODES  comma-separated accepted service codes
 //	SAUTI_DEVKEYS_DIR         development key directory (refused in production)
 //	SAUTI_CONFIG_DIR          configuration directory (config/)
@@ -117,8 +118,18 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	callbacks := http.NewServeMux()
+	callbacks.Handle("/v1/ussd/", ussd)
+	if tok := os.Getenv("SAUTI_AT_DELIVERY_TOKEN"); tok != "" {
+		dr, err := africastalking.NewDeliveryReportHandler(africastalking.DeliveryReportConfig{Provider: "at", PathToken: tok},
+			deliveryReports{store}, log)
+		if err != nil {
+			return err
+		}
+		callbacks.Handle("/v1/sms/delivery/", dr)
+	}
 	public := &http.Server{
-		Addr: env.Default("SAUTI_HTTP_ADDR", ":8080"), Handler: ussd,
+		Addr: env.Default("SAUTI_HTTP_ADDR", ":8080"), Handler: callbacks,
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
 	}
 	reg := metrics.NewRegistry()
@@ -160,4 +171,22 @@ func run(log *slog.Logger) error {
 	_ = public.Shutdown(sctx)
 	_ = adminSrv.Shutdown(sctx)
 	return nil
+}
+
+// deliveryRecorder stores delivery reports (the operational store, op_intake).
+type deliveryRecorder interface {
+	RecordDeliveryReport(ctx context.Context, r opstore.DeliveryReport) error
+}
+
+// deliveryReports bridges the provider's delivery-report callback to the
+// store: codes only; an unknown message is acknowledged.
+type deliveryReports struct{ store deliveryRecorder }
+
+func (d deliveryReports) RecordDeliveryReport(ctx context.Context, r africastalking.DeliveryReport) error {
+	err := d.store.RecordDeliveryReport(ctx, opstore.DeliveryReport{ProviderRef: r.MessageID, Status: r.Status,
+		FailureReason: r.FailureReason, Final: r.Final})
+	if errors.Is(err, opstore.ErrUnknownDelivery) {
+		return africastalking.ErrUnknownMessage
+	}
+	return err
 }

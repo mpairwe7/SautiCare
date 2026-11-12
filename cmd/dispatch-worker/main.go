@@ -12,13 +12,20 @@
 //	SAUTI_OP_DSN       operational store, role op_dispatch
 //	SAUTI_ADMIN_ADDR   health and metrics (default 127.0.0.1:9102)
 //	SAUTI_CONFIG_DIR   configuration directory (config/)
+//	SAUTI_DEVKEYS_DIR  development key directory (refused in production)
+//	SAUTI_AT_API_KEY   Africa's Talking API key (secret); unset: simulated delivery (dev/test only)
+//	SAUTI_AT_USERNAME  Africa's Talking application username (default sandbox)
+//	SAUTI_AT_SMS_URL   messaging base URL (default https://api.sandbox.africastalking.com)
+//	SAUTI_AT_SENDER_ID optional alphanumeric sender ID
 package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync/atomic"
@@ -27,7 +34,12 @@ import (
 	"uuid"
 
 	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/dispatch"
+	"sautihealth.com/sauti/internal/platform/africastalking"
+	"sautihealth.com/sauti/internal/platform/channels"
+	"sautihealth.com/sauti/internal/platform/devkeys"
+	"sautihealth.com/sauti/internal/platform/egress"
 	"sautihealth.com/sauti/internal/platform/env"
 	"sautihealth.com/sauti/internal/platform/health"
 	"sautihealth.com/sauti/internal/platform/logging"
@@ -72,10 +84,6 @@ func run(log *slog.Logger) error {
 			return err
 		}
 	}
-	deliver, err := deliverer(senv, log)
-	if err != nil {
-		return err
-	}
 	dsn, err := env.Required("SAUTI_OP_DSN")
 	if err != nil {
 		return err
@@ -86,7 +94,13 @@ func run(log *slog.Logger) error {
 	}
 	defer pool.Close()
 	store := opstore.New(pool)
-	built, err := wiring.BuildDispatch(ctx, wiring.DispatchOptions{Config: cfg, Store: store, Deliverer: deliver,
+	msg, err := pickMessenger(senv, os.Getenv("SAUTI_AT_API_KEY"), func() (messenger, error) {
+		return smsChannel(ctx, cfg, store, senv)
+	}, log)
+	if err != nil {
+		return err
+	}
+	built, err := wiring.BuildDispatch(ctx, wiring.DispatchOptions{Config: cfg, Store: store, Deliverer: msg, Notifier: msg,
 		Suspension: store})
 	if err != nil {
 		return err
@@ -152,6 +166,12 @@ func run(log *slog.Logger) error {
 		errc <- pg.RunAsLeader(ctx, pool, leaderKey, 5*time.Second, func(lctx context.Context) error {
 			leading.Store(true)
 			defer leading.Store(false)
+			// The availability-expiry reminders (review focus 4) run with the
+			// leader, each period once.
+			go func() {
+				_ = dispatch.Reminders{Store: store, Sender: msg}.Run(lctx, time.Minute,
+					func(err error) { log.Error("availability reminder failed", "err", err) })
+			}()
 			return built.Engine.Run(lctx, poll, batch, lease, onErr)
 		})
 	}()
@@ -169,23 +189,73 @@ func run(log *slog.Logger) error {
 	return nil
 }
 
-// deliverer picks how responders are reached. The channel adapters arrive
-// in Part B; until then development and tests simulate delivery (logging
-// identifiers only), and production refuses to start.
-func deliverer(senv string, log *slog.Logger) (dispatch.Deliverer, error) {
-	if senv == "production" {
-		return nil, errors.New("dispatch-worker: no responder channel yet (SMS adapter arrives in M2 Part B); refusing to start")
-	}
-	return simDeliverer{log: log}, nil
+// messenger is what dispatch-worker sends: alerts and stand-downs,
+// caller notices, availability reminders.
+type messenger interface {
+	dispatch.Deliverer
+	dispatch.Notifier
+	dispatch.ReminderSender
 }
 
-// simDeliverer logs each delivery (identifiers only, never a number).
-type simDeliverer struct{ log *slog.Logger }
+// pickMessenger chooses the channel. Production refuses to start until the
+// key provider exists (P0: the worker opens responders' and callers'
+// numbers). With Africa's Talking credentials the worker sends real SMS
+// (the sandbox by default); without them it simulates delivery, logging
+// identifiers only (development and tests).
+func pickMessenger(senv, apiKey string, real func() (messenger, error), log *slog.Logger) (messenger, error) {
+	if senv == "production" {
+		return nil, errors.New("dispatch-worker: production key provider (OpenBao) arrives in P0; refusing to start")
+	}
+	if apiKey != "" {
+		return real()
+	}
+	return simMessenger{log: log}, nil
+}
 
-func (s simDeliverer) Deliver(_ context.Context, d dispatch.Delivery) (string, error) {
+// smsChannel is the Africa's Talking SMS channel over the egress client.
+func smsChannel(ctx context.Context, cfg config.Bundle, store *opstore.Store, senv string) (messenger, error) {
+	keys, err := devkeys.Open(env.Default("SAUTI_DEVKEYS_DIR", ".devkeys"), senv)
+	if err != nil {
+		return nil, err
+	}
+	gaz, err := store.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	base := env.Default("SAUTI_AT_SMS_URL", "https://api.sandbox.africastalking.com")
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, err
+	}
+	client, err := africastalking.NewSMSClient(africastalking.SMSConfig{BaseURL: base, Username: env.Default("SAUTI_AT_USERNAME", "sandbox"),
+		APIKey: os.Getenv("SAUTI_AT_API_KEY"), SenderID: os.Getenv("SAUTI_AT_SENDER_ID"),
+		HTTP: egress.NewClient([]string{u.Hostname()}, 10*time.Second)})
+	if err != nil {
+		return nil, err
+	}
+	// Decisions 1, 2 and 6 sit behind one amendment: location in SMS follows
+	// the dispatch mode.
+	return channels.NewSMS(channels.SMSConfig{Directory: store, Opener: crypto.NewEnvelope(keys, rand.Reader), Sender: client,
+		Templates: cfg.SMS, Tool1: cfg.Tool1, Gazetteer: gaz, Amended: cfg.Dispatch.Mode == dispatch.ModeAmended})
+}
+
+// simMessenger logs each message (identifiers only, never a number).
+type simMessenger struct{ log *slog.Logger }
+
+func (s simMessenger) Deliver(_ context.Context, d dispatch.Delivery) (string, error) {
 	s.log.Info("simulated delivery", "purpose", d.Purpose, "channel", d.Channel, "incident", d.IncidentID,
 		"alert", d.AlertID, "responder", d.ResponderID, "role", d.Role)
 	return "sim-" + d.AttemptID.String()[:8], nil
+}
+
+func (s simMessenger) Notify(_ context.Context, n dispatch.Notice) (string, error) {
+	s.log.Info("simulated caller notice", "kind", n.Kind, "incident", n.IncidentID)
+	return "sim-" + n.AttemptID.String()[:8], nil
+}
+
+func (s simMessenger) Remind(_ context.Context, r dispatch.Reminder) (string, error) {
+	s.log.Info("simulated availability reminder", "responder", r.ResponderID, "until", r.Until)
+	return "sim-reminder", nil
 }
 
 // stallLimit is how old the leader's last successful pass may be before it

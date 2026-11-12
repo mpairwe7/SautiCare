@@ -643,6 +643,50 @@ func (q *Queries) IssueAlert(ctx context.Context, arg IssueAlertParams) (IssueAl
 	return i, err
 }
 
+const messageFacts = `-- name: MessageFacts :one
+SELECT reference, severity, category, ward, landmark, language FROM op.incidents WHERE id = $1::uuid
+`
+
+type MessageFactsRow struct {
+	Reference string
+	Severity  *string
+	Category  *string
+	Ward      *string
+	Landmark  *string
+	Language  *string
+}
+
+func (q *Queries) MessageFacts(ctx context.Context, id pgtype.UUID) (MessageFactsRow, error) {
+	row := q.db.QueryRow(ctx, messageFacts, id)
+	var i MessageFactsRow
+	err := row.Scan(
+		&i.Reference,
+		&i.Severity,
+		&i.Category,
+		&i.Ward,
+		&i.Landmark,
+		&i.Language,
+	)
+	return i, err
+}
+
+const noticeFacility = `-- name: NoticeFacility :one
+SELECT coalesce(facility_id, '')::text AS facility_id FROM op.caller_notices
+WHERE incident_id = $1::uuid AND kind = $2::text
+`
+
+type NoticeFacilityParams struct {
+	IncidentID pgtype.UUID
+	Kind       string
+}
+
+func (q *Queries) NoticeFacility(ctx context.Context, arg NoticeFacilityParams) (string, error) {
+	row := q.db.QueryRow(ctx, noticeFacility, arg.IncidentID, arg.Kind)
+	var facility_id string
+	err := row.Scan(&facility_id)
+	return facility_id, err
+}
+
 const notifyCaller = `-- name: NotifyCaller :one
 SELECT op.notify_caller($1::uuid, $2::text, $3::text)::boolean AS changed
 `
@@ -815,6 +859,22 @@ func (q *Queries) ResponderHistory(ctx context.Context) ([]ResponderHistoryRow, 
 		return nil, err
 	}
 	return items, nil
+}
+
+const responderPhone = `-- name: ResponderPhone :one
+SELECT phone_ct, phone_key_id FROM op.responders WHERE id = $1::uuid
+`
+
+type ResponderPhoneRow struct {
+	PhoneCt    []byte
+	PhoneKeyID string
+}
+
+func (q *Queries) ResponderPhone(ctx context.Context, id pgtype.UUID) (ResponderPhoneRow, error) {
+	row := q.db.QueryRow(ctx, responderPhone, id)
+	var i ResponderPhoneRow
+	err := row.Scan(&i.PhoneCt, &i.PhoneKeyID)
+	return i, err
 }
 
 const resumeDispatch = `-- name: ResumeDispatch :one

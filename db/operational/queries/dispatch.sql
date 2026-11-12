@@ -161,3 +161,13 @@ FROM op.caller_contact(sqlc.arg(incident_id)::uuid) AS c(source, row_id, ct, key
 -- name: ClaimAvailabilityReminders :many
 SELECT c.responder_id::uuid AS responder_id, c.until::timestamptz AS until
 FROM op.claim_availability_reminders(sqlc.arg(within)::interval, sqlc.arg(max_rows)::int) AS c(responder_id, until);
+
+-- name: ResponderPhone :one
+SELECT phone_ct, phone_key_id FROM op.responders WHERE id = sqlc.arg(id)::uuid;
+
+-- name: MessageFacts :one
+SELECT reference, severity, category, ward, landmark, language FROM op.incidents WHERE id = sqlc.arg(id)::uuid;
+
+-- name: NoticeFacility :one
+SELECT coalesce(facility_id, '')::text AS facility_id FROM op.caller_notices
+WHERE incident_id = sqlc.arg(incident_id)::uuid AND kind = sqlc.arg(kind)::text;

@@ -8,7 +8,7 @@ Processes read deployment settings from the environment (12-factor), so a later 
 |---|---|---|---|
 | `SAUTI_ENV` | all | `dev`, `test` or `production`; production refuses dev keys and pending protocol content; `sautictl demo m0` requires `dev` or `test` | `dev` |
 | `SAUTI_CONFIG_DIR` | intake-gw, outbox-relay, dispatch-worker | path to `config/` | `config` |
-| `SAUTI_DEVKEYS_DIR` | intake-gw, outbox-relay | development key directory (`sautictl dev-keygen`) | `.devkeys` |
+| `SAUTI_DEVKEYS_DIR` | intake-gw, outbox-relay, dispatch-worker | development key directory (`sautictl dev-keygen`) | `.devkeys` |
 | `SAUTI_OP_DSN` | intake-gw (`op_intake`), outbox-relay (`op_relay`), dispatch-worker (`op_dispatch`) | operational store DSN, least-privileged role | — (required) |
 | `SAUTI_AUDIT_DSN` | outbox-relay (`audit_appender`) | audit store DSN | — (required) |
 | `SAUTI_HTTP_ADDR` | intake-gw / outbox-relay | callback listener / health and metrics listener | `:8080` / `127.0.0.1:9101` |
@@ -18,6 +18,11 @@ Processes read deployment settings from the environment (12-factor), so a later 
 | `SAUTI_ARI_PASSWORD` | ivr-controller | ARI password (secret: OpenBao in production) | required |
 | `SAUTI_ARI_APP` | ivr-controller | Stasis application the dialplan hands calls to | `sauti-ivr` |
 | `SAUTI_AT_PATH_TOKEN` | intake-gw | secret callback path token, ≥ 24 characters | — (required) |
+| `SAUTI_AT_DELIVERY_TOKEN` | intake-gw | secret path token of the SMS delivery-report callback (`/v1/sms/delivery/at/<token>`), ≥ 24 characters; unset: not served | — |
+| `SAUTI_AT_API_KEY` | dispatch-worker | Africa's Talking API key (secret: OpenBao in production); unset: simulated delivery, development and tests only | — |
+| `SAUTI_AT_USERNAME` | dispatch-worker | Africa's Talking application username | `sandbox` |
+| `SAUTI_AT_SMS_URL` | dispatch-worker | messaging base URL (the egress allowlist holds exactly its host) | `https://api.sandbox.africastalking.com` |
+| `SAUTI_AT_SENDER_ID` | dispatch-worker | optional alphanumeric sender ID (≤ 11) | — |
 | `SAUTI_USSD_SERVICE_CODES` | intake-gw | comma-separated accepted service codes | — (required) |
 | `SAUTI_RULES_ROOT` | intake-gw | directory holding `triage-rules/` (the signed bundle named by `config/gated/triage.yaml`) | `.` |
 | `SAUTI_WITNESS_DIR` | outbox-relay | write-once checkpoint witness directory | `var/witness` |

@@ -102,3 +102,14 @@ type Notice struct {
 	Kind                  string
 	Channel               string
 }
+
+// MessageFacts are the coded facts a message may show about an incident
+// (hard constraint 6: never a name, a clinical answer or a number).
+type MessageFacts struct {
+	Reference incident.Reference
+	Severity  incident.Severity
+	Category  string // Tool 1 category code
+	Ward      string // gazetteer ward ID
+	Landmark  string // gazetteer landmark ID ("other": a free-text landmark, never sent)
+	Language  string // the caller's Tool 1 language
+}

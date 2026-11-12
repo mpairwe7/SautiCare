@@ -56,9 +56,17 @@ func (c *hooked) IssueAlert(ctx context.Context, p dispatch.IssueParams) (dispat
 // recorder is the Deliverer: it records every delivery; fail, if set,
 // decides the outcome of one.
 type recorder struct {
-	mu   sync.Mutex
-	sent []dispatch.Delivery
-	fail func(dispatch.Delivery) error
+	mu      sync.Mutex
+	sent    []dispatch.Delivery
+	notices []dispatch.Notice
+	fail    func(dispatch.Delivery) error
+}
+
+func (r *recorder) Notify(_ context.Context, n dispatch.Notice) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notices = append(r.notices, n)
+	return "sim-n-" + n.AttemptID.String()[:8], nil
 }
 
 func (r *recorder) Deliver(_ context.Context, d dispatch.Delivery) (string, error) {
@@ -141,7 +149,7 @@ func newEngineRig(t *testing.T, mutate func(*config.Bundle)) *engineRig {
 func (r *engineRig) rebuild(t *testing.T) {
 	t.Helper()
 	e, err := wiring.BuildDispatch(context.Background(), wiring.DispatchOptions{Config: r.cfg, Store: r.store,
-		Deliverer: r.deliveries, Suspension: r.suspension})
+		Deliverer: r.deliveries, Notifier: r.deliveries, Suspension: r.suspension})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,6 +319,11 @@ func TestEngineYellowCascadeDepthThree(t *testing.T) {
 		if n := r.deliveries.count(a.ID, dispatch.PurposeAlert); n != 1 {
 			t.Fatalf("alert %v delivered %d times", a.ID, n)
 		}
+	}
+	// The caller's "helper on the way" SMS goes out once (Part B).
+	r.mustProcess(t, id)
+	if n := len(r.deliveries.notices); n != 1 || r.deliveries.notices[0].Kind != dispatch.CallerHelperOnTheWay {
+		t.Fatalf("caller notices delivered %+v", r.deliveries.notices)
 	}
 	if len(snap.Escalations) != 0 {
 		t.Fatalf("escalated: %v", snap.Escalations)

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/pii"
 )
 
@@ -23,7 +24,7 @@ import (
 // ErrSMSRejected reports a message the provider refused: nothing was sent
 // (invalid number, blacklisted, insufficient balance, rejected by the
 // operator gateway, bad credentials). Any other error is an unknown outcome.
-var ErrSMSRejected = errors.New("africastalking: SMS rejected by the provider")
+var ErrSMSRejected = fmt.Errorf("africastalking: SMS rejected by the provider: %w", dispatch.ErrRejected)
 
 // SMSConfig configures the SMS client.
 type SMSConfig struct {
