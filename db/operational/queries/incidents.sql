@@ -94,3 +94,15 @@ WHERE state NOT IN ('closed', 'merged') AND last_screen < 8
   AND NOT ('abandoned' = ANY (flags))
 ORDER BY updated_at
 LIMIT 500;
+
+-- name: DedupCandidates :many
+SELECT id, category, zone_col, zone_row, t1, t2 FROM op.incidents
+WHERE category = sqlc.arg(category)::text AND t2 IS NOT NULL AND state NOT IN ('closed', 'merged')
+  AND zone_col BETWEEN sqlc.arg(col)::int - sqlc.arg(dist)::int AND sqlc.arg(col)::int + sqlc.arg(dist)::int
+  AND zone_row BETWEEN sqlc.arg(row_index)::int - sqlc.arg(dist)::int AND sqlc.arg(row_index)::int + sqlc.arg(dist)::int
+  AND t1 BETWEEN sqlc.arg(t1)::timestamptz - sqlc.arg(window_seconds)::int * interval '1 second'
+             AND sqlc.arg(t1)::timestamptz + sqlc.arg(window_seconds)::int * interval '1 second'
+  AND id <> sqlc.arg(id)::uuid;
+
+-- name: SplitIncident :exec
+SELECT op.split_incident(sqlc.arg(survivor)::uuid, sqlc.arg(member)::uuid, sqlc.arg(staff)::uuid);

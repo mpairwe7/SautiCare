@@ -15,6 +15,7 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `screen_char_limits` | `{}` | per network code once confirmed |
 | | `fuzzy_match_min_similarity` | `0.45` | Build Prompt §12: below it, ward-level location + `needs_location_callback`; field-tested in M7 |
 | | `abandon_after` | `120s` | Build Prompt §10.3, Guide §4: abandonment flag and danger-yes escalation |
+| | `dedup_window` / `dedup_max_zone_distance` | `15m` / `1` | Build Prompt §10.3: same category, within one zone, 15 minutes (ADR-0022) |
 | `config/gated/tool1.yaml` | the eight screens' copy, options, danger questions, first-aid lines, messages | **placeholder** (`status: placeholder`, `PENDING-TOOL1`) | Tool 1 not received; [tool1-flow.md](tool1-flow.md); blocks production |
 | `config/gated/triage.yaml` | `rules_file`, `trusted_keys` | `triage-rules/tool1.yaml`; one `dev-` key | ADR-0019: who may sign clinical rules; a `dev-` key blocks production |
 | `config/gated/gazetteer.yaml` | wards, landmarks, aliases (versioned) | synthetic `placeholder-2026-11-12` | ADR-0020; separately versioned (not in the fingerprint); `sautictl gazetteer load` |

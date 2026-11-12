@@ -15,7 +15,10 @@ ALTER TABLE op.incidents ADD COLUMN absorbed jsonb NOT NULL DEFAULT '{}' CHECK (
 INSERT INTO op.incident_transitions (from_state, event_type, to_state) VALUES
     ('*',      'incident.merge_absorbed', NULL),
     ('*',      'incident.split',          NULL),
-    ('merged', 'incident.unmerged',       'dispatching');
+    ('merged', 'incident.unmerged',       'dispatching'),
+    -- Dedup happens at T2: a merged call's own caller is still answering
+    -- (screen 8), and every answer is persisted.
+    ('merged', 'screen.answered',         NULL);
 
 CREATE FUNCTION op.check_from(p jsonb) RETURNS void
 LANGUAGE plpgsql IMMUTABLE
@@ -99,8 +102,9 @@ BEGIN
             USING ERRCODE = 'SA409';
     END IF;
 
-    -- A closed incident accepts nothing; a merged one only its unmerge.
-    IF v_inc.state = 'closed' OR (v_inc.state = 'merged' AND p_type <> 'incident.unmerged') THEN
+    -- A closed incident accepts nothing; a merged one only its unmerge and
+    -- its own caller's answers.
+    IF v_inc.state = 'closed' OR (v_inc.state = 'merged' AND p_type NOT IN ('incident.unmerged', 'screen.answered')) THEN
         RAISE EXCEPTION 'illegal transition: % in terminal state %', p_type, v_inc.state USING ERRCODE = 'SA422';
     END IF;
     SELECT t.to_state INTO v_to FROM op.incident_transitions t
@@ -233,3 +237,28 @@ BEGIN
     RETURN QUERY SELECT v_ev, v_seq, v_at, coalesce(v_to, v_inc.state), false;
 END
 $$;
+
+-- A coordinator's split of a wrong merge (Build Prompt §10.3: "the
+-- coordinator can split one, also logged"): incident.split on the survivor
+-- and incident.unmerged on the member, atomically, with the staff identity on
+-- both events. Idempotent per (survivor, member). The console role (M5) is the
+-- only runtime role allowed to call it.
+CREATE FUNCTION op.split_incident(p_survivor uuid, p_member uuid, p_staff uuid) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path = op, pg_temp
+AS $$
+DECLARE
+    v_key text := 'split:' || p_survivor || ':' || p_member;
+BEGIN
+    IF p_staff IS NULL THEN
+        PERFORM op.reject('a split needs the coordinator''s staff identity');
+    END IF;
+    PERFORM op.append_incident_event(p_survivor, 0, 'incident.split', jsonb_build_object('from', p_member),
+                                     'staff', p_staff, v_key || ':split', NULL);
+    PERFORM op.append_incident_event(p_member, 0, 'incident.unmerged', jsonb_build_object('from', p_survivor),
+                                     'staff', p_staff, v_key || ':unmerge', NULL);
+END
+$$;
+
+GRANT EXECUTE ON FUNCTION op.split_incident(uuid, uuid, uuid) TO op_console;
+GRANT SELECT ON op.incidents, op.incident_events TO op_console;

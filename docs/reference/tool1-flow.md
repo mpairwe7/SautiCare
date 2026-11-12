@@ -24,6 +24,8 @@ The eight screens of Data Collection Tool 1 (Build Prompt §10.1). The wording, 
 
 `dispatch_ready` carries `zone {col,row}`, `location_quality`, `gazetteer_version` and `trigger_screen`.
 
+**Duplicates at T2** (ADR-0022) are handled in the same transaction that records T2, under an advisory lock. A call that matches an incident already dispatching (same category, within one zone, first calls within 15 minutes) is merged into the earliest-dispatched one, whose T1 becomes the earliest call's. The merged caller still finishes screen 8 on their own record.
+
 **Every answer** is persisted at once through the single write path. Idempotency keys are `ussd:<provider>:<session>:s<screen>[:<step>]`, so a retried or duplicated callback writes nothing twice. A typed number or landmark is sealed first (`op.incident_identifiers`) and referenced by `identifier_id`.
 
 **Resume** applies when the caller redials from the same number within `resume_window` (10 min), on either channel, while the incident is open and unfinished (`last_screen < 8`, not closed or merged). The redial continues at the first unanswered screen through a new session row and a `session.resumed` event; reference and T1 are unchanged. A withheld number never resumes.

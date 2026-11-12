@@ -59,7 +59,7 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 | 1 | Red trauma: parallel alerts, first accept wins, arrival, payment | M2–M4 |
 | 2 | Yellow obstetric cascade depth 3 | M2 |
 | 3 | Poisoning with screen 5 = no is yellow | M1 — **verified:** `tests/e2e/m1_intake_test.go::TestScenario3PoisoningIsYellow` |
-| 4 | Three bystanders, one crash: merge; coordinator split | M1 |
+| 4 | Three bystanders, one crash: merge; coordinator split | M1 — **verified:** `tests/e2e/m1_dedup_test.go::TestScenario4ThreeBystandersOneIncident` |
 | 5 | USSD drops at screen 6: resume within 10 min or finish on IVR | M1 — **USSD part verified:** `tests/e2e/m1_intake_test.go::TestScenario5RedialResumesAtScreen6`, `tests/e2e/m1_intake_test.go::TestScenario5ResumedSessionCompletes`; IVR finish: M1 Part C |
 | 6 | Somewhere else: 999/112 message; record kept and flagged | M1 — **verified:** `tests/e2e/m1_intake_test.go::TestScenario6SomewhereElse` |
 | 7 | Nobody accepts: rings to 2.5 km, health centre acknowledges | M2 |

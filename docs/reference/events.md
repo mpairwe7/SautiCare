@@ -18,7 +18,10 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `responder.at_facility` | **T7** | `facility` | |
 | `incident.flagged` | — | `flag` | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
 | `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes` |
-| `incident.merged` | — | `into` (incident UUID) | duplicates (M1) |
+| `incident.merged` | — | `into` (incident UUID: existing, open, not itself) | on the later call, at T2 (ADR-0022); a merged call then accepts only its own caller's answers and its unmerge |
+| `incident.merge_absorbed` | T1 (earliest) | exactly `from` (incident UUID), `t1` (RFC 3339, ≤ µs) | on the survivor; T1 = earliest of its own call and every absorbed call |
+| `incident.split` | T1 (recomputed) | exactly `from` | staff only; the call leaves the survivor's `absorbed` set |
+| `incident.unmerged` | — | exactly `from` (the survivor) | staff; `merged` → `dispatching`; needs T2 |
 | `incident.closed` | — | `reason` | terminal |
 
 ## Lifecycle

@@ -286,3 +286,19 @@ threats:
       - internal/platform/pg/opstore/resume_integration_test.go::TestFindResumable
       - internal/intake/service_test.go::TestUSSDWithheldNumberNeverResumes
       - internal/intake/service_test.go::TestUSSDDoesNotResumeAfterWindow
+
+  - id: T-021
+    title: Distinct emergencies merged, or a merge used to suppress a call
+    stride: Denial of service
+    asset: dispatch of each emergency
+    hard_constraints: [7, 14]
+    mitigations:
+      - Merge only by the fixed rule (category, one zone, 15 minutes) at T2, under an advisory lock; never discards a call
+      - Every merge is two events in the log and the ledger; a coordinator split (console role only, staff identity) revives the call
+      - T1 recomputed exactly on a split, so the study outcome is not distorted
+    verified_by:
+      - internal/intake/dedup_test.go::TestNoMergeAcrossCategories
+      - internal/intake/dedup_test.go::TestNoMergeBeyondOneZone
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestConcurrentCompletionsOneSurvivor
+      - internal/platform/pg/opstore/dedup_integration_test.go::TestSplitIncident
+      - tests/e2e/m1_dedup_test.go::TestScenario4ThreeBystandersOneIncident

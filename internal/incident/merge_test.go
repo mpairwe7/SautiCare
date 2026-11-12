@@ -102,17 +102,23 @@ func TestUnmergedRevivesMember(t *testing.T) {
 	}
 }
 
-// A merged incident accepts nothing but its unmerge: no flags, answers or
-// closure land on a call that is part of another incident.
-func TestMergedAcceptsNothingElse(t *testing.T) {
+// A merged incident accepts its unmerge, and the answers its own caller is
+// still giving (dedup happens at T2, before screen 8: every answer is
+// persisted, Guide §4). No flag, escalation, closure or resume lands on a
+// call that is part of another incident.
+func TestMergedAcceptsOnlyItsCallersAnswers(t *testing.T) {
 	into := uuid.NewV7()
 	p, _ := Fold([]Event{started(), ev(2, EvMerged, fmt.Sprintf(`{"into":%q}`, into))})
 	for _, e := range []Event{
 		ev(3, EvFlagged, `{"flag":"x"}`), ev(3, EvClosed, `{}`), ev(3, EvEscalated, `{}`),
-		answered(3, 2, FieldDanger, "yes"), ev(3, EvSessionResumed, `{"channel":"ivr"}`),
+		ev(3, EvSessionResumed, `{"channel":"ivr"}`), absorbed(3, uuid.NewV7(), t0),
 	} {
 		if _, err := Apply(p, e); !errors.Is(err, ErrIllegalTransition) {
 			t.Errorf("%s on a merged incident: %v", e.Type, err)
 		}
+	}
+	q, err := Apply(p, ev(3, EvScreenAnswered, `{"screen":8,"field":"callback","value":"same_number"}`))
+	if err != nil || q.State != StateMerged || q.LastScreen != 8 {
+		t.Fatalf("callback answer on a merged incident: %+v %v", q, err)
 	}
 }

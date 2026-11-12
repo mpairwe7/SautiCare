@@ -96,6 +96,70 @@ func (q *Queries) ClaimOutbox(ctx context.Context, arg ClaimOutboxParams) ([]Cla
 	return items, nil
 }
 
+const dedupCandidates = `-- name: DedupCandidates :many
+SELECT id, category, zone_col, zone_row, t1, t2 FROM op.incidents
+WHERE category = $1::text AND t2 IS NOT NULL AND state NOT IN ('closed', 'merged')
+  AND zone_col BETWEEN $2::int - $3::int AND $2::int + $3::int
+  AND zone_row BETWEEN $4::int - $3::int AND $4::int + $3::int
+  AND t1 BETWEEN $5::timestamptz - $6::int * interval '1 second'
+             AND $5::timestamptz + $6::int * interval '1 second'
+  AND id <> $7::uuid
+`
+
+type DedupCandidatesParams struct {
+	Category      string
+	Col           int32
+	Dist          int32
+	RowIndex      int32
+	T1            pgtype.Timestamptz
+	WindowSeconds int32
+	ID            pgtype.UUID
+}
+
+type DedupCandidatesRow struct {
+	ID       pgtype.UUID
+	Category *string
+	ZoneCol  *int32
+	ZoneRow  *int32
+	T1       pgtype.Timestamptz
+	T2       pgtype.Timestamptz
+}
+
+func (q *Queries) DedupCandidates(ctx context.Context, arg DedupCandidatesParams) ([]DedupCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, dedupCandidates,
+		arg.Category,
+		arg.Col,
+		arg.Dist,
+		arg.RowIndex,
+		arg.T1,
+		arg.WindowSeconds,
+		arg.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DedupCandidatesRow
+	for rows.Next() {
+		var i DedupCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Category,
+			&i.ZoneCol,
+			&i.ZoneRow,
+			&i.T1,
+			&i.T2,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const defaultPartitionRows = `-- name: DefaultPartitionRows :one
 SELECT op.default_partition_rows()::bigint AS n
 `
@@ -604,6 +668,21 @@ func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) erro
 		arg.IncidentID,
 		arg.PromptKind,
 	)
+	return err
+}
+
+const splitIncident = `-- name: SplitIncident :exec
+SELECT op.split_incident($1::uuid, $2::uuid, $3::uuid)
+`
+
+type SplitIncidentParams struct {
+	Survivor pgtype.UUID
+	Member   pgtype.UUID
+	Staff    pgtype.UUID
+}
+
+func (q *Queries) SplitIncident(ctx context.Context, arg SplitIncidentParams) error {
+	_, err := q.db.Exec(ctx, splitIncident, arg.Survivor, arg.Member, arg.Staff)
 	return err
 }
 

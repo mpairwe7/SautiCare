@@ -58,7 +58,7 @@ func minimalFS() fstest.MapFS {
 		"study.yaml":          {Data: []byte("study_window_active: false\n")},
 		"platform.yaml":       {Data: []byte("checkpoint_interval: 5m\noutbox_batch_size: 10\nrelay_poll_interval: 1s\n")},
 		"gated/protocol.yaml": {Data: []byte("protocol_status: approved\nprotocol_version: \"2.0\"\n")},
-		"gated/intake.yaml":   {Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 120s\n")},
+		"gated/intake.yaml":   {Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 120s\ndedup_window: 15m\ndedup_max_zone_distance: 1\n")},
 		"gated/dispatch.yaml": {Data: []byte("mode: protocol\nring_step_metres: 500\nring_interval: 60s\nmax_radius_metres: 2500\ncascade_timeout: 90s\nred_parallel_count: 3\nforward_ack_timeout: 60s\nvoice_fallback_after: 20s\nranking_order: [zone_distance]\nranking_version: v1\n")},
 		"gated/flags.yaml":    {Data: []byte("android_app: false\ncaller_link: false\nspeech_assist: false\napp_api: false\n")},
 		"gated/screens.yaml":  {Data: []byte("internal_error: {en: \"Call 0800 100 200\", lg: \"Kuba 0800 100 200\"}\n")},
@@ -248,5 +248,20 @@ func TestLoadRequiresPositiveAbandonAfter(t *testing.T) {
 	b, err := Load(minimalFS())
 	if err != nil || b.Intake.AbandonAfter.Duration != 2*time.Minute {
 		t.Fatalf("abandon_after = %v, %v", b.Intake.AbandonAfter, err)
+	}
+}
+
+// Build Prompt §10.3: same category, within one zone, within 15 minutes.
+func TestLoadReadsDedupParameters(t *testing.T) {
+	b, err := Load(minimalFS())
+	if err != nil || b.Intake.DedupWindow.Duration != 15*time.Minute || b.Intake.DedupMaxZoneDistance != 1 {
+		t.Fatalf("dedup = %v / %d, %v", b.Intake.DedupWindow, b.Intake.DedupMaxZoneDistance, err)
+	}
+	for _, bad := range []string{"dedup_window: 0s\ndedup_max_zone_distance: 1\n", "dedup_window: 15m\ndedup_max_zone_distance: -1\n"} {
+		fs := minimalFS()
+		fs["gated/intake.yaml"] = &fstest.MapFile{Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: 0.45\nabandon_after: 120s\n" + bad)}
+		if _, err := Load(fs); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
 	}
 }

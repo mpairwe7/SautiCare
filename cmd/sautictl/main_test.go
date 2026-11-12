@@ -115,3 +115,20 @@ func TestTriageKeygenRefusesProduction(t *testing.T) {
 		t.Fatalf("exit = %d", code)
 	}
 }
+
+// A split names the survivor, the member and the coordinator's staff
+// identity; anything malformed is refused before any connection.
+func TestIncidentSplitValidatesBeforeConnecting(t *testing.T) {
+	good := "0195f3a2-7c1e-7d4b-9a10-2b3c4d5e6f70"
+	for _, args := range [][]string{
+		{"incident", "split", "--dsn", "postgres://invalid.invalid/x", "--survivor", "x", "--member", good, "--staff", good},
+		{"incident", "split", "--dsn", "postgres://invalid.invalid/x", "--survivor", good, "--member", good, "--staff", good},
+		{"incident", "split", "--dsn", "postgres://invalid.invalid/x", "--survivor", good, "--member", "0195f3a2-7c1e-7d4b-9a10-2b3c4d5e6f71"},
+		{"incident", "split", "--survivor", good, "--member", "0195f3a2-7c1e-7d4b-9a10-2b3c4d5e6f71", "--staff", good},
+	} {
+		var out, errOut bytes.Buffer
+		if code := Main(args, &out, &errOut); code != 1 || strings.Contains(errOut.String(), "invalid.invalid") {
+			t.Errorf("%v: exit %d, %s", args, code, errOut.String())
+		}
+	}
+}

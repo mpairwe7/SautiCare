@@ -131,6 +131,9 @@ type Deps struct {
 	Matcher       Matcher
 	ResumeWindow  time.Duration
 	MinSimilarity float64
+	// Dispatcher records T2 and merges a duplicate call (Build Prompt §10.3).
+	Dispatcher Dispatcher
+	Dedup      DedupRule
 }
 
 // Service runs Tool 1 over USSD (and, from Part C, IVR).
@@ -139,10 +142,10 @@ type Service struct{ d Deps }
 // New validates and wires the service.
 func New(d Deps) (*Service, error) {
 	if d.Incidents == nil || d.Reader == nil || d.Steps == nil || d.Keys == nil || d.Machine == nil ||
-		d.Triage == nil || d.Matcher == nil {
+		d.Triage == nil || d.Matcher == nil || d.Dispatcher == nil {
 		return nil, errors.New("intake: missing dependency")
 	}
-	if d.ResumeWindow <= 0 || d.MinSimilarity <= 0 || d.MinSimilarity >= 1 {
+	if d.ResumeWindow <= 0 || d.MinSimilarity <= 0 || d.MinSimilarity >= 1 || d.Dedup.Window <= 0 || d.Dedup.MaxZoneDistance < 0 {
 		return nil, fmt.Errorf("intake: resume window %v / min similarity %v out of range", d.ResumeWindow, d.MinSimilarity)
 	}
 	return &Service{d: d}, nil
@@ -418,10 +421,20 @@ func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, sess
 			return err
 		}
 	}
-	return s.appendSystem(ctx, p.ID, incident.EvDispatchReady, map[string]any{
+	payload, err := json.Marshal(map[string]any{
 		"trigger_screen": a.Screen, "zone": map[string]int{"col": cell.Col, "row": cell.Row},
 		"location_quality": quality, "gazetteer_version": s.d.Gazetteer.Version,
-	}, sess.key(a.Screen, "dispatch_ready"))
+	})
+	if err != nil {
+		return err
+	}
+	// T2, and the merge of a duplicate call into the incident already
+	// dispatching (same category, within one zone, 15 minutes), atomically.
+	category := p.Category
+	_, err = s.d.Dispatcher.DispatchOrMerge(ctx, DispatchRequest{IncidentID: p.ID, Payload: payload,
+		IdemKey: sess.key(a.Screen, "dispatch_ready"), Category: category,
+		Zone: incident.Zone{Col: cell.Col, Row: cell.Row}, T1: *p.T[1], Rule: s.d.Dedup})
+	return err
 }
 
 func sameMAC(a, b crypto.MAC) bool { return a.KeyID == b.KeyID && bytes.Equal(a.Sum, b.Sum) }
