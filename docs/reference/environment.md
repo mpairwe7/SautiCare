@@ -18,5 +18,6 @@ Processes read deployment settings from the environment (12-factor), so a later 
 | `SAUTI_DEFAULT_LANG` | intake-gw | `en` or `lg` until screen 1 exists (M1) | `en` |
 | `SAUTI_WITNESS_DIR` | outbox-relay | write-once checkpoint witness directory | `var/witness` |
 | `SAUTI_ORIGIN` | outbox-relay | ledger origin name in checkpoints | `sauti-dispatch` |
-| `SAUTI_DEV_DB_PASSWORD` | sautictl dev-bootstrap | password for all development roles | — (required) |
-| `SAUTI_TEST_PG_DSN` | tests, `sautictl demo m0` | superuser URL of a PostgreSQL 18 test server; unset → embedded PostgreSQL in tests | — |
+| `SAUTI_DEV_DB_PASSWORD` | sautictl dev-bootstrap, sautictl demo | the dev server's password for all Sauti roles. Roles are server-global, so the demo reuses it and never changes it. | — (required) |
+| `SAUTI_TEST_PG_DSN` | tests, `sautictl demo m0` | superuser URL of a shared PostgreSQL 18 test server; unset → each test process starts a private embedded PostgreSQL with random credentials | — |
+| `SAUTI_TEST_ROLE_PASSWORD` | tests | role password on a shared test server; **required with `SAUTI_TEST_PG_DSN`**, because every test process shares the roles (CI derives it from the run ID) | — |

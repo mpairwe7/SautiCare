@@ -306,8 +306,12 @@ func cmdDemo(ctx context.Context, args []string, out io.Writer) error {
 	if *admin == "" {
 		return errors.New("--admin-dsn (or SAUTI_TEST_PG_DSN) is required; without a server run: go test -tags integration -v ./tests/e2e/")
 	}
+	password, err := env.Required("SAUTI_DEV_DB_PASSWORD")
+	if err != nil {
+		return err
+	}
 	fmt.Fprintln(out, "Sauti Dispatch — M0 demo (spec §12.2)")
-	_, err := demo.RunM0(ctx, demo.Options{AdminDSN: *admin, ConfigDir: *cfgDir, Out: out, Keep: *keep})
+	_, err = demo.RunM0(ctx, demo.Options{AdminDSN: *admin, RolePassword: password, ConfigDir: *cfgDir, Out: out, Keep: *keep})
 	if err == nil {
 		fmt.Fprintln(out, "M0 demo PASSED")
 	}

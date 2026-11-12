@@ -9,7 +9,8 @@ By the end you will have run the test suites against a real PostgreSQL 18 and wa
 - Go: any version with `GOTOOLCHAIN=auto`. The module pins `toolchain go1.27.4`, and Go downloads it on first use.
 - `curl` and `tar`, to fetch the pinned tools.
 - Python 3.11 or newer, for the governance gates.
-- No Docker is needed: integration tests start an embedded PostgreSQL 18.6. The first run downloads it, about 30 MB.
+- No Docker is needed: each integration test process starts a private embedded PostgreSQL 18.6 with random credentials. The first run downloads it, about 30 MB.
+- To use a shared server instead, set both `SAUTI_TEST_PG_DSN` and `SAUTI_TEST_ROLE_PASSWORD`.
 
 ## 2. Unit tests
 

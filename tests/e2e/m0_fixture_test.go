@@ -9,8 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/demo"
+	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/pgtest"
 )
 
@@ -29,7 +32,7 @@ func (w logWriter) Write(p []byte) (int, error) {
 // tampering is detected, and a retried callback changes nothing.
 func TestM0FixtureIncident(t *testing.T) {
 	rep, err := demo.RunM0(context.Background(), demo.Options{
-		AdminDSN: pgtest.AdminURL(t), ConfigDir: "../../config", Out: logWriter{t},
+		AdminDSN: pgtest.AdminURL(t), RolePassword: pgtest.RolePassword(t), ConfigDir: "../../config", Out: logWriter{t},
 	})
 	if err != nil {
 		t.Fatalf("M0 demo failed: %v", err)
@@ -61,4 +64,22 @@ func TestM0FixtureIncident(t *testing.T) {
 	if !rep.RetryIdentical {
 		t.Error("step 8: retried callback did not return the identical screen without a new event")
 	}
+}
+
+// The demo shares a server with other users of the same roles (CI runs every
+// package against one PostgreSQL; developers run it against their dev
+// server). Roles are server-global, so the demo must authenticate with the
+// server's established role password and never change it.
+func TestM0DemoLeavesSharedRolePasswordsUnchanged(t *testing.T) {
+	c := pgtest.Cluster(t) // roles now carry the test-server password
+	if _, err := demo.RunM0(context.Background(), demo.Options{
+		AdminDSN: pgtest.AdminURL(t), RolePassword: pgtest.RolePassword(t), ConfigDir: "../../config", Out: logWriter{t},
+	}); err != nil {
+		t.Fatalf("demo: %v", err)
+	}
+	conn, err := pgx.Connect(context.Background(), c.DSN(pg.StoreAudit, "audit_owner"))
+	if err != nil {
+		t.Fatalf("after the demo, the shared role password no longer works: %v", err)
+	}
+	_ = conn.Close(context.Background())
 }

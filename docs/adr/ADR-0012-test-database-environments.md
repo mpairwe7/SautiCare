@@ -29,6 +29,7 @@ Chosen option: **embedded-postgres v2 (PostgreSQL 18.6) locally, `postgres:18.6`
 ## Consequences
 
 * Good: real database semantics in every test; isolation per test.
+* Roles are server-global. On a shared server every test process (and the demo) must authenticate the roles with one agreed password, `SAUTI_TEST_ROLE_PASSWORD` (derived from the run ID in CI), and nothing may change it. A private embedded server uses random per-process credentials. No password is hardcoded in the repository.
 * Bad: the first local run downloads the PostgreSQL binaries.
 
 ## Confirmation

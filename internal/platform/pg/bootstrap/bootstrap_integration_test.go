@@ -49,7 +49,7 @@ func TestBootstrapRefusesProduction(t *testing.T) {
 func TestBootstrapIsIdempotent(t *testing.T) {
 	admin := pgtest.AdminConn(t)
 	ctx := context.Background()
-	opts := bootstrap.Options{Suffix: pgtest.RandomSuffix(), Password: pgtest.Password, Env: "test"}
+	opts := bootstrap.Options{Suffix: pgtest.RandomSuffix(), Password: pgtest.RolePassword(t), Env: "test"}
 	first, err := bootstrap.Run(ctx, admin, opts)
 	if err != nil {
 		t.Fatal(err)

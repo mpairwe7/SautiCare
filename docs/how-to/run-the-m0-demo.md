@@ -11,8 +11,11 @@ go test -tags integration -count=1 -v -run TestM0FixtureIncident ./tests/e2e/
 **Against a development server** (it creates and then drops isolated `sauti_*_demo<random>` databases):
 
 ```bash
+export SAUTI_DEV_DB_PASSWORD=…   # the dev server's role password (the one dev-bootstrap used)
 go run ./cmd/sautictl demo m0 --admin-dsn "postgres://postgres:…@127.0.0.1:5432/postgres?sslmode=disable"
 ```
+
+The demo reuses the server's role password and never changes it, because roles are shared by everything else on that server.
 
 Add `--keep` to keep the databases for inspection.
 

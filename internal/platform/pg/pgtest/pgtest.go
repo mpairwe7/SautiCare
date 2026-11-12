@@ -32,16 +32,20 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg/migrate"
 )
 
-// Password is the login password of every role on test servers.
-const Password = "sauti-test-only"
-
 var (
-	once     sync.Once
-	adminURL string
-	startErr error
-	server   *embeddedpostgres.EmbeddedPostgres
-	workDir  string
+	once         sync.Once
+	adminURL     string
+	rolePassword string
+	startErr     error
+	server       *embeddedpostgres.EmbeddedPostgres
+	workDir      string
 )
+
+func randomSecret() string {
+	b := make([]byte, 18)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 // Main runs the tests and stops the embedded server, if one was started.
 func Main(m *testing.M) {
@@ -66,9 +70,19 @@ func freePort() (uint32, error) {
 
 func start() {
 	if v := os.Getenv("SAUTI_TEST_PG_DSN"); v != "" {
+		// A shared server: roles are server-global, so every test process
+		// must use the same role password (CI derives it from the run ID).
+		rolePassword = os.Getenv("SAUTI_TEST_ROLE_PASSWORD")
+		if rolePassword == "" {
+			startErr = fmt.Errorf("pgtest: SAUTI_TEST_ROLE_PASSWORD is required with SAUTI_TEST_PG_DSN (roles are shared by all test processes)")
+			return
+		}
 		adminURL = v
 		return
 	}
+	// A private embedded server: random credentials for this process only.
+	rolePassword = randomSecret()
+	superPassword := randomSecret()
 	port, err := freePort()
 	if err != nil {
 		startErr = err
@@ -87,7 +101,7 @@ func start() {
 		Version(embeddedpostgres.V18).
 		Port(port).
 		Username("postgres").
-		Password("postgres").
+		Password(superPassword).
 		Database("postgres").
 		CachePath(filepath.Join(cache, "sauti", "embedded-postgres")).
 		RuntimePath(filepath.Join(workDir, "runtime")).
@@ -99,7 +113,15 @@ func start() {
 		startErr = fmt.Errorf("pgtest: start embedded PostgreSQL: %w", err)
 		return
 	}
-	adminURL = fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/postgres?sslmode=disable", port)
+	adminURL = (&url.URL{Scheme: "postgres", User: url.UserPassword("postgres", superPassword),
+		Host: fmt.Sprintf("127.0.0.1:%d", port), Path: "/postgres", RawQuery: "sslmode=disable"}).String()
+}
+
+// RolePassword returns the login password of every Sauti role on the test server.
+func RolePassword(tb testing.TB) string {
+	tb.Helper()
+	AdminURL(tb)
+	return rolePassword
 }
 
 // AdminURL returns the superuser DSN of the test server.
@@ -186,7 +208,7 @@ func Cluster(tb testing.TB) *TestCluster {
 	tb.Helper()
 	ctx := context.Background()
 	admin := AdminConn(tb)
-	dbs, err := bootstrap.Run(ctx, admin, bootstrap.Options{Suffix: RandomSuffix(), Password: Password, Env: "test"})
+	dbs, err := bootstrap.Run(ctx, admin, bootstrap.Options{Suffix: RandomSuffix(), Password: RolePassword(tb), Env: "test"})
 	if err != nil {
 		tb.Fatalf("pgtest: bootstrap: %v", err)
 	}
@@ -209,7 +231,7 @@ func (c *TestCluster) Database(s pg.Store) string { return c.dbs[s] }
 
 // DSN returns a DSN for role connecting to store's database.
 func (c *TestCluster) DSN(s pg.Store, role string) string {
-	return withUserDB(c.admin, role, Password, c.dbs[s])
+	return withUserDB(c.admin, role, rolePassword, c.dbs[s])
 }
 
 // Owner returns a connection as the store's owner role.

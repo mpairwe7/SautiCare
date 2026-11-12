@@ -41,10 +41,15 @@ import (
 
 // Options configures a demo run.
 type Options struct {
-	AdminDSN  string    // superuser URL DSN of a development PostgreSQL 18 server
-	ConfigDir string    // path to config/
-	Out       io.Writer // step-by-step narration
-	Keep      bool      // keep the demo databases afterwards
+	AdminDSN string // superuser URL DSN of a development PostgreSQL 18 server
+	// RolePassword is the server's established password for the Sauti roles
+	// (SAUTI_DEV_DB_PASSWORD on a dev server). Roles are server-global, so the
+	// demo must use it and never change it: a different value would break
+	// every other user of the same roles on that server.
+	RolePassword string
+	ConfigDir    string    // path to config/
+	Out          io.Writer // step-by-step narration
+	Keep         bool      // keep the demo databases afterwards
 }
 
 // Report is what the M0 demo proved.
@@ -110,9 +115,10 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if err != nil || admin.Scheme == "" {
 		return rep, errors.New("demo: admin DSN must be a postgres:// URL")
 	}
-	pw := make([]byte, 12)
-	_, _ = rand.Read(pw)
-	r := &runner{o: o, admin: admin, password: hex.EncodeToString(pw)}
+	if o.RolePassword == "" {
+		return rep, errors.New("demo: the server's role password is required (SAUTI_DEV_DB_PASSWORD)")
+	}
+	r := &runner{o: o, admin: admin, password: o.RolePassword}
 	defer func() {
 		for _, p := range r.pools {
 			p.Close()
@@ -204,7 +210,9 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	relay := audit.NewRelay(opstore.New(relayPool), ledger, quiet, nil, 100)
 
-	token := hex.EncodeToString(pw) + "-demo-path-token"
+	tok := make([]byte, 16)
+	_, _ = rand.Read(tok)
+	token := hex.EncodeToString(tok)
 	handler, err := africastalking.NewUSSDHandler(africastalking.USSDConfig{
 		Provider: "at", PathToken: token, ServiceCodes: []string{"*384*1#"}, ErrorText: cfg.Screens.InternalError["en"],
 	}, intake.NewService(incidents, ops, cfg.Screens, "en"), quiet)
