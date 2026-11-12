@@ -6,7 +6,7 @@ Processes read deployment settings from the environment (12-factor), so a later 
 
 | Variable | Used by | Meaning | Default |
 |---|---|---|---|
-| `SAUTI_ENV` | all | `dev`, `test` or `production`; production refuses dev keys and pending protocol content | `dev` |
+| `SAUTI_ENV` | all | `dev`, `test` or `production`; production refuses dev keys and pending protocol content; `sautictl demo m0` requires `dev` or `test` | `dev` |
 | `SAUTI_CONFIG_DIR` | intake-gw, outbox-relay | path to `config/` | `config` |
 | `SAUTI_DEVKEYS_DIR` | intake-gw, outbox-relay | development key directory (`sautictl dev-keygen`) | `.devkeys` |
 | `SAUTI_OP_DSN` | intake-gw (`op_intake`), outbox-relay (`op_relay`) | operational store DSN, least-privileged role | — (required) |

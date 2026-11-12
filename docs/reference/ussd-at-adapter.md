@@ -34,6 +34,7 @@ Once the token and service code show the request is ours, nothing else is answer
 
 - **Idempotency.** The reply to each `(provider, sessionId, sha256(text))` is stored in `op.ussd_steps`, and the first stored reply wins. A retried or concurrent duplicate callback gets the identical screen and writes nothing new.
 - **Budget.** Each callback has 800 ms end to end (spec §7.5, p99 under 1 s). No external call happens on this path.
-- **Fail safe.** Any internal error returns `END` with the internal-error copy, which gives the free voice line, and is logged with the session ID only.
+- **Fail safe.** Any internal error returns `END` with the internal-error copy, which gives the free voice line, and is logged with the session correlation value only.
+- **Logs.** The raw `sessionId` is never logged (it is caller-controlled text). Log lines carry `session`: a keyed HMAC-SHA-256 of it under a random key drawn when the handler starts, hex-truncated to 16 characters. It correlates the lines of one session within one process lifetime only. An invalid `networkCode` (not 5–6 digits) is dropped: passed to intake and logged as empty.
 - **M0 scope.** The first callback opens the incident (reference and database-set T1) and replies in test mode. The Tool 1 eight-screen flow arrives in M1.
 - **Screen length.** Every catalogue screen, rendered, must fit the configured limit (160 by default). `internal/intake/service_test.go::TestScreensFitCharLimit` fails the build otherwise.

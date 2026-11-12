@@ -11,6 +11,7 @@ go test -tags integration -count=1 -v -run TestM0FixtureIncident ./tests/e2e/
 **Against a development server** (it creates and then drops isolated `sauti_*_demo<random>` databases):
 
 ```bash
+export SAUTI_ENV=dev             # the demo refuses production before connecting
 export SAUTI_DEV_DB_PASSWORD=…   # the dev server's role password (the one dev-bootstrap used)
 go run ./cmd/sautictl demo m0 --admin-dsn "postgres://postgres:…@127.0.0.1:5432/postgres?sslmode=disable"
 ```
@@ -32,3 +33,5 @@ Add `--keep` to keep the databases for inspection.
 | 7 | Flipping one byte of entry 3 as a superuser makes verification fail at sequence 3 |
 | 7b | Rewriting entry 3, recomputing the chain with the ledger's own canonical function and deleting the database checkpoints fools chain-only verification. The write-once witness still fails it, and the anchored checkpointer refuses to sign. |
 | 8 | Retrying the first callback returns the identical screen and creates nothing |
+
+The run is bounded to 10 minutes and each cleanup step to 30 seconds, so a held lock or a stalled server fails the demo instead of hanging it.
