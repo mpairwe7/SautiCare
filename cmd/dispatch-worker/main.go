@@ -181,7 +181,11 @@ func await(ctx context.Context, stop context.CancelFunc, adminErr, leaderErr <-c
 	}
 	stop()
 	if !leaderDone {
-		<-leaderErr
+		// Cancelled, the leader returns context.Canceled; anything else is
+		// reported unless an earlier failure is.
+		if lerr := <-leaderErr; err == nil && !errors.Is(lerr, context.Canceled) {
+			err = lerr
+		}
 	}
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, context.Canceled) {
 		return nil
