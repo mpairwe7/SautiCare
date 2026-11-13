@@ -54,6 +54,16 @@ type OpAvailability struct {
 	RemindedAt  pgtype.Timestamptz
 }
 
+type OpBridgeCall struct {
+	ID          pgtype.UUID
+	IncidentID  pgtype.UUID
+	InitiatedBy string
+	StartedAt   pgtype.Timestamptz
+	AnsweredAt  pgtype.Timestamptz
+	EndedAt     pgtype.Timestamptz
+	Result      *string
+}
+
 type OpCallerNotice struct {
 	IncidentID pgtype.UUID
 	Kind       string

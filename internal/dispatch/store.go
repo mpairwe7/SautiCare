@@ -155,3 +155,24 @@ type CoordinatorCall struct {
 	Reference  incident.Reference
 	Calls      int
 }
+
+// BridgeTarget is an open assignment the masked bridge can connect: the
+// incident, its number (for "the last 4 digits"), and the assigned role and
+// responder (Build Prompt §10.5).
+type BridgeTarget struct {
+	IncidentID  uuid.UUID
+	Reference   incident.Reference
+	Role        responder.Role
+	ResponderID uuid.UUID
+}
+
+// Who began a bridge call, and how it ended (op.bridge_calls).
+const (
+	BridgeByVHT         = "vht"
+	BridgeByTransporter = "transporter"
+	BridgeByCaller      = "caller"
+
+	BridgeConnected = "connected"
+	BridgeNoAnswer  = "no_answer"
+	BridgeFailed    = "failed"
+)

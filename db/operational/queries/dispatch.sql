@@ -227,3 +227,20 @@ FROM op.claim_coordinator_calls(sqlc.arg(retry)::interval, sqlc.arg(max_rows)::i
 
 -- name: AcknowledgeCoordinatorCall :exec
 SELECT op.acknowledge_coordinator_call(sqlc.arg(incident_id)::uuid, sqlc.arg(seq)::bigint);
+
+-- name: BridgeTargetsForResponder :many
+SELECT t.incident_id::uuid AS incident_id, t.reference::text AS reference, t.role::text AS role, t.responder_id::uuid AS responder_id
+FROM op.bridge_targets_for_responder(sqlc.arg(responder_id)::uuid) AS t(incident_id, reference, role, responder_id);
+
+-- name: BridgeTargetsForCaller :many
+SELECT t.incident_id::uuid AS incident_id, t.reference::text AS reference, t.role::text AS role, t.responder_id::uuid AS responder_id
+FROM op.bridge_targets_for_caller(sqlc.arg(macs)::bytea[]) AS t(incident_id, reference, role, responder_id);
+
+-- name: BeginBridgeCall :one
+SELECT op.begin_bridge_call(sqlc.arg(incident_id)::uuid, sqlc.arg(initiated_by)::text)::uuid AS id;
+
+-- name: BridgeCallAnswered :exec
+SELECT op.bridge_call_answered(sqlc.arg(id)::uuid);
+
+-- name: FinishBridgeCall :one
+SELECT op.finish_bridge_call(sqlc.arg(id)::uuid, sqlc.arg(result)::text)::boolean AS changed;
