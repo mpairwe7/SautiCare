@@ -271,6 +271,46 @@ BEGIN
 END
 $$;
 
+-- An answered field never changes (CodeRabbit PR #6): a screen.answered
+-- event whose field already holds a different value is refused, the same
+-- value again is accepted. Otherwise a late callback from an older session
+-- could replace the category or the screen 5 answer after the incident was
+-- classified on them. A trigger on the event log, not a check inside
+-- op.append_incident_event: later migrations replace the write path, and
+-- the trigger holds whatever it becomes. It runs on the event insert, before
+-- the projection update, against the incidents row the write path has
+-- locked. internal/incident/tool1.go (Projection.set) applies the same rule
+-- in the fold.
+CREATE FUNCTION op.screen_answer_unchanged() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = op, pg_temp
+AS $$
+DECLARE
+    v_field text := NEW.payload ->> 'field';
+    v_cur   text;
+BEGIN
+    SELECT CASE v_field
+               WHEN 'language'        THEN i.language
+               WHEN 'danger'          THEN i.danger
+               WHEN 'category'        THEN i.category
+               WHEN 'age_band'        THEN i.age_band
+               WHEN 'specific_danger' THEN i.specific_danger
+               WHEN 'ward'            THEN i.ward
+               WHEN 'landmark'        THEN i.landmark
+           END
+      INTO v_cur
+      FROM op.incidents i
+     WHERE i.id = NEW.incident_id;
+    IF v_cur <> NEW.payload ->> 'value' THEN
+        RAISE EXCEPTION 'illegal transition: screen.answered: % is already answered', v_field
+            USING ERRCODE = 'SA422';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER incident_events_answer_unchanged BEFORE INSERT ON op.incident_events
+    FOR EACH ROW WHEN (NEW.type = 'screen.answered') EXECUTE FUNCTION op.screen_answer_unchanged();
 
 -- New functions above are revoked from PUBLIC by the role-level default
 -- (0004); the replaced append function keeps its existing grants.

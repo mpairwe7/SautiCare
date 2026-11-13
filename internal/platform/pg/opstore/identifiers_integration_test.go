@@ -86,7 +86,8 @@ func TestStoreIdentifierIsIdempotentAndBound(t *testing.T) {
 
 // Step keys are keyed MACs with the consumed input length; a lookup with
 // several candidate MACs (current and previous key period) finds the row,
-// and Latest returns the furthest step of the session.
+// and Latest returns the furthest step of the session, with the landmark a
+// typed landmark matched (carried to a screen-8 trigger).
 func TestStepStoreKeyedByMAC(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
@@ -102,7 +103,7 @@ func TestStepStoreKeyedByMAC(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := s.Save(ctx, "at", "S1", intake.Step{Screen: intake.Screen{Text: "screen " + text}, ConsumedLen: len(text),
-			MAC: mac, IncidentID: o.IncidentID, Kind: intake.KindDanger}); err != nil {
+			MAC: mac, IncidentID: o.IncidentID, Kind: intake.KindDanger, MatchedLandmark: "w01_l1"}); err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
@@ -114,7 +115,7 @@ func TestStepStoreKeyedByMAC(t *testing.T) {
 	}
 	latest, ok, err := s.Latest(ctx, "at", "S1")
 	if err != nil || !ok || latest.ConsumedLen != 3 || latest.Screen.Text != "screen 1*2" || latest.IncidentID != o.IncidentID ||
-		latest.Kind != intake.KindDanger {
+		latest.Kind != intake.KindDanger || latest.MatchedLandmark != "w01_l1" {
 		t.Fatalf("Latest = %+v %v %v", latest, ok, err)
 	}
 	if _, ok, _ := s.Latest(ctx, "at", "S2"); ok {

@@ -46,6 +46,9 @@ const (
 	algorithm      = "ML-DSA-65"
 	devKeyPrefix   = "dev-"
 	celCostLimit   = 10_000
+	// maxDomain bounds the combinations the totality check expands: each
+	// input answers a single-digit menu screen (at most nine options).
+	maxDomain = 9 * 9 * 9 * 9
 )
 
 var (
@@ -212,6 +215,14 @@ func Load(doc, sigDoc []byte, trusted map[string][]byte) (*Engine, error) {
 		}
 		e.domain = append(e.domain, vals)
 		opts = append(opts, cel.Variable(name, cel.StringType))
+	}
+	// Checked before Domain() allocates it; the running product never
+	// exceeds maxDomain times one input's length, so it cannot overflow.
+	size := 1
+	for i, vals := range e.domain {
+		if size *= len(vals); size > maxDomain {
+			return bad("domain of %v exceeds %d combinations", inputNames[:i+1], maxDomain)
+		}
 	}
 	if e.env, err = cel.NewEnv(opts...); err != nil {
 		return nil, err

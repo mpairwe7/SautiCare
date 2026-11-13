@@ -160,6 +160,27 @@ func TestLoadRejectsNonTotalTable(t *testing.T) {
 	}
 }
 
+// CodeRabbit PR #6: a bundle that fits maxBundleBytes can still declare a
+// domain whose expansion exhausts memory before the totality check runs. Its
+// size is checked first: every input answers a single-digit menu screen.
+func TestLoadRejectsOversizedDomain(t *testing.T) {
+	ten := `["v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"]`
+	doc := rules
+	for _, in := range []string{
+		`danger: ["yes", "no", "unknown"]`,
+		`category: ["trauma", "obstetric", "acute_medical", "poisoning", "other"]`,
+		`age_band: ["under_5", "age_5_17", "age_18_59", "age_60_plus", "unknown"]`,
+		`specific_danger: ["yes", "no"]`,
+	} {
+		doc = strings.Replace(doc, in, in[:strings.Index(in, "[")]+ten, 1)
+	}
+	k := newKey(t, "clinical-test")
+	_, err := Load([]byte(doc), sign(t, k, doc), map[string][]byte{k.id: k.pub})
+	if !errors.Is(err, ErrBundle) || !strings.Contains(err.Error(), "domain") {
+		t.Fatalf("10^4 combinations: err = %v, want ErrBundle naming the domain", err)
+	}
+}
+
 // Fail safe (Build Prompt §14): a rule that errors at run time, or an input
 // outside the declared domain, gives red and is marked as a rule error so the
 // coordinator is alerted.

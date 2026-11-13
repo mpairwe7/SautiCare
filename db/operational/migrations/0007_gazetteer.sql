@@ -89,6 +89,23 @@ BEGIN
 END
 $$;
 
+-- Nor added to once published (CodeRabbit PR #6): an extra alias or
+-- landmark under a version in force would change matching without changing
+-- the version or its digest. The loader inserts a version's rows before its
+-- op.config_versions row, in one transaction, so a load is unaffected.
+CREATE FUNCTION op.gazetteer_unpublished() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = op, pg_temp
+AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM op.config_versions c WHERE c.kind = 'gazetteer' AND c.version = NEW.version) THEN
+        RAISE EXCEPTION 'gazetteer is frozen: version % is published (load a new version)', NEW.version
+            USING ERRCODE = 'SA403';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
 DO $$
 DECLARE
     t text;
@@ -98,6 +115,10 @@ BEGIN
                        t || '_frozen', t);
         EXECUTE format('CREATE TRIGGER %I BEFORE TRUNCATE ON op.%I FOR EACH STATEMENT EXECUTE FUNCTION op.gazetteer_frozen()',
                        t || '_frozen_truncate', t);
+    END LOOP;
+    FOREACH t IN ARRAY ARRAY['wards', 'ward_zones', 'landmarks', 'landmark_aliases'] LOOP
+        EXECUTE format('CREATE TRIGGER %I BEFORE INSERT ON op.%I FOR EACH ROW EXECUTE FUNCTION op.gazetteer_unpublished()',
+                       t || '_unpublished', t);
     END LOOP;
 END
 $$;

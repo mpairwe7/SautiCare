@@ -111,10 +111,16 @@ func TestMatchIsScopedToWard(t *testing.T) {
 
 // The gazetteer is frozen reference data: even its owner cannot edit a
 // loaded version in place (a correction is a new version plus a deviation).
+// Nor add to it once published (CodeRabbit PR #6): an extra alias would
+// change matching under an unchanged version and digest. A new version still
+// loads, its rows inserted before its publication in one transaction.
 func TestGazetteerIsFrozen(t *testing.T) {
 	c := pgtest.Cluster(t)
 	if _, _, err := loadGaz(t, c, gazYAML); err != nil {
 		t.Fatal(err)
+	}
+	if _, loaded, err := loadGaz(t, c, strings.Replace(gazYAML, `version: "it-1"`, `version: "it-2"`, 1)); err != nil || !loaded {
+		t.Fatalf("a new version after a published one: loaded=%v err=%v", loaded, err)
 	}
 	owner := c.Owner(t, pg.StoreOperational)
 	for _, q := range []string{
@@ -122,6 +128,10 @@ func TestGazetteerIsFrozen(t *testing.T) {
 		"DELETE FROM op.landmark_aliases WHERE landmark_id = 'w01_l1'",
 		"UPDATE op.wards SET centre_col = 1",
 		"DELETE FROM op.gazetteer_versions",
+		"INSERT INTO op.landmark_aliases (version, landmark_id, alias_order, ward_id, alias_norm) VALUES ('it-1', 'w01_l1', 99, 'w01', 'new alias')",
+		"INSERT INTO op.landmarks (version, id, list_order, ward_id, name_en, name_lg, lat, lon, zone_col, zone_row) VALUES ('it-1', 'w01_new', 99, 'w01', 'N', 'N', 0.38, 32.56, 902, 84)",
+		"INSERT INTO op.ward_zones (version, ward_id, zone_col, zone_row) VALUES ('it-1', 'w01', 1, 1)",
+		"INSERT INTO op.wards (version, id, menu_order, name_en, name_lg, centre_col, centre_row) VALUES ('it-1', 'w09', 9, 'W', 'W', 1, 1)",
 	} {
 		if _, err := owner.Exec(context.Background(), q); err == nil || !strings.Contains(err.Error(), "frozen") {
 			t.Errorf("%s: err = %v, want frozen", q, err)

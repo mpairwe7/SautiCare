@@ -10,15 +10,15 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | `config/gated/protocol.yaml` | `protocol_status` | `pending` | Protocol v2.0 and Tools 1–7 not yet received; blocks production |
 | | `protocol_version` | `"2.0"` | |
 | `config/gated/intake.yaml` | `resume_window` | `10m` | D4, ADR-0009 (Guide §4) |
-| | `dispatch_trigger_screen` | `7` | D5, ADR-0009 (Build Prompt §10.1) — defines T2 |
+| | `dispatch_trigger_screen` | `7` | D5, ADR-0009 (Build Prompt §10.1) — defines T2; at `8`, a typed landmark matched at screen 7 is carried in the USSD step |
 | | `default_screen_char_limit` | `160` | O7: until MTN/Airtel confirm in writing |
 | | `screen_char_limits` | `{}` | per network code once confirmed |
 | | `fuzzy_match_min_similarity` | `0.45` | Build Prompt §12: below it, ward-level location + `needs_location_callback`; field-tested in M7 |
 | | `abandon_after` | `120s` | Build Prompt §10.3, Guide §4: abandonment flag and danger-yes escalation |
 | | `dedup_window` / `dedup_max_zone_distance` | `15m` / `1` | Build Prompt §10.3: same category, within one zone, 15 minutes (ADR-0022) |
-| `config/gated/tool1.yaml` | the eight screens' copy, options, danger questions, first-aid lines, messages | **placeholder** (`status: placeholder`, `PENDING-TOOL1`) | Tool 1 not received; [tool1-flow.md](tool1-flow.md); blocks production |
+| `config/gated/tool1.yaml` | the eight screens' copy, options, danger questions, first-aid lines, messages | **placeholder** (`status: placeholder`, `PENDING-TOOL1`) | Tool 1 not received; [tool1-flow.md](tool1-flow.md); blocks production; `messages.help_coming` must carry `{ref}` and `{first_aid}` in every language |
 | `config/gated/triage.yaml` | `rules_file`, `trusted_keys` | `triage-rules/tool1.yaml`; one `dev-` key | ADR-0019: who may sign clinical rules; a `dev-` key blocks production |
-| `config/gated/gazetteer.yaml` | wards, landmarks, aliases (versioned) | synthetic `placeholder-2026-11-12` | ADR-0020; separately versioned (not in the fingerprint); `sautictl gazetteer load` |
+| `config/gated/gazetteer.yaml` | wards, landmarks, aliases (versioned) | synthetic `placeholder-2026-11-12` | ADR-0020; separately versioned (not in the fingerprint); at most eight wards; `sautictl gazetteer load` |
 | `triage-rules/tool1.yaml` (+ `.sig`, `scenarios.yaml`) | signed decision table | `tool1-placeholder-0.1`, `protocol_status: pending` | ADR-0019; gated |
 | `config/gated/dispatch.yaml` | `mode` | `protocol` | ring 1 only until the decisions 1, 2, 6 amendment |
 | | `ring_step_metres` / `ring_interval` | `500` / `60s` | Build Prompt §10.4, decision 2 |
