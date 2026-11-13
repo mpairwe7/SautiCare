@@ -34,3 +34,4 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0026](ADR-0026-dispatch-suspension-and-stopping-rule.md) | Dispatch suspension and the stopping rule (O6) | Accepted | 2026-11-13 |
 | [ADR-0027](ADR-0027-channels-and-the-alert-ladder.md) | Responder, caller and facility channels (SMS, responder USSD menu, voice) and the alert ladder (O2: no USSD push) | Accepted | 2026-11-13 |
 | [ADR-0028](ADR-0028-masked-bridge-and-surge.md) | The masked bridge (no number shared, nothing recorded), surge queueing, and what follows acceptance | Accepted | 2026-11-13 |
+| [ADR-0029](ADR-0029-interaction-standards-for-voice-ussd-sms.md) | Interaction standards for voice, USSD and SMS: keys, retries, a person at the end of every failure, read-back, language, trust cues, time budgets and escalation tiers | Accepted | 2026-11-13 |
