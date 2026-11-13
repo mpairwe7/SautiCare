@@ -1,0 +1,230 @@
+# Threat model: STRIDE (security) and LINDDUN (privacy) for Sauti Dispatch.
+# Each threat names the hard constraints (Build Prompt §3, 1-14) it protects,
+# its mitigations, and the tests that prove them (or planned:<milestone>).
+# Validated by threat-model/validate_threats.py, which also fails if any hard
+# constraint is not covered. Reviewed at every milestone.
+threats:
+  - id: T-001
+    title: Personal data leaves Uganda through an outbound integration or telemetry
+    stride: Information disclosure
+    asset: caller and responder identifiers
+    hard_constraints: [1, 6]
+    mitigations:
+      - All outbound HTTP through platform/egress with a host allowlist, checked per redirect hop
+      - No messaging-app integrations; no foreign SaaS error tracking or AI
+      - nftables default-deny and WireGuard between Ugandan sites (P0)
+    verified_by:
+      - internal/platform/egress/egress_test.go::TestEgressDeniesUnlistedHost
+      - internal/platform/egress/egress_test.go::TestEgressDeniesRedirectToUnlistedHost
+      - "planned:M2 SMS template content test (no patient name or clinical field)"
+      - "planned:P0 nftables default-deny drill"
+
+  - id: T-002
+    title: Intake channel unavailable to a basic-phone caller
+    stride: Denial of service
+    asset: USSD and IVR intake
+    hard_constraints: [2, 14]
+    mitigations:
+      - The incident exists from the first screen; replies are idempotent per session and input
+      - Internal errors still answer the caller and give the free voice line
+      - Second USSD route (UCC code) and second SIP carrier (M7)
+    verified_by:
+      - internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine
+      - internal/platform/pg/intake_integration_test.go::TestRetriedCallbackReturnsSameScreenNoSecondEvent
+      - "planned:M7 second-route failover scenario"
+
+  - id: T-003
+    title: Severity lowered or triage silently altered
+    stride: Tampering
+    asset: incident classification and logic version
+    hard_constraints: [3, 11]
+    mitigations:
+      - Severity ratchet in the Go reducer and in the SQL write path
+      - Versioned, fingerprinted configuration behind the amendment gate
+      - Signed CEL decision tables with clinical scenarios (M1)
+    verified_by:
+      - internal/incident/fold_test.go::TestApplyRejectsSeverityLowering
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering
+      - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
+      - "planned:M1 rule-signature verification test"
+
+  - id: T-004
+    title: Protocol timestamps forged by a handset or application clock
+    stride: Tampering
+    asset: T1-T7 study clock
+    hard_constraints: [4]
+    mitigations:
+      - The database sets every T-time with clock_timestamp(); Go never supplies one
+      - chrony with NTS and a GPS reference per site (P0)
+    verified_by:
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestOpenIncidentSetsT1FromDatabase
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestProjectionMatchesFold
+      - "planned:P0 clock offset alarm under 10 ms"
+
+  - id: T-005
+    title: Caller's number exposed to a responder, a log or a payload
+    linddun: Identifying
+    asset: caller phone number
+    hard_constraints: [5, 8]
+    mitigations:
+      - pii.Phone masks every generic rendering; numbers stored only as AES-256-GCM ciphertext bound to their row
+      - Log handler redacts number-like runs, including inside errors
+      - Masked bridge on Asterisk (M2)
+    verified_by:
+      - internal/pii/pii_test.go::TestPhoneMasksEverywhere
+      - internal/platform/logging/redact_test.go::TestRedactionMasksPhoneInsideErrorValues
+      - internal/crypto/crypto_test.go::TestOpenFailsWithSwappedAAD
+      - internal/crypto/crypto_test.go::TestSealAndOpenRequireACompleteLocation
+      - "planned:M2 responder-facing payload scan and masked bridge test"
+
+  - id: T-006
+    title: Coordinator overrides dispatch outside the defined exceptions
+    stride: Repudiation
+    asset: dispatch decisions
+    hard_constraints: [7]
+    mitigations:
+      - Overrides only in defined exception conditions, each a logged protocol deviation (M5)
+      - Every decision is an event mirrored into the hash-chained audit ledger
+    verified_by:
+      - internal/platform/pg/relay_integration_test.go::TestRelayEndToEndAgainstPostgres
+      - "planned:M5 override-requires-deviation test"
+
+  - id: T-007
+    title: Audit history rewritten, truncated or forged
+    stride: Tampering
+    asset: audit ledger
+    hard_constraints: [8]
+    mitigations:
+      - SHA-256 hash chain computed in SQL and re-verified in Go
+      - Append-only triggers even for the owner; EXECUTE-only appender role
+      - ML-DSA-65 signed checkpoints written to a write-once witness; verification requires the witness, and an empty or missing witness fails it unless --no-witness is explicit
+      - The checkpointer is anchored on the last witnessed checkpoint and refuses to sign over diverged history; every checkpoint writer reads the shared witness again before signing and checks each note it has not seen against the chain
+    verified_by:
+      - internal/platform/pg/auditstore/auditstore_integration_test.go::TestSQLHashMatchesGoCanonical
+      - internal/platform/pg/auditstore/auditstore_integration_test.go::TestOwnerUpdateBlockedByTrigger
+      - internal/audit/verify_test.go::TestVerifyDetectsBrokenHash
+      - internal/audit/verify_test.go::TestVerifyDetectsTruncationBeyondCheckpoint
+      - internal/audit/verify_test.go::TestVerifyDetectsForgedCheckpoint
+      - tests/e2e/m0_fixture_test.go::TestM0FixtureIncident
+      - internal/platform/pg/tamper_integration_test.go::TestOwnerRewriteWithRecomputedChainIsCaughtByWitness
+      - internal/audit/witness_test.go::TestCheckpointerRefusesDivergedChain
+      - internal/audit/witness_test.go::TestRelayCheckpointRefusesARewriteBehindAManualCheckpoint
+      - internal/audit/witness_test.go::TestCheckpointerChecksEveryNewWitnessNote
+      - cmd/sautictl/checkpoint_integration_test.go::TestRelayCheckpointRefusesARewriteBehindTheCommandsCheckpoint
+      - cmd/sautictl/main_test.go::TestVerifyLedgerRequiresWitnessOrExplicitOptOut
+      - cmd/sautictl/ledger_test.go::TestVerifyLedgerFailsWhenTheWitnessDirHoldsNoNotes
+
+  - id: T-008
+    title: Caller identifiers enter the audit ledger
+    linddun: Data disclosure
+    asset: audit ledger (5-year retention)
+    hard_constraints: [8]
+    mitigations:
+      - Outbox carries only typed fields and the payload hash; strict decoding stops on unknown keys
+      - The payload hash is salted with a per-event random value kept in the operational store, so it cannot be reversed by enumerating numbers
+    verified_by:
+      - internal/platform/pg/relay_integration_test.go::TestAuditEntryNeverCarriesPayloadContent
+      - internal/audit/relay_test.go::TestRelayAbortsOnPoisonRow
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestOutboxPayloadHasOnlyAllowedKeys
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestAuditPayloadHashIsSalted
+
+  - id: T-009
+    title: Re-identification by joining operational and research data
+    linddun: Linking
+    asset: operational, analytic and linkage stores
+    hard_constraints: [9]
+    mitigations:
+      - Five databases; CONNECT revoked from PUBLIC; per-store roles
+      - Only the pseudonymiser links both stores (archcheck R4)
+      - Linkage vault resolves only for four lawful reasons, every attempt logged
+    verified_by:
+      - internal/platform/pg/bootstrap/bootstrap_integration_test.go::TestBootstrapIsolatesStores
+      - tools/archcheck/check_test.go::TestR4OnlyPseudonymiserJoinsStores
+      - internal/platform/pg/schemas_integration_test.go::TestLinkageResolveRequiresAllowedReason
+      - internal/platform/pg/schemas_integration_test.go::TestLinkageRolesAreNarrow
+
+  - id: T-010
+    title: Research export includes a person who did not consent or withdrew
+    linddun: Non-compliance
+    asset: analytic store
+    hard_constraints: [10]
+    mitigations:
+      - Analytic rows require consent, permission/assent or a waiver with its reason
+      - Append-only suppression ledger replayed after every restore (M6)
+    verified_by:
+      - internal/platform/pg/schemas_integration_test.go::TestAnalyticRejectsUnconsentedRecord
+      - internal/platform/pg/schemas_integration_test.go::TestSuppressionLedgerAppendOnly
+      - "planned:M6 restore replays suppression ledger (scenario 16)"
+
+  - id: T-011
+    title: Gated protocol parameters changed during the study window
+    stride: Tampering
+    asset: triage rules, dispatch parameters, SMS templates, flags
+    hard_constraints: [11]
+    mitigations:
+      - amendgate in CI requires an amendment record matching the exact content hash
+    verified_by:
+      - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
+      - tools/amendgate/check_test.go::TestCheckFailsWhenHashDiffersFromAmendment
+      - tools/amendgate/check_test.go::TestEffectiveGlobsCannotShrink
+      - tools/amendgate/check_test.go::TestGatedSymlinkIsRejected
+
+  - id: T-012
+    title: A new kind of personal record is created without the DPO (e.g. call audio)
+    linddun: Non-compliance
+    asset: record categories
+    hard_constraints: [12]
+    mitigations:
+      - No call or consent audio exists; the media store accepts consented interview audio only, with a destruction deadline
+      - Strict config decoding; analytic schema changes need the PI (CODEOWNERS)
+      - >-
+        OPEN GAP: no gate yet requires DPO approval of a new record category; the tests
+        below cover the media and configuration controls only. Planned (M5): a
+        DPO-owned register of record categories under governance/, the DPO as its
+        code owner, and a CI check that fails when a migration creates a table or
+        column the register does not list.
+    verified_by:
+      - internal/platform/pg/schemas_integration_test.go::TestMediaRecordingsRequireDestroyByAndKey
+      - internal/config/config_test.go::TestLoadRejectsUnknownField
+      - "planned:M5 DPO record-category gate: CI fails a migration that adds a table or column absent from the DPO-owned register"
+
+  - id: T-013
+    title: Production reached from outside Uganda (vendor or remote staff)
+    stride: Elevation of privilege
+    asset: production platform
+    hard_constraints: [13]
+    mitigations:
+      - Access only from Uganda over WireGuard; Keycloak passkeys; support contracts with no personal-data access (P0)
+      - Development keys refuse production
+    verified_by:
+      - internal/platform/devkeys/devkeys_test.go::TestDevkeysRefuseProduction
+      - cmd/sautictl/main_test.go::TestKeygenRefusesProduction
+      - "planned:P0 access-path and geo-restriction drill"
+
+  - id: T-014
+    title: Dispatch blocked by an audit, analytics or monitoring outage
+    stride: Denial of service
+    asset: dispatch path
+    hard_constraints: [14]
+    mitigations:
+      - Transactional outbox; the relay retries without blocking writers
+      - Readiness checks only dispatch-path dependencies
+      - Every operational and audit store call has its own deadline, pool wait included, so a stalled store cannot hang the relay
+    verified_by:
+      - internal/audit/relay_test.go::TestRelayCatchesUpAfterLedgerOutage
+      - internal/platform/health/health_test.go::TestReadyFailsWhenACheckFails
+      - internal/platform/pg/relay_integration_test.go::TestSingleActiveRelayLeader
+      - internal/platform/pg/auditstore/auditstore_integration_test.go::TestEveryLedgerCallHasItsOwnDeadline
+      - internal/platform/pg/opstore/review3cr_integration_test.go::TestOpstoreCallsHaveTheirOwnDeadline
+
+  - id: T-015
+    title: Forged USSD callbacks inject fake incidents
+    stride: Spoofing
+    asset: intake gateway
+    hard_constraints: [2]
+    mitigations:
+      - Secret path token compared in constant time; service-code allowlist; source-IP allowlist at HAProxy (P0)
+    verified_by:
+      - internal/platform/africastalking/ussd_test.go::TestATBadTokenIs404
+      - internal/platform/africastalking/ussd_test.go::TestATUnknownServiceCodeIs403
+      - "planned:P0 HAProxy source allowlist configuration test"

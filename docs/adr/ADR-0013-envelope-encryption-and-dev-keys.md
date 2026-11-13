@@ -1,0 +1,41 @@
+---
+status: accepted
+date: 2026-11-12
+decision-makers: Sauti engineering (repository owner)
+consulted: ISP §5.3; RMRP §4
+informed: Principal Investigator, Data Protection Officer
+---
+# ADR-0013: Envelope encryption, row-bound AAD, keyed lookup hash and development keys
+
+## Context and Problem Statement
+
+Identifiers must be encrypted at rest with keys held apart from data (ISP §5.3), destroyable per period (crypto-shredding, RMRP §4), and a redial must find its incident within the resume window without decrypting anything.
+
+## Decision Drivers
+
+* AES-256 at rest; keys separate from data
+* Ciphertext must not be movable between rows
+* Retention by key destruction
+
+## Considered Options
+
+* AES-256-GCM with AAD binding store/table/column/row; HKDF-derived HMAC-SHA-256 lookup hash per key period; KeyProvider port
+* Database-native encryption (pgcrypto)
+* Deterministic encryption for lookups
+
+## Decision Outcome
+
+Chosen option: **application-level AES-256-GCM** with `AAD = sauti-aad/v1 ‖ length-prefixed(store, table, column, row id)`; the phone lookup hash is HMAC-SHA-256 under a key derived from the period's data key, checked for the current and previous period. Key material arrives through `KeyProvider`/`Signer` ports: OpenBao 2.7 with an HSM in production (P0); `internal/platform/devkeys` (0600 file) in development, which refuses `SAUTI_ENV=production`, as do the processes and `sautictl dev-keygen`.
+
+## Consequences
+
+* Good: destroying a period key makes every ciphertext under it unreadable wherever it is stored, including database backups, because the key is never stored with the data. This holds only once **every** copy of the key is destroyed. Backups of the key store and retained OpenBao key versions can still hold the period key after the active key is deleted, so until the destruction procedure (M6 retention agent; RMRP §4) also covers those copies, destroying the active key alone does not make the data unreadable.
+* Guards added after the CodeRabbit review of PR #2:
+  * `Seal`/`Open` refuse an AAD without a complete location (store, table, column, row ID), which would not bind the ciphertext to a row.
+  * The MAC path refuses data keys that are not 32 bytes, so a missing key can never yield a MAC derived from public input.
+  * `devkeys` validates key lengths and never overwrites `keys.json`.
+* Bad: until P0, processes cannot run in production by design.
+
+## Confirmation
+
+`internal/crypto/crypto_test.go::TestOpenFailsWithSwappedAAD`, `::TestLookupMACsMatchesPreviousPeriod`; `internal/platform/devkeys/devkeys_test.go::TestDevkeysRefuseProduction`, `::TestDevkeysFileIsPrivate`.

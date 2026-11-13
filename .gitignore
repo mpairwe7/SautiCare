@@ -42,3 +42,6 @@ __pycache__/
 .vscode/
 *.swp
 .DS_Store
+
+# Agent worktrees (local, never committed)
+/.claude/worktrees/

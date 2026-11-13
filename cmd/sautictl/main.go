@@ -205,6 +205,8 @@ func cmdVerifyLedger(ctx context.Context, args []string, out io.Writer) error {
 	}
 	var witnesses []audit.Checkpoint
 	switch {
+	case *witnessDir != "" && *noWitness:
+		return errors.New("--witness-dir and --no-witness are mutually exclusive")
 	case *witnessDir != "":
 		notes, err := devkeys.NewFSWitness(*witnessDir).ReadAll()
 		if err != nil {
@@ -218,8 +220,11 @@ func cmdVerifyLedger(ctx context.Context, args []string, out io.Writer) error {
 			witnesses = append(witnesses, cp)
 		}
 		if len(witnesses) == 0 {
-			// Empty, unmounted or mistyped: as blind as --no-witness (CodeRabbit PR #4).
+			// Empty, unmounted or mistyped: as blind as --no-witness, so it
+			// must not end in "ledger OK" (CodeRabbit PR #4 and PR #5). Before
+			// the first checkpoint exists, pass --no-witness instead.
 			fmt.Fprintln(out, "WARNING: --witness-dir holds no checkpoints: "+blindWarning)
+			return errors.New("--witness-dir holds no checkpoints (an unmounted volume or a wrong path), so verification is refused; before the first checkpoint exists, pass --no-witness instead")
 		}
 	case *noWitness:
 		fmt.Fprintln(out, "WARNING: --no-witness: "+blindWarning)
