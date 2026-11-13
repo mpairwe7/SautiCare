@@ -70,6 +70,7 @@ var commands = map[string]command{
 	"dispatch":           {"status --dsn <DSN> | suspend|resume --dsn <op_console DSN> --reason <code> --staff <UUID> [--config D]", cmdDispatch},
 	"responder":          {"add --dsn <op_console DSN> --devkeys-dir D --role R --name N --phone P --ward W --stage S | available --dsn <DSN> --id <id> [--off]", cmdResponder},
 	"incident":           {"split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff UUID>", cmdIncident},
+	"escalations":        {"[--dsn <op_readonly DSN>] [--json] (default $SAUTI_DSN)", cmdEscalations},
 	"triage":             {"keygen --out <file> --key-id dev-<name> | sign --key <file> --key-id <id> --rules <bundle>", cmdTriage},
 }
 

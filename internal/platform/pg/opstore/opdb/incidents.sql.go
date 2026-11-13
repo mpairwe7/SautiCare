@@ -495,6 +495,105 @@ func (q *Queries) ListIncidentIDs(ctx context.Context) ([]pgtype.UUID, error) {
 	return items, nil
 }
 
+const listLocationCallbacks = `-- name: ListLocationCallbacks :many
+SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
+       extract(epoch FROM clock_timestamp() - i.t1)::float8 AS age_seconds
+FROM op.incidents i
+WHERE i.state NOT IN ('closed', 'merged') AND 'needs_location_callback' = ANY (i.flags)
+ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, i.t1
+`
+
+type ListLocationCallbacksRow struct {
+	Reference  string
+	Severity   string
+	AgeSeconds float64
+}
+
+// sautictl escalations, tasks (op_readonly): open incidents located only to
+// their ward, which a coordinator must call back for the place (M5 makes the
+// call), most severe first, then oldest.
+func (q *Queries) ListLocationCallbacks(ctx context.Context) ([]ListLocationCallbacksRow, error) {
+	rows, err := q.db.Query(ctx, listLocationCallbacks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLocationCallbacksRow
+	for rows.Next() {
+		var i ListLocationCallbacksRow
+		if err := rows.Scan(&i.Reference, &i.Severity, &i.AgeSeconds); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenEscalations = `-- name: ListOpenEscalations :many
+SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
+       u.reasons::text[] AS reasons, u.roles::text[] AS roles,
+       extract(epoch FROM clock_timestamp() - u.oldest)::float8 AS oldest_seconds,
+       coalesce(c.calls, 0)::int AS rings,
+       coalesce(extract(epoch FROM clock_timestamp() - c.last_call_at), -1)::float8 AS last_ring_seconds
+FROM op.incidents i
+LEFT JOIN op.coordinator_calls c ON c.incident_id = i.id
+CROSS JOIN LATERAL (
+    SELECT min(d.first_at) AS oldest, array_agg(d.reason ORDER BY d.seq) AS reasons, array_agg(d.role ORDER BY d.seq) AS roles
+      FROM (SELECT DISTINCT ON (e.payload ->> 'reason') e.payload ->> 'reason' AS reason, coalesce(e.payload ->> 'role', '') AS role,
+                   e.seq, min(e.recorded_at) OVER (PARTITION BY e.payload ->> 'reason') AS first_at
+              FROM op.incident_events e
+             WHERE e.incident_id = i.id AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+             ORDER BY e.payload ->> 'reason', e.seq DESC) d) u
+WHERE i.state NOT IN ('closed', 'merged') AND u.reasons IS NOT NULL
+ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, u.oldest
+`
+
+type ListOpenEscalationsRow struct {
+	Reference       string
+	Severity        string
+	Reasons         []string
+	Roles           []string
+	OldestSeconds   float64
+	Rings           int32
+	LastRingSeconds float64
+}
+
+// sautictl escalations (op_readonly; F-08): every open incident with an
+// escalation no coordinator has acknowledged — each distinct reason with the
+// role of its newest event, the age of the oldest, the rings since the last
+// acknowledgement and the last ring's age, on the database's clock (-1:
+// never rung) — most severe first (unclassified counts as red), then oldest.
+func (q *Queries) ListOpenEscalations(ctx context.Context) ([]ListOpenEscalationsRow, error) {
+	rows, err := q.db.Query(ctx, listOpenEscalations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOpenEscalationsRow
+	for rows.Next() {
+		var i ListOpenEscalationsRow
+		if err := rows.Scan(
+			&i.Reference,
+			&i.Severity,
+			&i.Reasons,
+			&i.Roles,
+			&i.OldestSeconds,
+			&i.Rings,
+			&i.LastRingSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOverdueDispatch = `-- name: ListOverdueDispatch :many
 SELECT t.incident_id::uuid AS id, t.due_at::timestamptz AS due_at FROM op.dispatch_timers t
 JOIN op.incidents i ON i.id = t.incident_id

@@ -208,3 +208,51 @@ func (s *Store) OldestUnacknowledgedEscalation(ctx context.Context) (float64, in
 func (s *Store) AcknowledgeCoordinatorCall(ctx context.Context, incidentID uuid.UUID, seq int64) error {
 	return mapErr(s.q.AcknowledgeCoordinatorCall(ctx, opdb.AcknowledgeCoordinatorCallParams{IncidentID: pgID(incidentID), Seq: seq}))
 }
+
+// OpenEscalation is an open incident with escalations no coordinator has
+// acknowledged (sautictl escalations, op_readonly). Ages are the database's.
+type OpenEscalation struct {
+	Reference       incident.Reference
+	Severity        string   // "" before classification
+	Reasons, Roles  []string // Roles[i] is Reasons[i]'s role, or ""
+	OldestSeconds   float64
+	Rings           int     // since the last acknowledgement
+	LastRingSeconds float64 // -1: never rung
+}
+
+// OpenEscalations lists the open incidents with unacknowledged
+// escalations, most severe first, then oldest.
+func (s *Store) OpenEscalations(ctx context.Context) ([]OpenEscalation, error) {
+	rows, err := s.q.ListOpenEscalations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("opstore: open escalations: %w", err)
+	}
+	out := make([]OpenEscalation, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, OpenEscalation{Reference: incident.Reference(r.Reference), Severity: r.Severity, Reasons: r.Reasons,
+			Roles: r.Roles, OldestSeconds: r.OldestSeconds, Rings: int(r.Rings), LastRingSeconds: r.LastRingSeconds})
+	}
+	return out, nil
+}
+
+// LocationCallback is an open incident located only to its ward: a
+// coordinator must call back for the place (op_readonly).
+type LocationCallback struct {
+	Reference  incident.Reference
+	Severity   string
+	AgeSeconds float64
+}
+
+// LocationCallbacks lists the open location call-back tasks, most severe
+// first, then oldest.
+func (s *Store) LocationCallbacks(ctx context.Context) ([]LocationCallback, error) {
+	rows, err := s.q.ListLocationCallbacks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("opstore: location call-backs: %w", err)
+	}
+	out := make([]LocationCallback, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, LocationCallback{Reference: incident.Reference(r.Reference), Severity: r.Severity, AgeSeconds: r.AgeSeconds})
+	}
+	return out, nil
+}

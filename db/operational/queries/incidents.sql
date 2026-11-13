@@ -111,6 +111,39 @@ WHERE e.incident_id = sqlc.arg(id)::uuid AND e.type = 'incident.escalated' AND e
 ORDER BY e.seq DESC
 LIMIT 1;
 
+-- name: ListOpenEscalations :many
+-- sautictl escalations (op_readonly; F-08): every open incident with an
+-- escalation no coordinator has acknowledged — each distinct reason with the
+-- role of its newest event, the age of the oldest, the rings since the last
+-- acknowledgement and the last ring's age, on the database's clock (-1:
+-- never rung) — most severe first (unclassified counts as red), then oldest.
+SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
+       u.reasons::text[] AS reasons, u.roles::text[] AS roles,
+       extract(epoch FROM clock_timestamp() - u.oldest)::float8 AS oldest_seconds,
+       coalesce(c.calls, 0)::int AS rings,
+       coalesce(extract(epoch FROM clock_timestamp() - c.last_call_at), -1)::float8 AS last_ring_seconds
+FROM op.incidents i
+LEFT JOIN op.coordinator_calls c ON c.incident_id = i.id
+CROSS JOIN LATERAL (
+    SELECT min(d.first_at) AS oldest, array_agg(d.reason ORDER BY d.seq) AS reasons, array_agg(d.role ORDER BY d.seq) AS roles
+      FROM (SELECT DISTINCT ON (e.payload ->> 'reason') e.payload ->> 'reason' AS reason, coalesce(e.payload ->> 'role', '') AS role,
+                   e.seq, min(e.recorded_at) OVER (PARTITION BY e.payload ->> 'reason') AS first_at
+              FROM op.incident_events e
+             WHERE e.incident_id = i.id AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+             ORDER BY e.payload ->> 'reason', e.seq DESC) d) u
+WHERE i.state NOT IN ('closed', 'merged') AND u.reasons IS NOT NULL
+ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, u.oldest;
+
+-- name: ListLocationCallbacks :many
+-- sautictl escalations, tasks (op_readonly): open incidents located only to
+-- their ward, which a coordinator must call back for the place (M5 makes the
+-- call), most severe first, then oldest.
+SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
+       extract(epoch FROM clock_timestamp() - i.t1)::float8 AS age_seconds
+FROM op.incidents i
+WHERE i.state NOT IN ('closed', 'merged') AND 'needs_location_callback' = ANY (i.flags)
+ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, i.t1;
+
 -- name: ClockWindow :one
 -- Which window of the given length (seconds) the database's clock is in: an
 -- idempotency key that carries it repeats only within the window.
