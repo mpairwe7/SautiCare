@@ -36,6 +36,14 @@ Migrations are forward-only and checksummed (ADR-0010). Each store applies `db/<
 2. SQL error, file never merged and never applied on any deployment (Diagnosis step 3 finds no row anywhere): fix the file and re-run.
 3. SQL error, file merged or applied on some deployment: **do not edit it**. A changed checksum stops every deployment that applied it with `ErrChecksumMismatch` (`docs/how-to/add-a-migration.md`, step 1). The migrator applies files strictly in order, so a later corrective migration cannot run first either. Find what differs on the failing deployment (its data, or schema drift from a manual change), correct that state under a deviation record so that the unchanged file applies, then put any further schema correction in a new migration. Only if the file is not merged and every deployment that applied it is disposable (development, CI) may you rebuild those deployments instead; the file then counts as never applied.
 4. Never edit `public.schema_migrations` by hand.
+5. A constraint a migration adds `NOT VALID` (for example `incident_events_flag_is_string`, 0027) checks every new write but not the rows already stored, so the migration neither scans a populated table under its lock nor fails on old data. To validate it on a populated store, first count the rows that would fail. For the flag constraint, as `op_readonly`:
+
+   ```sql
+   SELECT count(*) FROM op.incident_events
+    WHERE type = 'incident.flagged' AND jsonb_typeof(payload -> 'flag') IS DISTINCT FROM 'string';
+   ```
+
+   Repair any such rows only by an approved correction under a deviation record. Then, as the schema owner, run `ALTER TABLE op.incident_events VALIDATE CONSTRAINT incident_events_flag_is_string;`. It takes only a `SHARE UPDATE EXCLUSIVE` lock, so reads and writes continue.
 
 ## Escalation
 
