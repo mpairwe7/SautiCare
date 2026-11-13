@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 	"uuid"
 
@@ -80,6 +81,21 @@ type Report struct {
 }
 
 const demoPhone = "+256772123456"
+
+// ledgerPhonePatterns are LIKE patterns for every number the demo uses — the
+// caller's and each synthetic responder's — in national form, which also
+// matches the +256 and 0 prefixed forms (CodeRabbit PR #10).
+func ledgerPhonePatterns() []string {
+	numbers := []string{demoPhone}
+	for _, d := range demoResponders {
+		numbers = append(numbers, d.phone)
+	}
+	out := make([]string, 0, len(numbers))
+	for _, n := range numbers {
+		out = append(out, "%"+strings.TrimPrefix(n, "+256")+"%")
+	}
+	return out
+}
 
 var spokenRef = regexp.MustCompile(`[0-9]{3} [0-9]{3} [0-9]{4}`)
 
@@ -385,14 +401,15 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 		_ = super.Close(cctx)
 	}()
 	var leaks int
-	if err := super.QueryRow(ctx, "SELECT count(*) FROM audit.entries e WHERE e::text LIKE '%772123456%'").Scan(&leaks); err != nil {
+	if err := super.QueryRow(ctx, "SELECT count(*) FROM audit.entries e WHERE e::text LIKE ANY ($1::text[])",
+		ledgerPhonePatterns()).Scan(&leaks); err != nil {
 		return rep, err
 	}
 	rep.PIIInLedger = leaks > 0
 	if rep.PIIInLedger {
 		return rep, errors.New("step 4: a phone number reached the audit ledger")
 	}
-	r.say("✓ step 4: %d ledger entries, one per event; no phone number in any entry", rep.LedgerEntries)
+	r.say("✓ step 4: %d ledger entries, one per event; no caller or responder number in any entry", rep.LedgerEntries)
 
 	// Step 5: checkpoint.
 	witnessDir := filepath.Join(work, "witness")
