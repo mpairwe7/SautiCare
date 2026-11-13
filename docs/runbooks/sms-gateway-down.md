@@ -13,11 +13,20 @@ dispatch-worker sends alerts, stand-downs, caller notices, facility SMS and expi
 
 ## Triggers and detection
 - As `op_readonly`: `SELECT status, count(*) FROM op.alert_attempts WHERE channel = 'sms' AND claimed_at > now() - interval '30 minutes' GROUP BY status;` (also `op.notice_attempts` and `op.forward_attempts`).
-- Delivery reports: `SELECT delivery_status, delivery_failure, count(*) FROM op.alert_attempts WHERE delivery_at > now() - interval '30 minutes' GROUP BY 1, 2;`
+- Delivery reports: `SELECT delivery_status, delivery_failure, count(*) FROM op.alert_attempts WHERE delivery_at > now() - interval '30 minutes' GROUP BY 1, 2;` (also `op.notice_attempts` and `op.forward_attempts`).
+- Callers whose SMS did not go out, for the coordinators' call-backs (as `op_readonly`; the console shows the caller's number to a coordinator):
+
+  ```sql
+  SELECT i.reference, n.kind, n.status, n.delivery_status, n.claimed_at
+    FROM op.notice_attempts n JOIN op.incidents i ON i.id = n.incident_id
+   WHERE n.claimed_at > now() - interval '2 hours'
+     AND (n.status IN ('failed', 'unknown') OR n.delivery_status IN ('Failed', 'Rejected', 'Expired'))
+   ORDER BY n.claimed_at;
+  ```
 - intake-gw's delivery-report callback answers 503 when it cannot store a report; the provider then retries.
 
 ## Impact
-**The dispatch path degrades but does not stop.** Alerts are still issued on time: every due incident is planned before any message is sent. A provider that hangs costs each message at most 5 s, with 16 sent at once. An alert attempt that failed is not re-sent. The responder's phone rings at 20 s (voice), and the cascade moves on at 90 s. Callers miss "help is on the way" and the forwarding SMS, so coordinators call them back. Health centres still get the forwarding call.
+**The dispatch path degrades but does not stop.** Alerts are still issued on time: every due incident is planned before any message is sent. A provider that hangs costs each message at most 5 s, with 16 sent at once. An alert attempt that failed is not re-sent. The responder's phone rings at 20 s, but **only if voice alerts are on** (`SAUTI_ARI_DIAL` set, no "SAUTI_ARI_DIAL is not set" warning at ivr-controller start, and `outbound_events` ready on the outbound leader). Otherwise the responder has only the USSD menu, and the coordinators must phone them. Either way the cascade moves on at 90 s. Callers miss "help is on the way" and the forwarding SMS, so coordinators call them back. Health centres still get the forwarding call.
 
 ## Diagnosis
 1. Status or failure codes: `401`/HTTP 4xx means credentials (key rotated, application username); `405` means insufficient balance; `406` means the number is blacklisted; `5xx` or timeouts mean the provider is down or unreachable.
@@ -25,7 +34,7 @@ dispatch-worker sends alerts, stand-downs, caller notices, facility SMS and expi
 3. Is the outage general? Check the provider's status page from the operations network.
 
 ## Mitigation
-1. Tell the coordinators by voice that SMS is down. Responders are still rung at 20 s; coordinators call callers back with their incident number.
+1. Tell the coordinators by voice that SMS is down. If voice alerts are on (see Impact), responders are still rung at 20 s; otherwise coordinators phone the alerted responders. Coordinators call callers back from the list above, using their incident number.
 2. Credentials: rotate the API key in OpenBao (P0) or the environment, and restart dispatch-worker. Balance: top up through the account owner.
 3. Never re-send attempts by hand or reset their status: an `unknown` attempt may have been delivered. The ladder covers it.
 4. Once fixed, new attempts go out on the next pass. Nothing is replayed.
