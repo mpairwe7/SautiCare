@@ -87,7 +87,7 @@ func run(log *slog.Logger) error {
 	defer pool.Close()
 	store := opstore.New(pool)
 	built, err := wiring.BuildDispatch(ctx, wiring.DispatchOptions{Config: cfg, Store: store, Deliverer: deliver,
-		Suspension: store})
+		Suspension: store, Production: senv == "production"})
 	if err != nil {
 		return err
 	}
