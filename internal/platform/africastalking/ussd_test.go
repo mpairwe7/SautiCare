@@ -290,12 +290,24 @@ func TestATNetworkCodeValidated(t *testing.T) {
 	}
 }
 
+// staticPort answers every request with the same screen and keeps nothing,
+// so a fuzz run's memory does not grow with the inputs it accepts
+// (CodeRabbit PR #4).
+type staticPort struct{ screen intake.Screen }
+
+func (p staticPort) HandleUSSD(context.Context, intake.USSDRequest) (intake.Screen, error) {
+	return p.screen, nil
+}
+
 func FuzzATForm(f *testing.F) {
 	f.Add("sessionId=a&serviceCode=%2A384%2A1%23&phoneNumber=%2B256772123456&text=1%2A2")
 	f.Add("text=%ZZ")
 	f.Add("")
-	h, _ := NewUSSDHandler(USSDConfig{Provider: "at", PathToken: token, ServiceCodes: []string{"*384*1#"}, MaxBody: 8 << 10, ErrorText: "x"},
-		&fakePort{screen: intake.Screen{Text: "ok"}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h, err := NewUSSDHandler(USSDConfig{Provider: "at", PathToken: token, ServiceCodes: []string{"*384*1#"}, MaxBody: 8 << 10, ErrorText: "x"},
+		staticPort{screen: intake.Screen{Text: "ok"}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		f.Fatal(err)
+	}
 	f.Fuzz(func(t *testing.T, body string) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/ussd/at/"+token, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

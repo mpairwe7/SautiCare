@@ -169,7 +169,10 @@ func run(log *slog.Logger) error {
 		// Anchor on the last witnessed checkpoint so the relay never signs a
 		// head whose history was rewritten or truncated (review finding C1).
 		// Read it now, for this term: while this instance stood by, the
-		// previous leader may have witnessed newer history (CodeRabbit PR #4).
+		// previous leader may have witnessed newer history. The checkpointer
+		// also reads the witness again before every signature, because
+		// `sautictl checkpoint` writes to it during the term; the shared
+		// witness, not a lock, coordinates the two (CodeRabbit PR #4).
 		cp, anchor, err := audit.NewAnchoredCheckpointer(ledger, keys.Signer(), witness, origin, time.Now)
 		if err != nil {
 			return fmt.Errorf("outbox-relay: witness store failed verification; refusing to checkpoint (runbook: docs/runbooks/audit-ledger-verification-failure.md): %w", err)
