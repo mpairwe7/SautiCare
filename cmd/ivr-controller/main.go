@@ -161,7 +161,7 @@ func run(log *slog.Logger) error {
 		callerID := os.Getenv("SAUTI_ARI_CALLER_ID")
 		calls, err := ivr.NewAlertCalls(ivr.AlertCallsConfig{ARI: alertClient, Store: store, Opener: crypto.NewEnvelope(keys, rand.Reader),
 			Dial: dial, CallerID: callerID, After: cfg.Dispatch.VoiceFallbackAfter.Duration, Copy: cfg.Responder,
-			AskReasons: cfg.Dispatch.Mode == dispatch.ModeAmended, Log: log})
+			AskReasons: cfg.Dispatch.Mode == dispatch.ModeAmended, Gazetteer: built.Gazetteer, Log: log})
 		if err != nil {
 			return err
 		}

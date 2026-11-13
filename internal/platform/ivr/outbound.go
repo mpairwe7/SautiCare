@@ -94,6 +94,8 @@ type forwardCall struct {
 	facts    dispatch.MessageFacts
 	plays    int
 	done     bool
+	current  string
+	hangupOn string
 }
 
 // ForwardCalls calls forwarded health centres: press 1 to acknowledge.
@@ -214,6 +216,7 @@ func (f *ForwardCalls) Handle(ctx context.Context, e Event) {
 		if st == nil || st.done {
 			return
 		}
+		cut(op, f.c.ARI, &st.current)
 		switch e.Digit {
 		case "1":
 			if _, err := f.c.Store.AcknowledgeForward(op, st.incident, st.facility); err != nil {
@@ -221,10 +224,25 @@ func (f *ForwardCalls) Handle(ctx context.Context, e Event) {
 				return
 			}
 			st.done = true
-			f.play(op, e.ChannelID, st, []string{"sauti/" + f.c.Language + "/forward-acknowledged"})
-			f.hangup(op, e.ChannelID)
+			st.plays++
+			st.hangupOn = endAfter(op, f.c.ARI, e.ChannelID, fmt.Sprintf("%s-f%d", e.ChannelID, st.plays),
+				[]string{"sauti/" + f.c.Language + "/forward-acknowledged"})
+			st.current = st.hangupOn
 		case "3":
 			f.play(op, e.ChannelID, st, f.sounds(st.facts))
+		}
+	case EventPlaybackFinished:
+		f.mu.Lock()
+		st := f.calls[e.ChannelID]
+		f.mu.Unlock()
+		if st == nil {
+			return
+		}
+		if st.current == e.PlaybackID {
+			st.current = ""
+		}
+		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+			f.hangup(op, e.ChannelID)
 		}
 	case EventStasisEnd, EventHangupRequest:
 		f.mu.Lock()
@@ -245,7 +263,10 @@ func (f *ForwardCalls) sounds(facts dispatch.MessageFacts) []string {
 
 func (f *ForwardCalls) play(ctx context.Context, ch string, st *forwardCall, sounds []string) {
 	st.plays++
-	_ = f.c.ARI.Play(ctx, ch, fmt.Sprintf("%s-f%d", ch, st.plays), sounds)
+	pb := fmt.Sprintf("%s-f%d", ch, st.plays)
+	if f.c.ARI.Play(ctx, ch, pb, sounds) == nil {
+		st.current = pb
+	}
 }
 
 func (f *ForwardCalls) hangup(ctx context.Context, ch string) { _ = f.c.ARI.Hangup(ctx, ch) }
@@ -276,6 +297,8 @@ type coordinatorCall struct {
 	reference incident.Reference
 	plays     int
 	done      bool
+	current   string
+	hangupOn  string
 }
 
 // CoordinatorCalls rings the coordinator line about every escalation,
@@ -353,6 +376,7 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 		if st == nil || st.done {
 			return
 		}
+		cut(op, k.c.ARI, &st.current)
 		switch e.Digit {
 		case "1":
 			if err := k.c.Store.AcknowledgeCoordinatorCall(op, st.incident, st.seq); err != nil {
@@ -360,10 +384,25 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 				return
 			}
 			st.done = true
-			k.play(op, e.ChannelID, st, []string{"sauti/" + k.c.Language + "/escalation-acknowledged"})
-			k.hangup(op, e.ChannelID)
+			st.plays++
+			st.hangupOn = endAfter(op, k.c.ARI, e.ChannelID, fmt.Sprintf("%s-c%d", e.ChannelID, st.plays),
+				[]string{"sauti/" + k.c.Language + "/escalation-acknowledged"})
+			st.current = st.hangupOn
 		case "3":
 			k.play(op, e.ChannelID, st, k.sounds(st))
+		}
+	case EventPlaybackFinished:
+		k.mu.Lock()
+		st := k.calls[e.ChannelID]
+		k.mu.Unlock()
+		if st == nil {
+			return
+		}
+		if st.current == e.PlaybackID {
+			st.current = ""
+		}
+		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+			k.hangup(op, e.ChannelID)
 		}
 	case EventStasisEnd, EventHangupRequest:
 		k.mu.Lock()
@@ -380,10 +419,33 @@ func (k *CoordinatorCalls) sounds(st *coordinatorCall) []string {
 
 func (k *CoordinatorCalls) play(ctx context.Context, ch string, st *coordinatorCall, sounds []string) {
 	st.plays++
-	_ = k.c.ARI.Play(ctx, ch, fmt.Sprintf("%s-c%d", ch, st.plays), sounds)
+	pb := fmt.Sprintf("%s-c%d", ch, st.plays)
+	if k.c.ARI.Play(ctx, ch, pb, sounds) == nil {
+		st.current = pb
+	}
 }
 
 func (k *CoordinatorCalls) hangup(ctx context.Context, ch string) { _ = k.c.ARI.Hangup(ctx, ch) }
+
+// endAfter plays a closing prompt and returns its playback ID, to hang up on
+// once it has been heard (ARI plays asynchronously: hanging up at once would
+// cut it off); a prompt that cannot be played ends the call at once.
+func endAfter(ctx context.Context, a AlertARI, ch, pb string, sounds []string) string {
+	if err := a.Play(ctx, ch, pb, sounds); err != nil {
+		_ = a.Hangup(ctx, ch)
+		return ""
+	}
+	return pb
+}
+
+// cut stops the prompt being heard when a key is pressed, so the answer is
+// spoken at once rather than queued behind it.
+func cut(ctx context.Context, a AlertARI, current *string) {
+	if *current != "" {
+		_ = a.StopPlayback(ctx, *current)
+		*current = ""
+	}
+}
 
 var reasonCode = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 

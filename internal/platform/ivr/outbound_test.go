@@ -85,6 +85,10 @@ func TestForwardCalls(t *testing.T) {
 		t.Fatalf("plays %v", a.plays)
 	}
 	fc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+	if slices.Contains(a.hungUp, ch) {
+		t.Fatal("hung up before the acknowledgement was heard")
+	}
+	a.finish(t, fc, ch)
 	if !slices.Equal(st.acked, []string{"hc_test_1"}) || !slices.Contains(a.hungUp, ch) {
 		t.Fatalf("acknowledged %v hung up %v", st.acked, a.hungUp)
 	}
@@ -128,6 +132,10 @@ func TestCoordinatorCallsRingAndAcknowledge(t *testing.T) {
 		t.Fatalf("plays %v", a.plays)
 	}
 	cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+	if slices.Contains(a.hungUp, ch) {
+		t.Fatal("hung up before the acknowledgement was heard")
+	}
+	a.finish(t, cc, ch)
 	if st.acked[inc] != 7 || !slices.Contains(a.hungUp, ch) {
 		t.Fatalf("acknowledged %v hung up %v", st.acked, a.hungUp)
 	}

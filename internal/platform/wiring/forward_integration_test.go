@@ -33,6 +33,7 @@ func newOutbound(t *testing.T, r *engineRig) *outbound {
 	pw := hex.EncodeToString(b)
 	fake := sim.NewFakeARI("sauti", pw)
 	t.Cleanup(fake.Close)
+	fake.SetPlaybackDuration(-1) // prompts play until the test finishes them
 	client, err := ari.New(ari.Config{BaseURL: fake.URL(), User: "sauti", Password: pw, App: "sauti-alerts", Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +66,14 @@ func (o *outbound) answerAndPress(t *testing.T, n int, digit string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	o.fake.Press(ch, digit)
+	for len(o.fake.Plays(ch)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if o.fake.HungUp(ch) {
+		t.Fatalf("call %s hung up before its result was heard", ch)
+	}
+	o.fake.FinishPlayback(o.fake.Playing(ch))
 	for !o.fake.HungUp(ch) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}

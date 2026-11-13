@@ -2,6 +2,7 @@ package ivr
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -23,7 +24,15 @@ type alertARI struct {
 	args       [][]string
 	answered   []string
 	plays      [][]string
+	pbs        []string // playback IDs, in order
 	hungUp     []string
+	stopped    []string
+	failPlay   bool
+}
+
+func (a *alertARI) StopPlayback(_ context.Context, pb string) error {
+	a.stopped = append(a.stopped, pb)
+	return nil
 }
 
 func (a *alertARI) Originate(_ context.Context, endpoint, _ string, args []string, _ time.Duration) (string, error) {
@@ -37,9 +46,19 @@ func (a *alertARI) Answer(_ context.Context, ch string) error {
 	a.answered = append(a.answered, ch)
 	return nil
 }
-func (a *alertARI) Play(_ context.Context, _, _ string, sounds []string) error {
+func (a *alertARI) Play(_ context.Context, _, pb string, sounds []string) error {
+	if a.failPlay {
+		return errors.New("playback refused")
+	}
 	a.plays = append(a.plays, sounds)
+	a.pbs = append(a.pbs, pb)
 	return nil
+}
+
+// finish reports the last prompt as played to the end.
+func (a *alertARI) finish(t *testing.T, h interface{ Handle(context.Context, Event) }, ch string) {
+	t.Helper()
+	h.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: a.pbs[len(a.pbs)-1]})
 }
 func (a *alertARI) Hangup(_ context.Context, ch string) error {
 	a.hungUp = append(a.hungUp, ch)
@@ -106,13 +125,14 @@ func (plainOpener) Open(_ context.Context, s crypto.Sealed, _ crypto.AAD) ([]byt
 func alertRig(t *testing.T, askReasons bool) (*AlertCalls, *alertARI, *alertStore) {
 	t.Helper()
 	b, _ := repoForAlerts(t)
+	g := gazetteer(t)
 	alert := dispatch.ResponderAlert{AlertID: uuid.NewV7(), IncidentID: uuid.NewV7(), Role: responder.RoleTransporter, Outcome: dispatch.OutcomePending,
-		Facts: dispatch.MessageFacts{Reference: "1234567894", Severity: incident.SevRed, Category: "trauma"}}
+		Facts: dispatch.MessageFacts{Reference: "1234567894", Severity: incident.SevRed, Category: "trauma", Ward: "w01", Landmark: "w01_market"}}
 	st := &alertStore{due: []dispatch.VoiceAlert{{AlertID: alert.AlertID, ResponderID: uuid.NewV7()}}, alert: alert, who: uuid.NewV7(),
 		claimed: map[uuid.UUID]uuid.UUID{}, settled: map[uuid.UUID]string{}, declined: map[uuid.UUID]string{}, accept: dispatch.Accepted}
 	a := &alertARI{}
 	c, err := NewAlertCalls(AlertCallsConfig{ARI: a, Store: st, Opener: plainOpener{}, Dial: "PJSIP/{number}@sauti-trunk",
-		After: 20 * time.Second, Copy: b.Responder, AskReasons: askReasons})
+		After: 20 * time.Second, Copy: b.Responder, AskReasons: askReasons, Gazetteer: g})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,9 +182,47 @@ func TestAlertCallAccept(t *testing.T) {
 	if len(a.plays) != 2 || !slices.Equal(a.plays[1], a.plays[0]) {
 		t.Fatalf("repeat %v", a.plays)
 	}
+	// A key cuts the prompt being heard: the answer is spoken at once, not
+	// queued behind the rest of the alert.
+	if !slices.Equal(a.stopped, a.pbs[:1]) {
+		t.Fatalf("stopped %v, want the first prompt %v", a.stopped, a.pbs[:1])
+	}
 	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
-	if st.accepted != 1 || !slices.Contains(a.plays[len(a.plays)-1], "sauti/en/alert-accepted") || !slices.Contains(a.hungUp, ch) {
+	// C1: the result says where to go — the ward and the landmark — and (I2)
+	// the call ends only once it has been heard.
+	last := a.plays[len(a.plays)-1]
+	if st.accepted != 1 || !slices.Contains(last, "sauti/en/alert-accepted") || !slices.Contains(last, "sauti/en/ward-w01") ||
+		!slices.Contains(last, "sauti/en/landmark-w01_market") || !slices.Contains(last, "sauti/digits/4") || slices.Contains(a.hungUp, ch) {
 		t.Fatalf("accept: %d plays %v hung up %v", st.accepted, a.plays, a.hungUp)
+	}
+	c.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: "another"})
+	if slices.Contains(a.hungUp, ch) {
+		t.Fatal("hung up on another prompt's end")
+	}
+	a.finish(t, c, ch)
+	if !slices.Contains(a.hungUp, ch) {
+		t.Fatal("not hung up after the result was heard")
+	}
+}
+
+// A landmark that is not in the gazetteer in force (free text) is never
+// spoken; a result prompt that cannot be played ends the call at once.
+func TestAlertCallResultEdges(t *testing.T) {
+	c, a, st := alertRig(t, false)
+	st.alert.Facts.Landmark = "behind the big tree"
+	ch := answer(t, c, a, st)
+	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+	for _, s := range a.plays[len(a.plays)-1] {
+		if strings.Contains(s, "landmark-") {
+			t.Fatalf("free-text landmark spoken: %v", a.plays)
+		}
+	}
+	c, a, st = alertRig(t, false)
+	ch = answer(t, c, a, st)
+	a.failPlay = true
+	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+	if !slices.Contains(a.hungUp, ch) {
+		t.Fatal("unplayable result left the call open")
 	}
 }
 
@@ -174,6 +232,7 @@ func TestAlertCallDecline(t *testing.T) {
 	c, a, st := alertRig(t, false)
 	ch := answer(t, c, a, st)
 	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "2"})
+	a.finish(t, c, ch)
 	if r, ok := st.declined[st.alert.AlertID]; !ok || r != "" || !slices.Contains(a.hungUp, ch) {
 		t.Fatalf("protocol decline %v hung up %v", st.declined, a.hungUp)
 	}

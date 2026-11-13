@@ -15,6 +15,7 @@ import (
 	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/pii"
 )
 
@@ -34,6 +35,7 @@ type AlertARI interface {
 	Originate(ctx context.Context, endpoint, callerID string, args []string, timeout time.Duration) (string, error)
 	Answer(ctx context.Context, channelID string) error
 	Play(ctx context.Context, channelID, playbackID string, sounds []string) error
+	StopPlayback(ctx context.Context, playbackID string) error
 	Hangup(ctx context.Context, channelID string) error
 }
 
@@ -63,7 +65,8 @@ type AlertCallsConfig struct {
 	After      time.Duration // voice_fallback_after
 	Ring       time.Duration // how long a call rings (default 30 s)
 	Copy       config.Responder
-	AskReasons bool // decision 6 approved
+	AskReasons bool          // decision 6 approved
+	Gazetteer  location.File // wards and landmarks with recordings: where to go, spoken after an accept
 	Language   string
 	Log        *slog.Logger
 	OpTimeout  time.Duration // each store or ARI operation (default 3 s)
@@ -76,6 +79,8 @@ type alertCall struct {
 	reasons   bool // the reason list is being heard
 	plays     int
 	done      bool
+	current   string // the prompt being heard: a key cuts it
+	hangupOn  string // the closing prompt: hang up once it has been heard
 }
 
 // AlertCalls places and runs outbound alert calls.
@@ -208,7 +213,21 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		if st == nil || st.done {
 			return
 		}
+		cut(op, a.c.ARI, &st.current)
 		a.key(op, e.ChannelID, st, e.Digit)
+	case EventPlaybackFinished:
+		a.mu.Lock()
+		st := a.calls[e.ChannelID]
+		a.mu.Unlock()
+		if st == nil {
+			return
+		}
+		if st.current == e.PlaybackID {
+			st.current = ""
+		}
+		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+			_ = a.c.ARI.Hangup(op, e.ChannelID)
+		}
 	case EventStasisEnd, EventHangupRequest:
 		a.mu.Lock()
 		delete(a.calls, e.ChannelID)
@@ -236,7 +255,11 @@ func (a *AlertCalls) key(ctx context.Context, ch string, st *alertCall, digit st
 		if name == "" {
 			name = "alert-no-longer-needed"
 		}
-		a.finish(ctx, ch, st, name)
+		sounds := []string{a.sound(name)}
+		if out.Result == dispatch.Accepted {
+			sounds = append(sounds, a.whereToGo(st.alert.Facts)...)
+		}
+		a.finish(ctx, ch, st, sounds...)
 	case "2":
 		if !a.c.AskReasons {
 			a.decline(ctx, ch, st, "")
@@ -259,18 +282,40 @@ func (a *AlertCalls) decline(ctx context.Context, ch string, st *alertCall, reas
 	if out != dispatch.OutcomeDeclined {
 		name = "alert-no-longer-needed"
 	}
-	a.finish(ctx, ch, st, name)
+	a.finish(ctx, ch, st, a.sound(name))
 }
 
-func (a *AlertCalls) finish(ctx context.Context, ch string, st *alertCall, sound string) {
+// finish plays the result and hangs up once it has been heard
+// (PlaybackFinished); a result that cannot be played ends the call at once.
+func (a *AlertCalls) finish(ctx context.Context, ch string, st *alertCall, sounds ...string) {
 	st.done = true
-	a.play(ctx, ch, st, []string{a.sound(sound)})
-	_ = a.c.ARI.Hangup(ctx, ch)
+	st.plays++
+	st.hangupOn = endAfter(ctx, a.c.ARI, ch, fmt.Sprintf("%s-a%d", ch, st.plays), sounds)
+	st.current = st.hangupOn
+}
+
+// whereToGo speaks the incident number, then the ward and the landmark when
+// the gazetteer in force has them (a free-text landmark is never spoken): the
+// alert channel repeats the location after an accept (Build Prompt §10.4).
+func (a *AlertCalls) whereToGo(f dispatch.MessageFacts) []string {
+	out := digits(f.Reference)
+	if _, ok := a.c.Gazetteer.Ward(f.Ward); ok {
+		out = append(out, a.sound("ward-"+f.Ward))
+	}
+	for _, l := range a.c.Gazetteer.Landmarks {
+		if l.ID == f.Landmark {
+			out = append(out, a.sound("landmark-"+l.ID))
+		}
+	}
+	return out
 }
 
 func (a *AlertCalls) play(ctx context.Context, ch string, st *alertCall, sounds []string) {
 	st.plays++
-	_ = a.c.ARI.Play(ctx, ch, fmt.Sprintf("%s-a%d", ch, st.plays), sounds)
+	pb := fmt.Sprintf("%s-a%d", ch, st.plays)
+	if a.c.ARI.Play(ctx, ch, pb, sounds) == nil {
+		st.current = pb
+	}
 }
 
 func (a *AlertCalls) sound(name string) string { return "sauti/" + a.c.Language + "/" + name }
