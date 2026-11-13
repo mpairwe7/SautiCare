@@ -75,9 +75,10 @@ func (k fakeKeys) StepLookupMACs(ctx context.Context, msg []byte) ([]crypto.MAC,
 }
 
 type rig struct {
-	svc   *Service
-	inc   *memIncidents
-	steps *memSteps
+	svc        *Service
+	inc        *memIncidents
+	steps      *memSteps
+	suspension *suspensionFlag
 }
 
 func newRig(t *testing.T, cls Classifier, match fakeMatcher) *rig {
@@ -85,10 +86,10 @@ func newRig(t *testing.T, cls Classifier, match fakeMatcher) *rig {
 	if cls == nil {
 		cls = repoTriage(t)
 	}
-	r := &rig{inc: newMemIncidents(), steps: &memSteps{}}
+	r := &rig{inc: newMemIncidents(), steps: &memSteps{}, suspension: &suspensionFlag{}}
 	svc, err := New(Deps{Incidents: r.inc, Reader: r.inc, Steps: r.steps, Keys: fakeKeys{}, Machine: newMachine(t),
 		Triage: cls, Gazetteer: repoGazetteer(t), Matcher: match, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45,
-		Dispatcher: r.inc, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}})
+		Dispatcher: r.inc, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}, Suspension: r.suspension})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +449,7 @@ func TestDuplicateCallbackSavedMidwayReplays(t *testing.T) {
 	racy := &racySteps{memSteps: r.steps}
 	svc, err := New(Deps{Incidents: r.inc, Reader: r.inc, Steps: racy, Keys: fakeKeys{}, Machine: newMachine(t),
 		Triage: repoTriage(t), Gazetteer: repoGazetteer(t), Matcher: fakeMatcher{}, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45,
-		Dispatcher: r.inc, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}})
+		Dispatcher: r.inc, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}, Suspension: r.suspension})
 	if err != nil {
 		t.Fatal(err)
 	}

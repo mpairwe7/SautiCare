@@ -78,16 +78,26 @@ type Intake struct {
 
 // Dispatch holds Build Prompt §10.4 parameters.
 type Dispatch struct {
-	Mode               string   `yaml:"mode"`
-	RingStepMetres     int      `yaml:"ring_step_metres"`
-	RingInterval       Duration `yaml:"ring_interval"`
-	MaxRadiusMetres    int      `yaml:"max_radius_metres"`
-	CascadeTimeout     Duration `yaml:"cascade_timeout"`
-	RedParallelCount   int      `yaml:"red_parallel_count"`
-	ForwardAckTimeout  Duration `yaml:"forward_ack_timeout"`
-	VoiceFallbackAfter Duration `yaml:"voice_fallback_after"`
-	RankingOrder       []string `yaml:"ranking_order"`
-	RankingVersion     string   `yaml:"ranking_version"`
+	Mode               string       `yaml:"mode"`
+	RingStepMetres     int          `yaml:"ring_step_metres"`
+	RingInterval       Duration     `yaml:"ring_interval"`
+	MaxRadiusMetres    int          `yaml:"max_radius_metres"`
+	CascadeTimeout     Duration     `yaml:"cascade_timeout"`
+	RedParallelCount   int          `yaml:"red_parallel_count"`
+	ForwardAckTimeout  Duration     `yaml:"forward_ack_timeout"`
+	VoiceFallbackAfter Duration     `yaml:"voice_fallback_after"`
+	RedEscalationAfter Duration     `yaml:"red_escalation_after"`
+	StoppingRule       StoppingRule `yaml:"stopping_rule"`
+	RankingOrder       []string     `yaml:"ranking_order"`
+	RankingVersion     string       `yaml:"ranking_version"`
+}
+
+// StoppingRule is the study's dispatch stopping rule (Guide §14): red
+// dispatch failure above MaxFailureRate across Window consecutive red
+// incidents suspends dispatch automatically (O6).
+type StoppingRule struct {
+	Window         int     `yaml:"window"`
+	MaxFailureRate float64 `yaml:"max_failure_rate"`
 }
 
 // Triage holds the trust anchors for clinical rule bundles: who may sign
@@ -130,7 +140,31 @@ type Platform struct {
 }
 
 // placeholderMarkers appear in copy that has not been signed off.
-var placeholderMarkers = []string{"PENDING-TRANSLATION", "PENDING-TOOL1", "XXX"}
+// PENDING-MD-PI marks copy awaiting the Medical Director's and PI's sign-off
+// (O6: the message callers get while dispatch is suspended).
+var placeholderMarkers = []string{"PENDING-TRANSLATION", "PENDING-TOOL1", "PENDING-MD-PI", "XXX"}
+
+// SuspensionReady reports whether dispatch may be suspended in production
+// (O6): the message callers get while it is suspended must be approved by
+// the Medical Director and the PI — no placeholder marker in any language.
+func (b Bundle) SuspensionReady() error {
+	var problems []string
+	for _, lang := range b.Tool1.Languages {
+		text := b.Tool1.Messages.DispatchSuspended[lang]
+		if strings.TrimSpace(text) == "" {
+			problems = append(problems, "messages.dispatch_suspended/"+lang+" is missing")
+		}
+		for _, m := range placeholderMarkers {
+			if strings.Contains(text, m) {
+				problems = append(problems, fmt.Sprintf("messages.dispatch_suspended/%s contains placeholder %q", lang, m))
+			}
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("%w: %s", ErrNotProductionReady, strings.Join(problems, "; "))
+	}
+	return nil
+}
 
 // ProductionReady reports whether the bundle may run with SAUTI_ENV=production:
 // the protocol content must be approved and no placeholder copy may remain.

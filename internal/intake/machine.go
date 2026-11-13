@@ -30,6 +30,7 @@ const (
 	KindCallback       Kind = "callback"        // screen 8
 	KindOutOfArea      Kind = "out_of_area"     // end: 999 or 112
 	KindComplete       Kind = "complete"        // end: help is coming
+	KindSuspended      Kind = "suspended"       // end: recorded; dispatch suspended, a coordinator calls back (O6)
 )
 
 // MaxLandmarkText is the free-text landmark limit (Build Prompt §10.1).
@@ -204,6 +205,9 @@ func (m *Machine) prompt(p incident.Projection, k Kind, hasPhone bool) Prompt {
 		}
 	case KindOutOfArea:
 		pr.Screen, pr.End, pr.Text = 6, true, pick(m.cat.Messages.OutOfArea, lang)
+	case KindSuspended:
+		pr.Screen, pr.End, pr.Reference = 8, true, p.Reference.Spoken()
+		pr.Text = strings.ReplaceAll(pick(m.cat.Messages.DispatchSuspended, lang), "{ref}", p.Reference.Spoken())
 	case KindComplete:
 		pr.Screen, pr.End, pr.Key, pr.Reference = 8, true, p.Category, p.Reference.Spoken()
 		pr.Text = strings.NewReplacer("{ref}", p.Reference.Spoken(),
@@ -359,14 +363,14 @@ func (m *Machine) AllPrompts() []Prompt {
 	add := func(p incident.Projection, k Kind, hasPhone bool) {
 		pr := m.prompt(p, k, hasPhone)
 		out = append(out, pr)
-		if k != KindOutOfArea && k != KindComplete {
+		if k != KindOutOfArea && k != KindComplete && k != KindSuspended {
 			out = append(out, m.Reprompt(p, k, hasPhone))
 		}
 	}
 	add(incident.Projection{}, KindLanguage, true)
 	for _, lang := range m.cat.Languages {
 		base := incident.Projection{Language: lang, Reference: "9999999999"}
-		for _, k := range []Kind{KindDanger, KindCategory, KindAgeBand, KindWard, KindLandmarkText, KindOutOfArea} {
+		for _, k := range []Kind{KindDanger, KindCategory, KindAgeBand, KindWard, KindLandmarkText, KindOutOfArea, KindSuspended} {
 			add(base, k, true)
 		}
 		add(base, KindCallback, true)

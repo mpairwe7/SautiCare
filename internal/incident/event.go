@@ -38,6 +38,8 @@ func EventTypes() []EventType {
 		EvSessionStarted, EvSessionResumed, EvScreenAnswered, EvClassified, EvDispatchReady,
 		EvAlertIssued, EvAccepted, EvArrived, EvDeparted, EvAtFacility,
 		EvFlagged, EvEscalated, EvMerged, EvMergeAbsorbed, EvSplit, EvUnmerged, EvSeverityRaised, EvClosed,
+		EvAlertDeclined, EvAlertNoResponse, EvAlertStoodDown, EvForwarded, EvForwardAcknowledged, EvForwardTimedOut,
+		EvCallerNotified,
 	}
 }
 

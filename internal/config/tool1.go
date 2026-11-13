@@ -64,12 +64,15 @@ type CallbackScreen struct {
 
 // Messages are the non-question screens. HelpComing carries {ref} (the spoken
 // incident reference) and {first_aid} (the Tool 1 first-aid line for the
-// category); OutOfArea gives 999 or 112 (decision 3).
+// category); OutOfArea gives 999 or 112 (decision 3). DispatchSuspended
+// replaces HelpComing while dispatch is suspended (O6): it carries {ref},
+// and needs the Medical Director's and PI's approval before production.
 type Messages struct {
-	OutOfArea  Text            `yaml:"out_of_area"`
-	HelpComing Text            `yaml:"help_coming"`
-	Invalid    Text            `yaml:"invalid"`
-	FirstAid   map[string]Text `yaml:"first_aid"`
+	OutOfArea         Text            `yaml:"out_of_area"`
+	HelpComing        Text            `yaml:"help_coming"`
+	DispatchSuspended Text            `yaml:"dispatch_suspended"`
+	Invalid           Text            `yaml:"invalid"`
+	FirstAid          map[string]Text `yaml:"first_aid"`
 }
 
 // Tool1 is the caller-facing catalogue for the eight Tool 1 screens (Build
@@ -137,6 +140,7 @@ func (t Tool1) Texts() [][3]string {
 	add("callback.same_number_label", t.Callback.SameNumberLabel)
 	add("messages.out_of_area", t.Messages.OutOfArea)
 	add("messages.help_coming", t.Messages.HelpComing)
+	add("messages.dispatch_suspended", t.Messages.DispatchSuspended)
 	add("messages.invalid", t.Messages.Invalid)
 	for _, k := range slices.Sorted(mapKeys(t.Messages.FirstAid)) {
 		add("messages.first_aid."+k, t.Messages.FirstAid[k])
@@ -236,11 +240,14 @@ func (t Tool1) Validate() error {
 		{"landmark.other_prompt", t.Landmark.OtherPrompt}, {"callback.prompt", t.Callback.Prompt},
 		{"callback.prompt_withheld", t.Callback.PromptWithheld}, {"callback.same_number_label", t.Callback.SameNumberLabel},
 		{"messages.out_of_area", t.Messages.OutOfArea}, {"messages.help_coming", t.Messages.HelpComing},
-		{"messages.invalid", t.Messages.Invalid},
+		{"messages.dispatch_suspended", t.Messages.DispatchSuspended}, {"messages.invalid", t.Messages.Invalid},
 	} {
 		checkText(x.name, x.tx)
 	}
 	for _, lang := range t.Languages {
+		if !strings.Contains(t.Messages.DispatchSuspended[lang], "{ref}") {
+			bad("messages.dispatch_suspended/%s must carry {ref}", lang)
+		}
 		for _, ph := range []string{"{ref}", "{first_aid}"} {
 			if !strings.Contains(t.Messages.HelpComing[lang], ph) {
 				bad("messages.help_coming/%s must carry %s", lang, ph)

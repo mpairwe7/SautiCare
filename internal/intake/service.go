@@ -139,7 +139,19 @@ type Deps struct {
 	// Dispatcher records T2 and merges a duplicate call (Build Prompt §10.3).
 	Dispatcher Dispatcher
 	Dedup      DedupRule
+	// Suspension reports whether dispatch is suspended (O6).
+	Suspension Suspension
 }
+
+// Suspension reports whether dispatch is suspended (the operational store).
+type Suspension interface {
+	DispatchSuspended(ctx context.Context) (bool, error)
+}
+
+// ReasonDispatchSuspended escalates an incident completed while dispatch is
+// suspended (the same reason dispatch-worker's planner uses, so the
+// coordinator is alerted once).
+const ReasonDispatchSuspended = "dispatch_suspended"
 
 // Service runs Tool 1 over USSD (and, from Part C, IVR).
 type Service struct{ d Deps }
@@ -147,7 +159,7 @@ type Service struct{ d Deps }
 // New validates and wires the service.
 func New(d Deps) (*Service, error) {
 	if d.Incidents == nil || d.Reader == nil || d.Steps == nil || d.Keys == nil || d.Machine == nil ||
-		d.Triage == nil || d.Matcher == nil || d.Dispatcher == nil {
+		d.Triage == nil || d.Matcher == nil || d.Dispatcher == nil || d.Suspension == nil {
 		return nil, errors.New("intake: missing dependency")
 	}
 	if d.ResumeWindow <= 0 || d.MinSimilarity <= 0 || d.MinSimilarity >= 1 || d.Dedup.Window <= 0 || d.Dedup.MaxZoneDistance < 0 {
@@ -252,7 +264,7 @@ func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error)
 		if err != nil {
 			return Screen{}, err
 		}
-		if pr, err = s.next(p, sess.hasPhone); err != nil {
+		if pr, err = s.next(ctx, p, sess.hasPhone); err != nil {
 			return Screen{}, err
 		}
 	} else {
@@ -298,8 +310,8 @@ func (s *Service) answer(ctx context.Context, id uuid.UUID, sess *session, shown
 	if err != nil {
 		return Prompt{}, err
 	}
-	if shown == KindComplete || shown == KindOutOfArea || shown == "" {
-		return s.next(p, sess.hasPhone)
+	if shown == KindComplete || shown == KindSuspended || shown == KindOutOfArea || shown == "" {
+		return s.next(ctx, p, sess.hasPhone)
 	}
 	out, err := s.d.Machine.Answer(p, shown, input, sess.hasPhone)
 	if err != nil {
@@ -324,7 +336,7 @@ func (s *Service) answer(ctx context.Context, id uuid.UUID, sess *session, shown
 	if p, err = s.catchUp(ctx, id, sess.landmark); err != nil {
 		return Prompt{}, err
 	}
-	return s.next(p, sess.hasPhone)
+	return s.next(ctx, p, sess.hasPhone)
 }
 
 // ErrNotDispatched reports a finished Tool 1 whose T2 is not recorded. The
@@ -334,13 +346,38 @@ func (s *Service) answer(ctx context.Context, id uuid.UUID, sess *session, shown
 var ErrNotDispatched = errors.New("intake: Tool 1 is finished but T2 is not recorded")
 
 // next is the prompt to show for the incident's state p. It never closes a
-// call in the area with "help is coming" while T2 is missing.
-func (s *Service) next(p incident.Projection, hasPhone bool) (Prompt, error) {
+// call in the area with "help is coming" while T2 is missing, nor while
+// dispatch is suspended: then the caller hears the suspended message and the
+// incident is escalated to the coordinator (O6).
+func (s *Service) next(ctx context.Context, p incident.Projection, hasPhone bool) (Prompt, error) {
 	pr := s.d.Machine.Next(p, hasPhone)
-	if pr.Kind == KindComplete && p.T[2] == nil {
+	if pr.Kind != KindComplete {
+		return pr, nil
+	}
+	if p.T[2] == nil {
 		return Prompt{}, ErrNotDispatched
 	}
-	return pr, nil
+	suspended, err := s.d.Suspension.DispatchSuspended(ctx)
+	if err != nil {
+		return Prompt{}, err
+	}
+	if !suspended {
+		return pr, nil
+	}
+	// A call merged at T2 is not escalated itself: its survivor is (by
+	// dispatch-worker), and a merged incident accepts no escalation (review
+	// I6). The key is dispatch's own, so the coordinator is alerted once.
+	if p.State != incident.StateMerged {
+		esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": ReasonDispatchSuspended},
+			incident.EscalationKey(ReasonDispatchSuspended, ""), "")
+		if err != nil {
+			return Prompt{}, err
+		}
+		if _, err := s.d.Incidents.Append(ctx, esc); err != nil {
+			return Prompt{}, err
+		}
+	}
+	return s.d.Machine.prompt(p, KindSuspended, hasPhone), nil
 }
 
 // incidentKey is the idempotency key of something the answers imply (the

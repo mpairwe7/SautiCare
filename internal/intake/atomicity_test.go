@@ -103,10 +103,10 @@ func newRigWith(t *testing.T, inc Incidents, mem *memIncidents, cls Classifier, 
 	if !ok {
 		d = mem
 	}
-	r := &rig{inc: mem, steps: &memSteps{}}
+	r := &rig{inc: mem, steps: &memSteps{}, suspension: &suspensionFlag{}}
 	svc, err := New(Deps{Incidents: inc, Reader: mem, Steps: r.steps, Keys: fakeKeys{}, Machine: m,
 		Triage: cls, Gazetteer: repoGazetteer(t), Matcher: match, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45,
-		Dispatcher: d, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}})
+		Dispatcher: d, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}, Suspension: r.suspension})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,12 +301,12 @@ func TestCompleteWithoutT2IsAnError(t *testing.T) {
 	p := incident.Projection{Reference: "1234567894", State: incident.StateTriaged, Version: 9, Severity: incident.SevRed,
 		Language: "en", Danger: "yes", Category: "trauma", AgeBand: "age_18_59", SpecificDanger: "yes", Ward: "w01",
 		Landmark: "w01_market", LastScreen: 8}
-	if _, err := r.svc.next(p, true); !errors.Is(err, ErrNotDispatched) {
+	if _, err := r.svc.next(context.Background(), p, true); !errors.Is(err, ErrNotDispatched) {
 		t.Fatalf("next without T2: %v", err)
 	}
 	now := time.Now()
 	p.T[2] = &now
-	if pr, err := r.svc.next(p, true); err != nil || pr.Kind != KindComplete {
+	if pr, err := r.svc.next(context.Background(), p, true); err != nil || pr.Kind != KindComplete {
 		t.Fatalf("next with T2: %+v %v", pr, err)
 	}
 }

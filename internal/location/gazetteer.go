@@ -75,11 +75,37 @@ type Landmark struct {
 // reference data with no personal data, agreed with ward leadership, versioned
 // and frozen during the study window (Build Prompt §9, §12).
 type File struct {
-	Version   string
-	Status    string
-	Wards     []Ward
-	Landmarks []Landmark
+	Version    string
+	Status     string
+	Wards      []Ward
+	Landmarks  []Landmark
+	Stages     []Stage
+	Facilities []Facility
 }
+
+// Stage is a boda-boda stage where transporters wait; a responder's stage
+// cell is where ranking measures zone distance from (Build Prompt §10.4).
+type Stage struct {
+	ID     string
+	WardID string
+	Name   Names
+	Point  Point
+	Cell   Cell
+}
+
+// Facility is a registered health facility. ForwardingEnabled facilities
+// receive forwarded requests at 2.5 km (Build Prompt §10.4); Phone is the
+// facility's public number (an institution's, not a person's).
+type Facility struct {
+	ID                string
+	Name              Names
+	Point             Point
+	Cell              Cell
+	Phone             string
+	ForwardingEnabled bool
+}
+
+var facilityPhone = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
 
 // Match is the best free-text match within a ward.
 type Match struct {
@@ -114,6 +140,19 @@ type rawFile struct {
 		Menu    int      `yaml:"menu"`
 		Aliases []string `yaml:"aliases"`
 	} `yaml:"landmarks"`
+	Stages []struct {
+		ID    string `yaml:"id"`
+		Ward  string `yaml:"ward"`
+		Name  Names  `yaml:"name"`
+		Point Point  `yaml:"point"`
+	} `yaml:"stages"`
+	Facilities []struct {
+		ID                string `yaml:"id"`
+		Name              Names  `yaml:"name"`
+		Point             Point  `yaml:"point"`
+		Phone             string `yaml:"phone"`
+		ForwardingEnabled bool   `yaml:"forwarding_enabled"`
+	} `yaml:"facilities"`
 }
 
 func validID(id string) error {
@@ -216,6 +255,50 @@ func ParseFile(data []byte) (File, error) {
 			Cell: cell, Menu: l.Menu, Aliases: aliases})
 		f.Wards[wi].Zones = append(f.Wards[wi].Zones, cell)
 	}
+	for _, st := range raw.Stages {
+		if err := validID(st.ID); err != nil {
+			return File{}, err
+		}
+		if seen[st.ID] {
+			return File{}, fmt.Errorf("location: duplicate id %s", st.ID)
+		}
+		seen[st.ID] = true
+		if _, ok := wardIdx[st.Ward]; !ok {
+			return File{}, fmt.Errorf("location: stage %s names unknown ward %q", st.ID, st.Ward)
+		}
+		if err := validNames(st.ID, st.Name); err != nil {
+			return File{}, err
+		}
+		cell, err := CellAt(st.Point.Lat, st.Point.Lon)
+		if err != nil {
+			return File{}, fmt.Errorf("location: stage %s: %w", st.ID, err)
+		}
+		f.Stages = append(f.Stages, Stage{ID: st.ID, WardID: st.Ward, Name: st.Name, Point: st.Point, Cell: cell})
+	}
+	for _, fc := range raw.Facilities {
+		if err := validID(fc.ID); err != nil {
+			return File{}, err
+		}
+		if seen[fc.ID] {
+			return File{}, fmt.Errorf("location: duplicate id %s", fc.ID)
+		}
+		seen[fc.ID] = true
+		if err := validNames(fc.ID, fc.Name); err != nil {
+			return File{}, err
+		}
+		if fc.Phone != "" && !facilityPhone.MatchString(fc.Phone) {
+			return File{}, fmt.Errorf("location: facility %s phone must be E.164", fc.ID)
+		}
+		if fc.ForwardingEnabled && fc.Phone == "" {
+			return File{}, fmt.Errorf("location: facility %s forwards but has no phone", fc.ID)
+		}
+		cell, err := CellAt(fc.Point.Lat, fc.Point.Lon)
+		if err != nil {
+			return File{}, fmt.Errorf("location: facility %s: %w", fc.ID, err)
+		}
+		f.Facilities = append(f.Facilities, Facility{ID: fc.ID, Name: fc.Name, Point: fc.Point, Cell: cell,
+			Phone: fc.Phone, ForwardingEnabled: fc.ForwardingEnabled})
+	}
 	for i := range f.Wards {
 		z := f.Wards[i].Zones
 		slices.SortFunc(z, func(a, b Cell) int {
@@ -247,6 +330,16 @@ func (f File) Landmark(id string) (Landmark, bool) {
 		}
 	}
 	return Landmark{}, false
+}
+
+// Stage returns the stage with the given ID.
+func (f File) Stage(id string) (Stage, bool) {
+	for _, s := range f.Stages {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return Stage{}, false
 }
 
 // Menu returns a ward's screen 7 menu landmarks in menu order.

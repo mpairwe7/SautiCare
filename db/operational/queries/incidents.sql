@@ -115,3 +115,42 @@ FROM op.dedup_candidates(
 
 -- name: SplitIncident :exec
 SELECT op.split_incident(sqlc.arg(survivor)::uuid, sqlc.arg(member)::uuid, sqlc.arg(staff)::uuid);
+
+-- name: RegisterResponder :exec
+SELECT op.register_responder(sqlc.arg(id)::uuid, sqlc.arg(role)::text, sqlc.arg(name_ct)::bytea, sqlc.arg(name_key_id)::text,
+    sqlc.arg(phone_ct)::bytea, sqlc.arg(phone_key_id)::text, sqlc.arg(phone_mac)::bytea, sqlc.arg(phone_mac_key_id)::text,
+    sqlc.arg(ward)::text, sqlc.arg(stage)::text, sqlc.narg(certified_at)::timestamptz, sqlc.narg(insured_until)::timestamptz,
+    sqlc.arg(kit_ok)::boolean, sqlc.arg(research_consent)::boolean);
+
+-- name: SetResponderGates :exec
+SELECT op.set_responder_gates(sqlc.arg(id)::uuid, sqlc.narg(certified_at)::timestamptz, sqlc.narg(insured_until)::timestamptz,
+    sqlc.arg(kit_ok)::boolean, sqlc.arg(status)::text);
+
+-- name: SetAvailability :one
+SELECT a.period_from::timestamptz AS period_from, a.period_until::timestamptz AS period_until
+FROM op.set_availability(sqlc.arg(id)::uuid, sqlc.arg(available)::boolean, sqlc.arg(source)::text) AS a(period_from, period_until);
+
+-- name: ListResponders :many
+SELECT r.id, r.role, r.ward, r.stage, r.certified_at, r.insured_until, r.kit_ok, r.research_consent, r.status,
+       lower(a.period)::timestamptz AS available_from, upper(a.period)::timestamptz AS available_until
+FROM op.responders r
+LEFT JOIN LATERAL (SELECT period FROM op.availability v WHERE v.responder_id = r.id ORDER BY lower(v.period) DESC LIMIT 1) a ON true
+ORDER BY r.id;
+
+-- name: ResponderByPhone :many
+SELECT id FROM op.responders WHERE phone_mac = ANY (sqlc.arg(macs)::bytea[]) AND status <> 'retired' LIMIT 2;
+
+-- Dispatch watchdog (review I8): dispatched incidents with no alert (T3) and
+-- no dispatch escalation of any kind, T2 older than after — dispatch-worker
+-- has not acted on them. Read by intake-gw's leader, a separate process.
+-- name: ListStalledDispatch :many
+SELECT i.id FROM op.incidents i
+WHERE i.state = 'dispatching' AND i.t3 IS NULL AND i.t2 < clock_timestamp() - sqlc.arg(after)::interval
+  AND NOT EXISTS (
+      SELECT 1 FROM op.incident_events e
+       WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+         AND e.payload ->> 'reason' IN ('no_eligible_responder', 'no_responder_nearby', 'red_no_acceptance',
+                                        'forwarded_to_facility', 'no_facility_acknowledged', 'dispatch_suspended',
+                                        'dispatch_error', 'dispatch_stalled'))
+ORDER BY i.t2
+LIMIT 500;

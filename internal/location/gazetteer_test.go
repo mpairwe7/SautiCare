@@ -146,3 +146,39 @@ func TestRepositoryGazetteer(t *testing.T) {
 		t.Fatalf("approved gazetteer refused: %v", err)
 	}
 }
+
+const withDispatch = sample + `stages:
+  - {id: w01_stage, ward: w01, name: {en: "Test Stage 1", lg: "Test Stage 1"}, point: {lat: 0.3805, lon: 32.5595}}
+facilities:
+  - {id: hc_test_1, name: {en: "Test Health Centre", lg: "Test Health Centre"}, point: {lat: 0.3790, lon: 32.5610}, forwarding_enabled: true, phone: "+256000000001"}
+  - {id: hc_test_2, name: {en: "Test Clinic", lg: "Test Clinic"}, point: {lat: 0.3700, lon: 32.5700}}
+`
+
+// Stages (where transporters wait) and facilities (forwarding targets) are
+// gazetteer reference data with cells (Build Prompt §9 Reference, §12).
+func TestParseFileReadsStagesAndFacilities(t *testing.T) {
+	f, err := ParseFile([]byte(withDispatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Stages) != 1 || f.Stages[0].WardID != "w01" || len(f.Facilities) != 2 {
+		t.Fatalf("stages %+v facilities %+v", f.Stages, f.Facilities)
+	}
+	want, _ := CellAt(0.3805, 32.5595)
+	if f.Stages[0].Cell != want || !f.Facilities[0].ForwardingEnabled || f.Facilities[1].ForwardingEnabled || f.Facilities[0].Phone != "+256000000001" {
+		t.Fatalf("stage %+v facility %+v", f.Stages[0], f.Facilities[0])
+	}
+	if s, ok := f.Stage("w01_stage"); !ok || s.ID != "w01_stage" {
+		t.Fatal("Stage lookup")
+	}
+	for name, doc := range map[string]string{
+		"stage in unknown ward":    strings.Replace(withDispatch, "ward: w01, name: {en: \"Test Stage 1\"", "ward: w09, name: {en: \"Test Stage 1\"", 1),
+		"id shared with landmark":  strings.Replace(withDispatch, "id: w01_stage", "id: w01_l1", 1),
+		"bad facility phone":       strings.Replace(withDispatch, `phone: "+256000000001"`, `phone: "call me"`, 1),
+		"forwarding without phone": strings.Replace(withDispatch, `forwarding_enabled: true, phone: "+256000000001"`, `forwarding_enabled: true`, 1),
+	} {
+		if _, err := ParseFile([]byte(doc)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

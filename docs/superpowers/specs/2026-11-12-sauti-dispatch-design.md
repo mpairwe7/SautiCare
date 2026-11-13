@@ -76,7 +76,7 @@ cmd/* (composition roots)  ──►  internal/<context>  ◄──  internal/pl
 |---|---|---|
 | `intake-gw` | USSD callbacks from both routes, sessions, the Tool 1 state machine, triage, the responder USSD menu | operational (role `op_intake`), Valkey |
 | `ivr-controller` | Asterisk ARI: IVR, outbound alert calls, masked bridge, arrival-confirmation and health-centre calls. Records nothing. | operational (`op_ivr`) |
-| `dispatch-worker` | DBOS workflows: ranking, rings, alert ladder, stand-downs, forwarding, escalation, follow-up timers | operational (`op_dispatch`) |
+| `dispatch-worker` | Pure planners executed by a leader-elected PostgreSQL scheduler ([ADR-0024](../../adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md), superseding DBOS): ranking, rings, alert ladder, stand-downs, forwarding, escalation, follow-up timers | operational (`op_dispatch`) |
 | `console-api` | Connect RPC v2 with server streaming for the live board | operational (`op_console`) |
 | `payments` | MTN MoMo and Airtel Money payouts, retries, nightly reconciliation | operational (`op_payments`) |
 | `pseudonymiser` | One-way export of closed incidents. Writes ID pairs to the linkage vault only. | operational (read), analytic (write), linkage (insert) |
@@ -138,7 +138,7 @@ There are five PostgreSQL 18 databases. Each has an owner role used only for mig
 
 | Store | Runtime roles | Notes |
 |---|---|---|
-| operational | `op_intake`, `op_ivr`, `op_dispatch`, `op_console`, `op_payments`, `op_relay`, `op_pseudonymiser`, `op_retention` | Holds the DBOS system schema `dbos` |
+| operational | `op_intake`, `op_ivr`, `op_dispatch`, `op_console`, `op_payments`, `op_relay`, `op_pseudonymiser`, `op_retention` | Holds the dispatch timers and control (`op.dispatch_timers`, `op.dispatch_control`; no DBOS schema: [ADR-0024](../../adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md)) |
 | audit | `audit_appender` (EXECUTE on `audit.append` only), `audit_reader` | No runtime role has UPDATE or DELETE. Only the migration owner could alter rows, and checkpoints make that detectable (§12.2 tamper test). |
 | analytic | `an_writer` (pseudonymiser), `an_reader` | CODEOWNERS: PI |
 | linkage | `lk_writer` (insert only), `lk_reader` (PI and delegate, through a function that requires a reason) | Every read is logged to audit |
@@ -201,7 +201,7 @@ sqlc v1.31.1 (the latest release) parses PostgreSQL 17 grammar only. PG18 gramma
 
 ## 7. Robustness mechanisms
 
-1. **Functional core, imperative shell.** The alert ladder, rings, forwarding, retries and follow-up windows are pure planners: `Plan(state, now) → (actions, next_wake)`. DBOS (v1.8) executes the plans, and its `Recv` uses pointer types so that a timeout (which DBOS returns as a zero value) is distinguishable from a real message. Planners are tested with table tests and `testing/synctest`.
+1. **Functional core, imperative shell.** The alert ladder, rings, forwarding, retries and follow-up windows are pure planners: `Plan(state, now) → (actions, next_wake)`. DBOS (v1.8) executes the plans, and its `Recv` uses pointer types so that a timeout (which DBOS returns as a zero value) is distinguishable from a real message. Planners are tested with table tests and `testing/synctest`. *Superseded for the executor by [ADR-0024](../../adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md) (2026-11-13): a timer row per incident and a leader-elected worker in the operational store; the planners are unchanged.*
 2. **Fail safe to a human.** Every automated step has a deadline. An error or timeout goes to the `Escalate` port, which places a coordinator voice call through a durable, retried workflow. A triage error makes the incident red and alerts a coordinator.
 3. **Idempotency.**
    - USSD steps key on `sessionId`+`text`, and voice on `callId`+step.
@@ -402,7 +402,7 @@ Out of scope: the Tool 1 screens and triage, dispatch, IVR flows, the console, p
 | connect-go | `connectrpc.com/connect/v2` v2.0.2 | buf 1.75.0, protoc-gen-go 1.36.12 |
 | pgx | v5.13.0 | ≥5.12.0 required (two GHSAs) |
 | sqlc | v1.31.1 | PG17 parser, see §6.6 |
-| DBOS Transact Go | v1.8.0 | `Recv` returns a zero value on timeout |
+| DBOS Transact Go | v1.8.0 | `Recv` returns a zero value on timeout — **not used**: superseded by [ADR-0024](../../adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md) |
 | cel-go | `cel.dev/cel-go` v0.33.2 | module path moved |
 | valkey-go | v1.0.79 | Valkey 9.1.3, Sentinel supported |
 | OpenBao | 2.7.2, `openbao/api/v2` | control groups in 2.7; PKCS#11 seal is an external plugin |

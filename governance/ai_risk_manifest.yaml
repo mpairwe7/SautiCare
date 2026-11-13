@@ -52,7 +52,11 @@ risks:
     verified_by:
       - internal/config/config_test.go::TestLoadRepoConfigDefaults
       - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
-      - "planned:M2 ranking determinism and stamped parameter version test"
+      - internal/dispatch/rank_test.go::TestRankIsTotalAndStable
+      - internal/dispatch/rank_test.go::TestNewRankerRejectsUnknownCriterion
+      - internal/dispatch/plan_test.go::TestPlanIsIdempotent
+      - internal/platform/wiring/dispatch_test.go::TestDispatchLogicVersion
+      - internal/platform/pg/opstore/dispatch_integration_test.go::TestDispatchLifecycleIsRecordedAndConsistent
   - id: AIR-004
     title: Luganda speech recognition misreads a landmark (Sunbird WER 14.2%)
     nist_function: MEASURE
@@ -115,9 +119,17 @@ aibom_inventory:
     name: Zone-distance / history / fairness ranking
     version: default-2026-11-12
     supplier: Sauti engineering (parameters owned by PI, decision 4)
-    status: planned
+    status: active
     data_residency: UG
-    description: Deterministic ranking (M2). Not machine learning.
+    description: >-
+      Deterministic ranking (M2, internal/dispatch): zone distance, then
+      response history (smoothed accept rate, 90 days), then least recently
+      dispatched; responder ID breaks ties. The ranking version and the gated
+      configuration fingerprint are stamped on every fact the planner decides
+      (alerts, acceptances, declines, lapses, stand-downs, forwards, dispatch
+      escalations); a facility acknowledgement, a forward timeout and a caller
+      notice carry none, as they follow from a versioned forward or
+      acceptance. Not machine learning.
   - bom-ref: sunbird-asr-whisper-large-v3-salt
     type: machine-learning-model
     name: Sunbird asr-whisper-large-v3-salt (Luganda and English ASR)

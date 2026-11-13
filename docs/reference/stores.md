@@ -18,12 +18,13 @@ There are five PostgreSQL 18 databases (`sauti_<store>`). Each has an owner role
 
 | Role | Store | Tables | Functions |
 |---|---|---|---|
-| `op_intake` | operational | SELECT `incidents`, `incident_events`, `sessions`; SELECT `ussd_steps`, INSERT on its data columns only (not `created_at`, migration 0027) | EXECUTE `open_incident`, `append_incident_event` (never a staff actor, `incident.split` or `incident.unmerged`: the function refuses them to every role but `op_console`), `dedup_candidates` (reads the merge candidates and locks them `FOR SHARE` until the dispatch decision commits; also granted to `op_ivr` ahead of M1 Part C) |
+| `op_intake` | operational | SELECT `incidents`, `incident_events`, `sessions`; SELECT `ussd_steps`, INSERT on its data columns only (not `created_at`, migration 0027) | EXECUTE `open_incident`, `append_incident_event` (never a staff actor, `incident.split` or `incident.unmerged`: the function refuses them to every role but `op_console`), `dedup_candidates` (reads the merge candidates and locks them `FOR SHARE` until the dispatch decision commits; also granted to `op_ivr` ahead of M1 Part C); M2: `set_availability`, `accept_alert`, `decline_alert`; SELECT `responders` (`id`, `phone_mac`, `status` only), `stages`, `facilities`; EXECUTE `dispatch_suspended` |
 | `op_relay` | operational | — | EXECUTE `claim_outbox`, `mark_outbox_delivered`, `default_partition_rows`, `ensure_event_partitions` (the leader keeps partitions three months ahead) |
-| `op_readonly` | operational | SELECT `incidents`, `incident_events`, `event_keys`, `incident_transitions`, `outbox`, `config_versions`, `key_periods` (not `sessions`) | EXECUTE `default_partition_rows` |
-| `op_console` | operational | SELECT `incidents`, `incident_events` | EXECUTE `split_incident` (coordinator split, M1) |
-| `op_ivr` | operational | SELECT `incidents`, `incident_events`, `sessions`, gazetteer tables, `config_versions` (never `ussd_steps`) | EXECUTE `open_incident`, `append_incident_event`, `resume_session`, `store_identifier`, `match_landmark` (M1 voice line) |
-| `op_dispatch`, `op_payments`, `op_pseudonymiser`, `op_retention` | operational | none yet: granted in their milestones | — |
+| `op_readonly` | operational | SELECT `incidents`, `incident_events`, `event_keys`, `incident_transitions`, `outbox`, `config_versions`, `key_periods`, the registry without identifiers (`responders` minus name, phone and MAC columns; `availability`), `stages`, `facilities`, `alerts`, `assignments`, `alert_attempts`, `forwards`, `caller_notices`, `dispatch_timers`, `dispatch_control`, `dispatch_control_log` (not `sessions`) | EXECUTE `default_partition_rows` |
+| `op_console` | operational | SELECT `incidents`, `incident_events` | EXECUTE `split_incident` (coordinator split, M1); `register_responder`, `set_responder_gates`, `set_availability` (registry, M2); `suspend_dispatch`, `resume_dispatch` (staff identity required), `dispatch_suspended`; SELECT `dispatch_control`, `dispatch_control_log` |
+| `op_ivr` | operational | SELECT `incidents`, `incident_events`, `sessions`, gazetteer tables, `config_versions` (never `ussd_steps`) | EXECUTE `open_incident`, `append_incident_event`, `resume_session`, `store_identifier`, `match_landmark` (M1 voice line); M2: `set_availability`, `accept_alert`, `decline_alert`; `acknowledge_forward`; SELECT `responders` (`id`, `phone_mac`, `status` only), `stages`, `facilities`; EXECUTE `dispatch_suspended` |
+| `op_dispatch` | operational | SELECT `incidents`, `incident_events`, `responders`, `availability`, `alerts`, `assignments`, `alert_attempts`, `forwards`, `caller_notices`, `dispatch_timers`, `dispatch_control_log` (the stopping rule's resumption anchor), `stages`, `facilities`, `config_versions` | EXECUTE `issue_alert`, `close_alert`, `record_forward`, `time_out_forward`, `notify_caller`, `dispatch_escalate`, `begin_attempt`, `finish_attempt`, `claim_due_dispatch`, `schedule_dispatch`, `auto_suspend_dispatch` (stopping rule only), `dispatch_suspended` (M2; never the generic append) |
+| `op_payments`, `op_pseudonymiser`, `op_retention` | operational | none yet: granted in their milestones | — |
 | `audit_appender` | audit | — | EXECUTE `append`, `head`, `save_checkpoint` |
 | `audit_reader` | audit | SELECT `entries`, `checkpoints` | — |
 | `an_writer` | analytic | SELECT/DELETE `meds_records`, INSERT on its data columns only (not `exported_at`); SELECT `suppression_ledger`, INSERT on its data columns only (not `withdrawn_at`) | — |
@@ -36,12 +37,23 @@ No runtime role holds UPDATE or DELETE on events, audit entries or consent rows.
 
 ## Database-enforced invariants
 
+- **Dispatch (M2, ADR-0025):**
+  - availability periods of one responder never overlap (PostgreSQL 18 `PRIMARY KEY (responder_id, period WITHOUT OVERLAPS)`, which needs the contrib extension `btree_gist`; like `pg_trgm` it lives in its own schema, `gist`, with no USAGE for runtime roles), half-open, 8 hours on the database clock read after the responder's lock;
+  - a responder registers only at a stage of their ward in the gazetteer in force (`op.register_responder`, migration 0023);
+  - one alert per responder per incident (`UNIQUE (incident_id, responder_id)`); the database refuses an alert to a responder who is not active, certified, insured, kit OK and available now, who is assigned to another open incident, or whose role is taken, and an alert on a merged or closed incident;
+  - first acceptance per role wins: a partial unique index on `assignments (incident_id, role) WHERE released_at IS NULL`; a responder holds at most one open assignment (`op.accept_alert` locks the incident, then the responder, before its checks);
+  - `op.claim_due_dispatch` returns the claimed batch most urgent first (severity, then wake time);
+  - each delivery attempt is claimed once (`UNIQUE (alert_id, purpose, channel)`) before the provider call;
+  - an incident cannot close or merge while an alert is pending; closure and merge wake dispatch so stand-downs are delivered;
+  - while dispatch is suspended no alert is issued, no forward recorded and no alert attempt claimed (each share-locks the control row a suspension locks exclusively); an alert attempt is claimed only for a pending alert;
+  - every dispatch fact and its event are written together by one function; the generic append refuses dispatch event types; the dispatch logic version is on alerts, acceptances, declines, lapses, stand-downs, forwards and dispatch escalations, not on acknowledgements, forward timeouts or caller notices;
+  - one dispatch control row; the control log (the reportable-events register) is append-only (`SA403` even for the owner); resuming always carries a staff identity; every change is an audit entry without an incident (ADR-0026).
 - **Operational:**
   - 10-digit reference with a `CHECK` and `UNIQUE`.
   - A logic version must be `<code>+sha256:<12–64 hex>` (the same rule as the ledger); a merge target must exist, differ from the incident and be open.
   - Strict `screen.answered` payloads (codes only) and sealed identifiers (M1, ADR-0021).
   - An answered Tool 1 field never changes: a `screen.answered` with a different value for a field the incident already holds is refused (trigger `incident_events_answer_unchanged`, migration 0006). Like the flag rule below, it holds whatever version of the write path runs.
-  - A loaded gazetteer version is frozen even for the owner: no UPDATE, DELETE or TRUNCATE, and no INSERT once the version is published in `op.config_versions` (migration 0007).
+  - A loaded gazetteer version is frozen even for the owner: no UPDATE, DELETE or TRUNCATE, and no INSERT once the version is published in `op.config_versions` (migration 0007; stages and facilities, migration 0028).
   - An `incident.flagged` event's `flag` is a JSON string (`CHECK incident_events_flag_is_string`, migration 0027). The rule is the table's, so it holds whatever version of the write path runs and on every partition, and every stored history folds.
   - Lifecycle table.
   - Idempotency and per-incident sequence uniqueness in `op.event_keys`.

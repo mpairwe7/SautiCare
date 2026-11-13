@@ -89,6 +89,8 @@ func mapErr(err error) error {
 	switch {
 	case pe.Code == "SA404":
 		return fmt.Errorf("%w: %s", incident.ErrNotFound, pe.Message)
+	case pe.Code == "SA403":
+		return fmt.Errorf("%w: %s", incident.ErrForbidden, pe.Message)
 	case pe.Code == "SA409":
 		return fmt.Errorf("%w: %s", incident.ErrVersionConflict, pe.Message)
 	case pe.Code == "SA422" && strings.HasPrefix(pe.Message, "severity lowered"):

@@ -67,6 +67,10 @@ callback:
 messages:
   out_of_area: {en: "Sauti does not cover that area. For an emergency call 999 or 112.", lg: "PENDING-TRANSLATION 999 112"}
   help_coming: {en: "HELP IS COMING\nIncident {ref}\n{first_aid}", lg: "PENDING-TRANSLATION {ref} {first_aid}"}
+  # O6 (user decision 2026-11-12): while dispatch is suspended no responder is
+  # alerted and a coordinator handles every incident. The wording needs the
+  # Medical Director's and PI's approval; PENDING-MD-PI blocks production.
+  dispatch_suspended: {en: "PENDING-MD-PI Your call is recorded.\nIncident {ref}\nA coordinator will call you back.", lg: "PENDING-TRANSLATION {ref}"}
   invalid: {en: "Please choose a number from the list.", lg: "PENDING-TRANSLATION"}
   first_aid:
     trauma: {en: "PENDING-TOOL1 first aid line", lg: "PENDING-TRANSLATION"}

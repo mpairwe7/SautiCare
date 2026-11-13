@@ -480,6 +480,96 @@ func (q *Queries) ListIncidentIDs(ctx context.Context) ([]pgtype.UUID, error) {
 	return items, nil
 }
 
+const listResponders = `-- name: ListResponders :many
+SELECT r.id, r.role, r.ward, r.stage, r.certified_at, r.insured_until, r.kit_ok, r.research_consent, r.status,
+       lower(a.period)::timestamptz AS available_from, upper(a.period)::timestamptz AS available_until
+FROM op.responders r
+LEFT JOIN LATERAL (SELECT period FROM op.availability v WHERE v.responder_id = r.id ORDER BY lower(v.period) DESC LIMIT 1) a ON true
+ORDER BY r.id
+`
+
+type ListRespondersRow struct {
+	ID              pgtype.UUID
+	Role            string
+	Ward            string
+	Stage           string
+	CertifiedAt     pgtype.Timestamptz
+	InsuredUntil    pgtype.Timestamptz
+	KitOk           bool
+	ResearchConsent bool
+	Status          string
+	AvailableFrom   pgtype.Timestamptz
+	AvailableUntil  pgtype.Timestamptz
+}
+
+func (q *Queries) ListResponders(ctx context.Context) ([]ListRespondersRow, error) {
+	rows, err := q.db.Query(ctx, listResponders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRespondersRow
+	for rows.Next() {
+		var i ListRespondersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Role,
+			&i.Ward,
+			&i.Stage,
+			&i.CertifiedAt,
+			&i.InsuredUntil,
+			&i.KitOk,
+			&i.ResearchConsent,
+			&i.Status,
+			&i.AvailableFrom,
+			&i.AvailableUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStalledDispatch = `-- name: ListStalledDispatch :many
+SELECT i.id FROM op.incidents i
+WHERE i.state = 'dispatching' AND i.t3 IS NULL AND i.t2 < clock_timestamp() - $1::interval
+  AND NOT EXISTS (
+      SELECT 1 FROM op.incident_events e
+       WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+         AND e.payload ->> 'reason' IN ('no_eligible_responder', 'no_responder_nearby', 'red_no_acceptance',
+                                        'forwarded_to_facility', 'no_facility_acknowledged', 'dispatch_suspended',
+                                        'dispatch_error', 'dispatch_stalled'))
+ORDER BY i.t2
+LIMIT 500
+`
+
+// Dispatch watchdog (review I8): dispatched incidents with no alert (T3) and
+// no dispatch escalation of any kind, T2 older than after — dispatch-worker
+// has not acted on them. Read by intake-gw's leader, a separate process.
+func (q *Queries) ListStalledDispatch(ctx context.Context, after pgtype.Interval) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listStalledDispatch, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lookupUSSDStep = `-- name: LookupUSSDStep :many
 SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text
@@ -599,6 +689,74 @@ func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) (Ope
 	return i, err
 }
 
+const registerResponder = `-- name: RegisterResponder :exec
+SELECT op.register_responder($1::uuid, $2::text, $3::bytea, $4::text,
+    $5::bytea, $6::text, $7::bytea, $8::text,
+    $9::text, $10::text, $11::timestamptz, $12::timestamptz,
+    $13::boolean, $14::boolean)
+`
+
+type RegisterResponderParams struct {
+	ID              pgtype.UUID
+	Role            string
+	NameCt          []byte
+	NameKeyID       string
+	PhoneCt         []byte
+	PhoneKeyID      string
+	PhoneMac        []byte
+	PhoneMacKeyID   string
+	Ward            string
+	Stage           string
+	CertifiedAt     pgtype.Timestamptz
+	InsuredUntil    pgtype.Timestamptz
+	KitOk           bool
+	ResearchConsent bool
+}
+
+func (q *Queries) RegisterResponder(ctx context.Context, arg RegisterResponderParams) error {
+	_, err := q.db.Exec(ctx, registerResponder,
+		arg.ID,
+		arg.Role,
+		arg.NameCt,
+		arg.NameKeyID,
+		arg.PhoneCt,
+		arg.PhoneKeyID,
+		arg.PhoneMac,
+		arg.PhoneMacKeyID,
+		arg.Ward,
+		arg.Stage,
+		arg.CertifiedAt,
+		arg.InsuredUntil,
+		arg.KitOk,
+		arg.ResearchConsent,
+	)
+	return err
+}
+
+const responderByPhone = `-- name: ResponderByPhone :many
+SELECT id FROM op.responders WHERE phone_mac = ANY ($1::bytea[]) AND status <> 'retired' LIMIT 2
+`
+
+func (q *Queries) ResponderByPhone(ctx context.Context, macs [][]byte) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, responderByPhone, macs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const resumeSession = `-- name: ResumeSession :one
 SELECT r.incident_id::uuid AS incident_id, r.reference::text AS reference, r.event_id::uuid AS event_id,
        r.t1::timestamptz AS t1, r.created::boolean AS created
@@ -690,6 +848,53 @@ func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) erro
 		arg.IncidentID,
 		arg.PromptKind,
 		arg.MatchedLandmark,
+	)
+	return err
+}
+
+const setAvailability = `-- name: SetAvailability :one
+SELECT a.period_from::timestamptz AS period_from, a.period_until::timestamptz AS period_until
+FROM op.set_availability($1::uuid, $2::boolean, $3::text) AS a(period_from, period_until)
+`
+
+type SetAvailabilityParams struct {
+	ID        pgtype.UUID
+	Available bool
+	Source    string
+}
+
+type SetAvailabilityRow struct {
+	PeriodFrom  pgtype.Timestamptz
+	PeriodUntil pgtype.Timestamptz
+}
+
+func (q *Queries) SetAvailability(ctx context.Context, arg SetAvailabilityParams) (SetAvailabilityRow, error) {
+	row := q.db.QueryRow(ctx, setAvailability, arg.ID, arg.Available, arg.Source)
+	var i SetAvailabilityRow
+	err := row.Scan(&i.PeriodFrom, &i.PeriodUntil)
+	return i, err
+}
+
+const setResponderGates = `-- name: SetResponderGates :exec
+SELECT op.set_responder_gates($1::uuid, $2::timestamptz, $3::timestamptz,
+    $4::boolean, $5::text)
+`
+
+type SetResponderGatesParams struct {
+	ID           pgtype.UUID
+	CertifiedAt  pgtype.Timestamptz
+	InsuredUntil pgtype.Timestamptz
+	KitOk        bool
+	Status       string
+}
+
+func (q *Queries) SetResponderGates(ctx context.Context, arg SetResponderGatesParams) error {
+	_, err := q.db.Exec(ctx, setResponderGates,
+		arg.ID,
+		arg.CertifiedAt,
+		arg.InsuredUntil,
+		arg.KitOk,
+		arg.Status,
 	)
 	return err
 }

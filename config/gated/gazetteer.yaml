@@ -6,7 +6,7 @@
 #
 # Gated (rule 3.11): frozen during the study window; a correction is a new
 # version plus a deviation record. Load with `sautictl gazetteer load`.
-version: "placeholder-2026-11-12"
+version: "placeholder-2026-11-13"
 status: placeholder
 wards:
   - {id: w01, name: {en: "Test Ward 1", lg: "Test Ward 1"}, centre: {lat: 0.3800, lon: 32.5560}}
@@ -38,3 +38,19 @@ landmarks:
   - {id: w04_church, ward: w04, name: {en: "Test Church 4", lg: "Test Church 4"}, point: {lat: 0.3665, lon: 32.5528}, menu: 4}
   - {id: w04_stage, ward: w04, name: {en: "Test Stage 4", lg: "Test Stage 4"}, point: {lat: 0.3680, lon: 32.5552}, menu: 5}
   - {id: w04_well, ward: w04, name: {en: "Test Well 4", lg: "Test Well 4"}, point: {lat: 0.3680, lon: 32.5520}, aliases: ["Water Point 4"]}
+stages:  # boda-boda stages where transporters wait (synthetic)
+  - {id: w01_stage_a, ward: w01, name: {en: "Test Stage 1A", lg: "Test Stage 1A"}, point: {lat: 0.3810, lon: 32.5570}}
+  - {id: w01_stage_b, ward: w01, name: {en: "Test Stage 1B", lg: "Test Stage 1B"}, point: {lat: 0.3780, lon: 32.5550}}
+  - {id: w02_stage_a, ward: w02, name: {en: "Test Stage 2A", lg: "Test Stage 2A"}, point: {lat: 0.3890, lon: 32.5630}}
+  - {id: w02_stage_b, ward: w02, name: {en: "Test Stage 2B", lg: "Test Stage 2B"}, point: {lat: 0.3860, lon: 32.5610}}
+  - {id: w03_stage_a, ward: w03, name: {en: "Test Stage 3A", lg: "Test Stage 3A"}, point: {lat: 0.3730, lon: 32.5660}}
+  - {id: w03_stage_b, ward: w03, name: {en: "Test Stage 3B", lg: "Test Stage 3B"}, point: {lat: 0.3700, lon: 32.5640}}
+  - {id: w04_stage_a, ward: w04, name: {en: "Test Stage 4A", lg: "Test Stage 4A"}, point: {lat: 0.3660, lon: 32.5550}}
+  - {id: w04_stage_b, ward: w04, name: {en: "Test Stage 4B", lg: "Test Stage 4B"}, point: {lat: 0.3630, lon: 32.5530}}
+# Health facilities. Phones are PLACEHOLDERS in a range Uganda's numbering
+# plan does not use (+256 0...): the real public numbers come with the
+# field team's registration of facilities.
+facilities:
+  - {id: hc_test_1, name: {en: "Test Health Centre 1", lg: "Test Health Centre 1"}, point: {lat: 0.3830, lon: 32.5590}, forwarding_enabled: true, phone: "+256000000001"}
+  - {id: hc_test_2, name: {en: "Test Health Centre 2", lg: "Test Health Centre 2"}, point: {lat: 0.3690, lon: 32.5600}, forwarding_enabled: true, phone: "+256000000002"}
+  - {id: hc_test_3, name: {en: "Test Clinic 3", lg: "Test Clinic 3"}, point: {lat: 0.3760, lon: 32.5680}}

@@ -8,6 +8,55 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type OpAlert struct {
+	ID            pgtype.UUID
+	IncidentID    pgtype.UUID
+	ResponderID   pgtype.UUID
+	Role          string
+	Ring          int32
+	Wave          int32
+	SentAt        pgtype.Timestamptz
+	LogicVersion  string
+	Outcome       string
+	DeclineReason *string
+	RespondedAt   pgtype.Timestamptz
+	ClosedAt      pgtype.Timestamptz
+}
+
+type OpAlertAttempt struct {
+	ID          pgtype.UUID
+	AlertID     pgtype.UUID
+	Purpose     string
+	Channel     string
+	Status      string
+	ProviderRef *string
+	ClaimedAt   pgtype.Timestamptz
+	SettledAt   pgtype.Timestamptz
+}
+
+type OpAssignment struct {
+	IncidentID  pgtype.UUID
+	Role        string
+	ResponderID pgtype.UUID
+	AlertID     pgtype.UUID
+	AcceptedAt  pgtype.Timestamptz
+	ReleasedAt  pgtype.Timestamptz
+}
+
+type OpAvailability struct {
+	ResponderID pgtype.UUID
+	Period      pgtype.Range[pgtype.Timestamptz]
+	Source      string
+	RemindedAt  pgtype.Timestamptz
+}
+
+type OpCallerNotice struct {
+	IncidentID pgtype.UUID
+	Kind       string
+	FacilityID *string
+	CreatedAt  pgtype.Timestamptz
+}
+
 type OpConfigVersion struct {
 	Kind          string
 	Version       string
@@ -17,12 +66,61 @@ type OpConfigVersion struct {
 	AmendmentDate pgtype.Date
 }
 
+type OpDispatchControl struct {
+	ID        bool
+	Suspended bool
+	Reason    string
+	StaffID   pgtype.UUID
+	ChangedAt pgtype.Timestamptz
+}
+
+type OpDispatchControlLog struct {
+	ID          pgtype.UUID
+	RecordedAt  pgtype.Timestamptz
+	Action      string
+	Reason      string
+	StaffID     pgtype.UUID
+	Failures    *int32
+	WindowSize  *int32
+	PayloadSalt []byte
+}
+
+type OpDispatchTimer struct {
+	IncidentID pgtype.UUID
+	DueAt      pgtype.Timestamptz
+	Gen        int64
+	LeaseUntil pgtype.Timestamptz
+}
+
 type OpEventKey struct {
 	IncidentID pgtype.UUID
 	IdemKey    string
 	EventID    pgtype.UUID
 	Seq        int64
 	RecordedAt pgtype.Timestamptz
+}
+
+type OpFacility struct {
+	Version           string
+	ID                string
+	ListOrder         int32
+	NameEn            string
+	NameLg            string
+	Lat               float64
+	Lon               float64
+	ZoneCol           int32
+	ZoneRow           int32
+	Phone             string
+	ForwardingEnabled bool
+}
+
+type OpForward struct {
+	IncidentID       pgtype.UUID
+	FacilityID       string
+	GazetteerVersion string
+	SentAt           pgtype.Timestamptz
+	AcknowledgedAt   pgtype.Timestamptz
+	TimedOutAt       pgtype.Timestamptz
 }
 
 type OpGazetteerVersion struct {
@@ -147,6 +245,26 @@ type OpOutbox struct {
 	DeliveredAt pgtype.Timestamptz
 }
 
+type OpResponder struct {
+	ID              pgtype.UUID
+	Role            string
+	NameCt          []byte
+	NameKeyID       string
+	PhoneCt         []byte
+	PhoneKeyID      string
+	PhoneMac        []byte
+	PhoneMacKeyID   string
+	Ward            string
+	Stage           string
+	CertifiedAt     pgtype.Timestamptz
+	InsuredUntil    pgtype.Timestamptz
+	KitOk           bool
+	ResearchConsent bool
+	Status          string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type OpSession struct {
 	ID                pgtype.UUID
 	IncidentID        pgtype.UUID
@@ -158,6 +276,19 @@ type OpSession struct {
 	PhoneMacKeyID     *string
 	NetworkCode       *string
 	StartedAt         pgtype.Timestamptz
+}
+
+type OpStage struct {
+	Version   string
+	ID        string
+	ListOrder int32
+	WardID    string
+	NameEn    string
+	NameLg    string
+	Lat       float64
+	Lon       float64
+	ZoneCol   int32
+	ZoneRow   int32
 }
 
 type OpUssdStep struct {

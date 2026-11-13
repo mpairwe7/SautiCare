@@ -24,3 +24,11 @@ WHERE version = sqlc.arg(version)::text ORDER BY landmark_id, alias_order;
 -- name: MatchLandmark :many
 SELECT m.landmark_id::text AS landmark_id, m.similarity::real AS similarity
 FROM op.match_landmark(sqlc.arg(version)::text, sqlc.arg(ward_id)::text, sqlc.arg(text)::text) AS m(landmark_id, similarity);
+
+-- name: ListStages :many
+SELECT id, ward_id, name_en, name_lg, lat, lon, zone_col, zone_row FROM op.stages
+WHERE version = sqlc.arg(version)::text ORDER BY list_order;
+
+-- name: ListFacilities :many
+SELECT id, name_en, name_lg, lat, lon, zone_col, zone_row, phone, forwarding_enabled FROM op.facilities
+WHERE version = sqlc.arg(version)::text ORDER BY list_order;

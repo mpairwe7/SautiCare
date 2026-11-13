@@ -72,6 +72,53 @@ func (q *Queries) ListAliases(ctx context.Context, version string) ([]ListAliase
 	return items, nil
 }
 
+const listFacilities = `-- name: ListFacilities :many
+SELECT id, name_en, name_lg, lat, lon, zone_col, zone_row, phone, forwarding_enabled FROM op.facilities
+WHERE version = $1::text ORDER BY list_order
+`
+
+type ListFacilitiesRow struct {
+	ID                string
+	NameEn            string
+	NameLg            string
+	Lat               float64
+	Lon               float64
+	ZoneCol           int32
+	ZoneRow           int32
+	Phone             string
+	ForwardingEnabled bool
+}
+
+func (q *Queries) ListFacilities(ctx context.Context, version string) ([]ListFacilitiesRow, error) {
+	rows, err := q.db.Query(ctx, listFacilities, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListFacilitiesRow
+	for rows.Next() {
+		var i ListFacilitiesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.NameEn,
+			&i.NameLg,
+			&i.Lat,
+			&i.Lon,
+			&i.ZoneCol,
+			&i.ZoneRow,
+			&i.Phone,
+			&i.ForwardingEnabled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLandmarks = `-- name: ListLandmarks :many
 SELECT id, ward_id, name_en, name_lg, lat, lon, zone_col, zone_row, menu FROM op.landmarks
 WHERE version = $1::text ORDER BY list_order
@@ -108,6 +155,51 @@ func (q *Queries) ListLandmarks(ctx context.Context, version string) ([]ListLand
 			&i.ZoneCol,
 			&i.ZoneRow,
 			&i.Menu,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStages = `-- name: ListStages :many
+SELECT id, ward_id, name_en, name_lg, lat, lon, zone_col, zone_row FROM op.stages
+WHERE version = $1::text ORDER BY list_order
+`
+
+type ListStagesRow struct {
+	ID      string
+	WardID  string
+	NameEn  string
+	NameLg  string
+	Lat     float64
+	Lon     float64
+	ZoneCol int32
+	ZoneRow int32
+}
+
+func (q *Queries) ListStages(ctx context.Context, version string) ([]ListStagesRow, error) {
+	rows, err := q.db.Query(ctx, listStages, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStagesRow
+	for rows.Next() {
+		var i ListStagesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WardID,
+			&i.NameEn,
+			&i.NameLg,
+			&i.Lat,
+			&i.Lon,
+			&i.ZoneCol,
+			&i.ZoneRow,
 		); err != nil {
 			return nil, err
 		}

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,6 +112,23 @@ func TestCleanupContextIsDetachedAndBounded(t *testing.T) {
 	}
 	if d, ok := cctx.Deadline(); !ok || time.Until(d) > cleanupTimeout {
 		t.Fatalf("cleanup deadline = %v, %v; want at most %v", d, ok, cleanupTimeout)
+	}
+}
+
+// CodeRabbit PR #10 (4557206001): step 4's ledger check looks for every
+// number the demo uses — the caller's and each synthetic responder's — in
+// the national form the ledger would show, not the caller's alone.
+func TestLedgerCheckCoversEveryFixtureNumber(t *testing.T) {
+	patterns := ledgerPhonePatterns()
+	numbers := []string{demoPhone}
+	for _, d := range demoResponders {
+		numbers = append(numbers, d.phone)
+	}
+	for _, n := range numbers {
+		national := strings.TrimPrefix(n, "+256")
+		if !slices.Contains(patterns, "%"+national+"%") {
+			t.Errorf("number %s is not searched for (patterns %v)", n, patterns)
+		}
 	}
 }
 

@@ -132,3 +132,53 @@ func TestIncidentSplitValidatesBeforeConnecting(t *testing.T) {
 		}
 	}
 }
+
+// Responder registration from the CLI is for development and tests only, and
+// validates its input before any connection.
+func TestResponderCommandsRefuseProductionAndValidate(t *testing.T) {
+	t.Setenv("SAUTI_ENV", "production")
+	var out, errOut bytes.Buffer
+	if code := Main([]string{"responder", "add", "--dsn", "postgres://invalid.invalid/x"}, &out, &errOut); code != 1 ||
+		strings.Contains(errOut.String(), "invalid.invalid") {
+		t.Fatalf("production: exit %d, %s", code, errOut.String())
+	}
+	t.Setenv("SAUTI_ENV", "dev")
+	for _, args := range [][]string{
+		{"responder", "add", "--dsn", "postgres://invalid.invalid/x", "--role", "doctor", "--name", "A", "--phone", "0772000123", "--ward", "w01", "--stage", "w01_stage_a"},
+		{"responder", "add", "--dsn", "postgres://invalid.invalid/x", "--role", "vht", "--name", "A", "--phone", "12", "--ward", "w01", "--stage", "w01_stage_a"},
+		{"responder", "available", "--dsn", "postgres://invalid.invalid/x", "--id", "not-a-uuid"},
+	} {
+		out.Reset()
+		errOut.Reset()
+		if code := Main(args, &out, &errOut); code != 1 || strings.Contains(errOut.String(), "invalid.invalid") {
+			t.Errorf("%v: exit %d, %s", args, code, errOut.String())
+		}
+	}
+}
+
+// O6: in production, suspending dispatch is refused while the message
+// callers get during a suspension awaits the Medical Director's and PI's
+// approval; arguments are validated before any connection.
+func TestDispatchCommandsGateAndValidate(t *testing.T) {
+	staff := "0195f3a2-7c1e-7d4b-9a10-2b3c4d5e6f70"
+	t.Setenv("SAUTI_ENV", "production")
+	var out, errOut bytes.Buffer
+	code := Main([]string{"dispatch", "suspend", "--dsn", "postgres://invalid.invalid/x", "--config", "../../config",
+		"--reason", "coordinator_decision", "--staff", staff}, &out, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "dispatch_suspended") || strings.Contains(errOut.String(), "invalid.invalid") {
+		t.Fatalf("production with a pending message: exit %d, %s", code, errOut.String())
+	}
+	t.Setenv("SAUTI_ENV", "dev")
+	for _, args := range [][]string{
+		{"dispatch", "suspend", "--dsn", "postgres://invalid.invalid/x", "--reason", "Because I said so", "--staff", staff},
+		{"dispatch", "resume", "--dsn", "postgres://invalid.invalid/x", "--reason", "reviewed", "--staff", "nobody"},
+		{"dispatch", "resume", "--dsn", "postgres://invalid.invalid/x", "--reason", "reviewed"},
+		{"dispatch", "pause"},
+	} {
+		out.Reset()
+		errOut.Reset()
+		if code := Main(args, &out, &errOut); code == 0 || strings.Contains(errOut.String(), "invalid.invalid") {
+			t.Errorf("%v: exit %d, %s", args, code, errOut.String())
+		}
+	}
+}

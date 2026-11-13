@@ -41,8 +41,8 @@ func FixtureLifecycle() []Event {
 			return e
 		}(),
 		ev(4, EvDispatchReady, ""),
-		ev(5, EvAlertIssued, `{"role":"vht"}`),
-		ev(6, EvAccepted, `{"role":"vht"}`),
+		ev(5, EvAlertIssued, `{"alert":"0195f3a2-7c1e-7d4b-9a10-0000000000a1","responder":"0195f3a2-7c1e-7d4b-9a10-0000000000b1","role":"vht","ring":1,"wave":1}`),
+		ev(6, EvAccepted, `{"alert":"0195f3a2-7c1e-7d4b-9a10-0000000000a1","responder":"0195f3a2-7c1e-7d4b-9a10-0000000000b1","role":"vht"}`),
 		ev(7, EvArrived, ""),
 		ev(8, EvDeparted, ""),
 		ev(9, EvAtFacility, ""),
@@ -86,7 +86,7 @@ func TestFoldFixtureLifecycle(t *testing.T) {
 // T-times are first-wins: a second responder's acceptance must not move T4.
 func TestTimestampsAreFirstWins(t *testing.T) {
 	events := FixtureLifecycle()[:6]
-	events = append(events, ev(7, EvAccepted, `{"role":"transporter"}`))
+	events = append(events, ev(7, EvAccepted, `{"alert":"0195f3a2-7c1e-7d4b-9a10-0000000000a2","responder":"0195f3a2-7c1e-7d4b-9a10-0000000000b2","role":"transporter"}`))
 	p, err := Fold(events)
 	if err != nil {
 		t.Fatal(err)
