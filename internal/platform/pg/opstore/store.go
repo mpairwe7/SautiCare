@@ -21,17 +21,25 @@ import (
 
 	"sautihealth.com/sauti/internal/audit"
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/opstore/opdb"
 )
 
 // Store implements incident.Store and audit.Outbox.
 type Store struct {
-	pool *pgxpool.Pool
+	// pool bounds every call the adapter makes outside a transaction, and
+	// the start of every transaction, to opTimeout (pg.BoundedDB).
+	pool *pg.BoundedDB
 	q    *opdb.Queries
 }
 
-// New returns a Store over pool.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool, q: opdb.New(pool)} }
+// New returns a Store over pool. Every call it makes has its own deadline —
+// the wait for a connection plus one statement (opTimeout) — even when the
+// caller's context has none (CodeRabbit PR #3).
+func New(pool *pgxpool.Pool) *Store {
+	db := pg.Bounded(pool, opTimeout)
+	return &Store{pool: db, q: opdb.New(db)}
+}
 
 func pgID(u uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: [16]byte(u), Valid: true} }
 
@@ -87,6 +95,9 @@ func mapErr(err error) error {
 		return fmt.Errorf("%w: %s", incident.ErrSeverityLowered, pe.Message)
 	case pe.Code == "SA422":
 		return fmt.Errorf("%w: %s", incident.ErrIllegalTransition, pe.Message)
+	case pe.Code == "23514" && pe.ConstraintName == "incident_events_flag_is_string":
+		// 0027: a flag event whose flag is not a JSON string.
+		return fmt.Errorf("%w: flag event needs a string flag", incident.ErrIllegalTransition)
 	case pe.Code == "23505" && pe.ConstraintName == "incidents_reference_key":
 		return incident.ErrReferenceTaken
 	}
@@ -278,6 +289,10 @@ func (s *Store) DefaultPartitionRows(ctx context.Context) (int64, error) {
 // partitionTimeout bounds one partition-maintenance call, pool wait included.
 const partitionTimeout = 30 * time.Second
 
+// opTimeout bounds every other call to the pool: the wait for a connection
+// plus one statement, which the server stops at 5 s (statement_timeout).
+var opTimeout = 10 * time.Second
+
 // EnsureEventPartitions creates every missing monthly partition of
 // op.incident_events from the current month to monthsAhead months ahead and
 // returns how many it created. Events of a month without a partition land in
@@ -285,9 +300,9 @@ const partitionTimeout = 30 * time.Second
 // so the relay runs this well ahead of time (runbook:
 // docs/runbooks/event-partition-maintenance.md).
 func (s *Store) EnsureEventPartitions(ctx context.Context, monthsAhead int) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, partitionTimeout)
-	defer cancel()
-	n, err := s.q.EnsureEventPartitions(ctx, int32(max(0, min(monthsAhead, 120)))) //nolint:gosec // clamped
+	// Partition maintenance has its own, longer bound (partitionTimeout).
+	q := opdb.New(s.pool.WithTimeout(partitionTimeout))
+	n, err := q.EnsureEventPartitions(ctx, int32(max(0, min(monthsAhead, 120)))) //nolint:gosec // clamped
 	if err != nil {
 		return 0, fmt.Errorf("opstore: ensure event partitions: %w", err)
 	}
@@ -324,6 +339,8 @@ func (s *Store) MaintainEventPartitions(ctx context.Context, monthsAhead int, ev
 
 // Claim implements audit.Outbox: it opens a transaction and locks up to
 // limit pending rows; the batch holds the transaction until Complete/Abort.
+// Only Begin is bounded (opTimeout): the held transaction is not, and the
+// server ends it if it idles (idle_in_transaction_session_timeout).
 func (s *Store) Claim(ctx context.Context, topic string, limit int) (audit.OutboxBatch, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
