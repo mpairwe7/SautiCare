@@ -110,7 +110,10 @@ func (a *bridgeARI) AddToBridge(_ context.Context, id, ch string) error {
 	a.ops = append(a.ops, "bridge:"+ch)
 	return nil
 }
-func (a *bridgeARI) DestroyBridge(_ context.Context, id string) error {
+func (a *bridgeARI) DestroyBridge(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err // as an HTTP request on an expired context
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.destroyed = append(a.destroyed, id)
@@ -187,6 +190,7 @@ func (bridgeKeys) PhoneLookupMACs(_ context.Context, p pii.Phone) ([]crypto.MAC,
 type bridgeStore struct {
 	mu         sync.Mutex
 	failLookup bool
+	slowFinish bool                 // the end of a call is logged only when its time runs out
 	responders map[string]uuid.UUID // MAC sum → responder
 	byResp     map[uuid.UUID][]dispatch.BridgeTarget
 	byCaller   map[string][]dispatch.BridgeTarget // MAC sum → targets
@@ -231,7 +235,11 @@ func (s *bridgeStore) BridgeCallAnswered(context.Context, uuid.UUID) error {
 	s.answered++
 	return nil
 }
-func (s *bridgeStore) FinishBridgeCall(_ context.Context, id uuid.UUID, result string) error {
+func (s *bridgeStore) FinishBridgeCall(ctx context.Context, id uuid.UUID, result string) error {
+	if s.slowFinish {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, done := s.finished[id]; !done {
@@ -696,6 +704,32 @@ func TestBridgeCallerWithTwoHelpersOfARoleKeysTheIncident(t *testing.T) {
 	press(b3, "in-3", "7894")
 	if !slices.Equal(a3.dialled(), []string{"PJSIP/" + responderNum + "@sauti-trunk"}) || !slices.Equal(st3.begun, []string{dispatch.BridgeByCaller}) {
 		t.Fatalf("7894: dialled %v begun %v", a3.dialled(), st3.begun)
+	}
+	noNumbers(t, logs)
+}
+
+// CodeRabbit PR #12: a log write that uses up its time must not leave the
+// mixing bridge behind; destroying it has a time of its own.
+func TestBridgeIsDestroyedAfterASlowLogWrite(t *testing.T) {
+	resp := uuid.NewV7()
+	st := &bridgeStore{responders: map[string]uuid.UUID{responderNum: resp},
+		byResp: map[uuid.UUID][]dispatch.BridgeTarget{resp: {target("1234567894", responder.RoleVHT)}}}
+	b, a, logs := bridgeRig(t, st, 30*time.Second)
+	b.c.OpTimeout = 20 * time.Millisecond
+	dialIn(b, "in-1", responderNum)
+	b.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "leg-1", Args: a.args[0]})
+	st.slowFinish = true
+	b.Handle(context.Background(), Event{Type: EventStasisEnd, ChannelID: "in-1"})
+	if len(a.bridged) != 1 {
+		t.Fatalf("bridges %v", a.bridged)
+	}
+	for id := range a.bridged {
+		if !slices.Contains(a.destroyed, id) {
+			t.Fatalf("the bridge outlived a slow log write: destroyed %v", a.destroyed)
+		}
+	}
+	if !strings.Contains(logs.String(), "bridge call end not logged") || !a.wasHungUp("leg-1") {
+		t.Fatalf("logs %s hung up %v", logs.String(), a.hungUp)
 	}
 	noNumbers(t, logs)
 }

@@ -607,12 +607,14 @@ func (b *Bridge) toCoordinator(ctx context.Context, st *bridgeCall) {
 	}
 }
 
-// teardown logs the result and destroys the bridge.
+// teardown logs the result and destroys the bridge, each in a time of its
+// own: a slow log write must not leave the bridge behind.
 func (b *Bridge) teardown(ctx context.Context, st *bridgeCall, result string) {
-	octx, cancel := b.op(context.WithoutCancel(ctx))
-	defer cancel()
+	bg := context.WithoutCancel(ctx)
 	if st.id != (uuid.UUID{}) {
-		if err := b.c.Store.FinishBridgeCall(octx, st.id, result); err != nil {
+		if _, err := bounded(bg, b.c.OpTimeout, func(c context.Context) (struct{}, error) {
+			return struct{}{}, b.c.Store.FinishBridgeCall(c, st.id, result)
+		}); err != nil {
 			b.c.Log.Error("bridge call end not logged", "bridge_call", st.id, "err", err)
 		}
 		delete(b.byID, st.id)
@@ -621,7 +623,11 @@ func (b *Bridge) teardown(ctx context.Context, st *bridgeCall, result string) {
 		delete(b.calls, st.leg)
 	}
 	if st.bridgeID != "" {
-		_ = b.c.ARI.DestroyBridge(octx, st.bridgeID)
+		if _, err := bounded(bg, b.c.OpTimeout, func(c context.Context) (struct{}, error) {
+			return struct{}{}, b.c.ARI.DestroyBridge(c, st.bridgeID)
+		}); err != nil {
+			b.c.Log.Warn("bridge not destroyed", "bridge_call", st.id, "err", err)
+		}
 	}
 }
 
