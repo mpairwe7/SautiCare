@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"regexp"
 	"slices"
@@ -104,6 +105,7 @@ type ForwardCallsConfig struct {
 	Language  string
 	Log       *slog.Logger
 	OpTimeout time.Duration
+	NoInput   time.Duration // an answered call with no key it offers for this long is hung up (default DefaultNoInput)
 }
 
 type forwardCall struct {
@@ -114,6 +116,7 @@ type forwardCall struct {
 	done     bool
 	current  string
 	hangupOn string
+	timer    *time.Timer // the no-input time (set under ForwardCalls.mu)
 }
 
 // ForwardCalls calls forwarded health centres: press 1 to acknowledge.
@@ -129,8 +132,17 @@ func NewForwardCalls(c ForwardCallsConfig) (*ForwardCalls, error) {
 		return nil, errors.New("ivr: forwarding calls need ARI, a store and a dial template with {number}")
 	}
 	c.Ring, c.Language, c.Log, c.OpTimeout = defaults(c.Ring, c.Language, c.Log, c.OpTimeout)
+	if c.NoInput <= 0 {
+		c.NoInput = DefaultNoInput
+	}
 	return &ForwardCalls{c: c, calls: map[string]*forwardCall{}}, nil
 }
+
+// DefaultNoInput is how long an answered forwarding or coordinator call may
+// go without a key it offers before Sauti hangs up (CodeRabbit PR #11): an
+// unattended answer cannot hold a coordinator line (or a channel) for ever.
+// The escalation, still unacknowledged, rings again at its retry interval.
+const DefaultNoInput = 2 * time.Minute
 
 func defaults(ring time.Duration, lang string, log *slog.Logger, op time.Duration) (time.Duration, string, *slog.Logger, time.Duration) {
 	if ring <= 0 {
@@ -232,6 +244,7 @@ func (f *ForwardCalls) Handle(ctx context.Context, e Event) {
 		f.mu.Lock()
 		f.calls[e.ChannelID] = st
 		f.mu.Unlock()
+		f.arm(ctx, e.ChannelID, st) // the no-input time runs from the answer
 		if err := f.c.ARI.Answer(op, e.ChannelID); err == nil {
 			f.play(op, e.ChannelID, st, f.sounds(facts))
 		}
@@ -239,9 +252,12 @@ func (f *ForwardCalls) Handle(ctx context.Context, e Event) {
 		f.mu.Lock()
 		st := f.calls[e.ChannelID]
 		f.mu.Unlock()
-		if st == nil || st.done {
+		if st == nil || st.done || !outboundKey(e.Digit) {
 			return
 		}
+		// A key the call offers is input: the no-input time starts again (after
+		// an acknowledgement it backs up the hang-up after the closing prompt).
+		f.arm(ctx, e.ChannelID, st)
 		cut(op, f.c.ARI, &st.current)
 		switch e.Digit {
 		case "1":
@@ -272,8 +288,42 @@ func (f *ForwardCalls) Handle(ctx context.Context, e Event) {
 		}
 	case EventStasisEnd, EventHangupRequest:
 		f.mu.Lock()
+		if st := f.calls[e.ChannelID]; st != nil && st.timer != nil {
+			st.timer.Stop()
+		}
 		delete(f.calls, e.ChannelID)
 		f.mu.Unlock()
+	}
+}
+
+// arm starts the call's no-input time, or starts it again. The timer runs on
+// its own goroutine, so it reads the call state under f.mu.
+func (f *ForwardCalls) arm(ctx context.Context, ch string, st *forwardCall) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if st.timer != nil {
+		st.timer.Reset(f.c.NoInput)
+		return
+	}
+	bg := context.WithoutCancel(ctx) // the hang-up outlives the event and the term
+	st.timer = time.AfterFunc(f.c.NoInput, func() { f.noInput(bg, ch, st) })
+}
+
+// noInput hangs up an answered forwarding call that heard no key it offers
+// for the no-input time.
+func (f *ForwardCalls) noInput(ctx context.Context, ch string, st *forwardCall) {
+	f.mu.Lock()
+	live := f.calls[ch] == st
+	if live {
+		delete(f.calls, ch) // a forwarding call holds no line: nothing else to free
+	}
+	f.mu.Unlock()
+	if !live {
+		return
+	}
+	f.c.Log.Warn("forwarding call hung up after no input", "incident", st.incident, "facility", st.facility)
+	if _, err := bounded(ctx, f.c.OpTimeout, func(c context.Context) (struct{}, error) { return struct{}{}, f.c.ARI.Hangup(c, ch) }); err != nil {
+		f.c.Log.Error("hanging up a forwarding call with no input failed", "incident", st.incident, "err", err)
 	}
 }
 
@@ -303,9 +353,17 @@ type CoordinatorStore interface {
 	AcknowledgeCoordinatorCall(ctx context.Context, incidentID uuid.UUID, seq int64) error
 }
 
+// CoordinatorARI is what coordinator calls need from Asterisk: alert calls'
+// operations, and whether a channel still exists (a new term checks the lines
+// it holds).
+type CoordinatorARI interface {
+	AlertARI
+	ChannelExists(ctx context.Context, channelID string) (bool, error)
+}
+
 // CoordinatorCallsConfig wires coordinator escalation calls.
 type CoordinatorCallsConfig struct {
-	ARI       AlertARI
+	ARI       CoordinatorARI
 	Store     CoordinatorStore
 	Endpoint  string // the coordinator line (SAUTI_COORDINATOR_DIAL; a placeholder until P0)
 	CallerID  string
@@ -316,6 +374,7 @@ type CoordinatorCallsConfig struct {
 	Language  string
 	Log       *slog.Logger
 	OpTimeout time.Duration
+	NoInput   time.Duration // an answered call with no key it offers for this long is hung up (default DefaultNoInput)
 }
 
 // ringMargin is how long after the ring time an unanswered call still holds
@@ -331,6 +390,7 @@ type coordinatorCall struct {
 	done      bool
 	current   string
 	hangupOn  string
+	timer     *time.Timer // the no-input time (set under CoordinatorCalls.mu)
 }
 
 // CoordinatorCalls rings the coordinator line about every escalation,
@@ -340,7 +400,9 @@ type CoordinatorCalls struct {
 	mu    sync.Mutex
 	calls map[string]*coordinatorCall
 	// busy holds a line per call placed: until the ring time has passed
-	// unanswered, or while it is answered (zero time) until it ends.
+	// unanswered, or while it is answered (zero time) until it ends — its
+	// StasisEnd, a hang-up after no input, or a new term finding the channel
+	// gone (reconcile).
 	busy map[string]time.Time
 }
 
@@ -359,6 +421,9 @@ func NewCoordinatorCalls(c CoordinatorCallsConfig) (*CoordinatorCalls, error) {
 		c.Now = time.Now
 	}
 	c.Ring, c.Language, c.Log, c.OpTimeout = defaults(c.Ring, c.Language, c.Log, c.OpTimeout)
+	if c.NoInput <= 0 {
+		c.NoInput = DefaultNoInput
+	}
 	return &CoordinatorCalls{c: c, calls: map[string]*coordinatorCall{}, busy: map[string]time.Time{}}, nil
 }
 
@@ -399,15 +464,98 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 			continue
 		}
 		k.mu.Lock()
-		k.busy[ch] = now.Add(k.c.Ring + ringMargin)
+		// The answer may already have been handled (StasisStart can arrive
+		// before Originate returns): its mark stands, or the reservation
+		// would lapse while the call is under way.
+		if until, answered := k.busy[ch]; !answered || !until.IsZero() {
+			k.busy[ch] = now.Add(k.c.Ring + ringMargin)
+		}
 		k.mu.Unlock()
 	}
 	return len(due), nil
 }
 
-// Run rings due escalations every interval until ctx ends.
+// Run rings due escalations every interval until ctx ends. It first frees
+// the lines of calls that ended unheard (reconcile): Run starts with every
+// leadership term and every reconnection of the event stream, exactly when
+// end events may have been missed.
 func (k *CoordinatorCalls) Run(ctx context.Context, every time.Duration, onErr func(error)) error {
+	k.reconcile(ctx)
 	return every_(ctx, every, func() error { _, err := k.RunOnce(ctx); return err }, onErr)
+}
+
+// reconcile checks every line this process holds against Asterisk. A call's
+// StasisEnd goes only to the process holding the outbound websocket, so a
+// call that ended while another process led, or while the stream was down,
+// would hold its line for ever (with one line, no escalation would ring
+// again). A channel Asterisk reports gone (404) frees its line; one that
+// still exists keeps it, and so does one Asterisk cannot be asked about: a
+// line in use is never rung twice.
+func (k *CoordinatorCalls) reconcile(ctx context.Context) {
+	k.mu.Lock()
+	held := slices.Collect(maps.Keys(k.busy))
+	k.mu.Unlock()
+	for _, ch := range held {
+		live, err := bounded(ctx, k.c.OpTimeout, func(c context.Context) (bool, error) { return k.c.ARI.ChannelExists(c, ch) })
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				k.c.Log.Error("coordinator line not checked against Asterisk; kept", "err", err)
+			}
+		case !live:
+			k.release(ch, nil)
+		}
+	}
+}
+
+// release frees a call's line and forgets the call, stopping its no-input
+// time; with st given, only while ch is still that call.
+func (k *CoordinatorCalls) release(ch string, st *coordinatorCall) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	cur := k.calls[ch]
+	if st != nil && cur != st {
+		return
+	}
+	if cur != nil && cur.timer != nil {
+		cur.timer.Stop()
+	}
+	delete(k.calls, ch)
+	delete(k.busy, ch)
+}
+
+// arm starts the call's no-input time, or starts it again. The timer runs on
+// its own goroutine, so it reads the call state under k.mu.
+func (k *CoordinatorCalls) arm(ctx context.Context, ch string, st *coordinatorCall) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if st.timer != nil {
+		st.timer.Reset(k.c.NoInput)
+		return
+	}
+	bg := context.WithoutCancel(ctx) // the hang-up outlives the event and the term
+	st.timer = time.AfterFunc(k.c.NoInput, func() { k.noInput(bg, ch, st) })
+}
+
+// noInput hangs up an answered coordinator call that heard no key it offers
+// for the no-input time. Once Asterisk has taken the hang-up the line is
+// free at once (the StasisEnd may never reach this process); the
+// escalation, unacknowledged, rings again at its retry interval. A hang-up
+// that fails leaves the line held until the call's end or the next term's
+// reconcile.
+func (k *CoordinatorCalls) noInput(ctx context.Context, ch string, st *coordinatorCall) {
+	k.mu.Lock()
+	live := k.calls[ch] == st
+	k.mu.Unlock()
+	if !live {
+		return
+	}
+	k.c.Log.Warn("coordinator call hung up after no input", "incident", st.incident)
+	if _, err := bounded(ctx, k.c.OpTimeout, func(c context.Context) (struct{}, error) { return struct{}{}, k.c.ARI.Hangup(c, ch) }); err != nil {
+		k.c.Log.Error("hanging up a coordinator call with no input failed", "incident", st.incident, "err", err)
+		return
+	}
+	k.release(ch, st)
 }
 
 // Handle runs answered coordinator calls.
@@ -416,11 +564,6 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 	defer cancel()
 	switch e.Type {
 	case EventStasisStart:
-		k.mu.Lock()
-		if _, ok := k.busy[e.ChannelID]; ok {
-			k.busy[e.ChannelID] = time.Time{} // answered: busy until it ends
-		}
-		k.mu.Unlock()
 		if len(e.Args) != 5 {
 			k.hangup(op, e.ChannelID)
 			return
@@ -433,8 +576,12 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 		}
 		st := &coordinatorCall{incident: inc, seq: seq, reason: e.Args[3], reference: incident.Reference(e.Args[4])}
 		k.mu.Lock()
+		// Answered: the line is busy until the call ends, whether or not
+		// RunOnce has stored the call yet (CodeRabbit PR #11).
+		k.busy[e.ChannelID] = time.Time{}
 		k.calls[e.ChannelID] = st
 		k.mu.Unlock()
+		k.arm(ctx, e.ChannelID, st) // the no-input time runs from the answer
 		if err := k.c.ARI.Answer(op, e.ChannelID); err == nil {
 			k.play(op, e.ChannelID, st, k.sounds(st))
 		}
@@ -442,9 +589,12 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 		k.mu.Lock()
 		st := k.calls[e.ChannelID]
 		k.mu.Unlock()
-		if st == nil || st.done {
+		if st == nil || st.done || !outboundKey(e.Digit) {
 			return
 		}
+		// A key the call offers is input: the no-input time starts again (after
+		// an acknowledgement it backs up the hang-up after the closing prompt).
+		k.arm(ctx, e.ChannelID, st)
 		cut(op, k.c.ARI, &st.current)
 		switch e.Digit {
 		case "1":
@@ -474,10 +624,7 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 			k.hangup(op, e.ChannelID)
 		}
 	case EventStasisEnd, EventHangupRequest:
-		k.mu.Lock()
-		delete(k.calls, e.ChannelID)
-		delete(k.busy, e.ChannelID)
-		k.mu.Unlock()
+		k.release(e.ChannelID, nil)
 	}
 }
 
@@ -527,8 +674,13 @@ func endAfter(ctx context.Context, a AlertARI, ch, pb string, sounds []string) s
 	return pb
 }
 
-// cut stops the prompt being heard when a key is pressed, so the answer is
-// spoken at once rather than queued behind it.
+// outboundKey reports whether a forwarding or coordinator call takes digit:
+// 1 acknowledges, 3 repeats. Any other key is ignored, leaving the prompt
+// playing rather than cutting it to silence.
+func outboundKey(digit string) bool { return digit == "1" || digit == "3" }
+
+// cut stops the prompt being heard when a key the menu offers is pressed, so
+// the answer is spoken at once rather than queued behind it.
 func cut(ctx context.Context, a AlertARI, current *string) {
 	if *current != "" {
 		_ = a.StopPlayback(ctx, *current)

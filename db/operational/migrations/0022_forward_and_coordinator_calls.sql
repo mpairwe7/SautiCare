@@ -3,9 +3,12 @@
 --
 -- * A forwarded facility gets one SMS (dispatch-worker) and one call
 --   (ivr-controller; press 1 to acknowledge), each attempt claimed once and
---   only while the forward is open: a facility that acknowledged or timed
---   out (the request has moved on) gets neither. The SMS's delivery report
---   is recorded like an alert's.
+--   only while the forward is open and its incident is not closed or merged:
+--   a facility that acknowledged or timed out (the request has moved on), or
+--   whose incident is over (pressing 1 could not acknowledge it: a terminal
+--   incident takes no more events), gets neither. The claim share-locks the
+--   incident, so a claim racing a closure waits for it and sees it. The
+--   SMS's delivery report is recorded like an alert's.
 -- * Every escalation rings the coordinator line, durable and retried every
 --   retry interval until a coordinator presses 1; one acknowledgement covers
 --   the incident's escalations recorded so far, a later one rings again.
@@ -36,8 +39,17 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER
 SET search_path = op, pg_temp
 AS $$
 DECLARE
-    v_id uuid;
+    v_id    uuid;
+    v_state text;
 BEGIN
+    -- Only for an incident still open. FOR SHARE orders the claim against a
+    -- closure or merge (op.append_event_core locks the incident FOR UPDATE):
+    -- one committing first is seen here, one starting later waits for this.
+    SELECT i.state INTO v_state FROM op.incidents i WHERE i.id = p_incident FOR SHARE;
+    IF v_state IS NULL OR v_state IN ('closed', 'merged') THEN
+        RETURN QUERY SELECT NULL::uuid, false;
+        RETURN;
+    END IF;
     -- Only a recorded forward that is still open (awaiting acknowledgement):
     -- one that timed out has been handed to the next facility.
     IF NOT EXISTS (SELECT 1 FROM op.forwards f

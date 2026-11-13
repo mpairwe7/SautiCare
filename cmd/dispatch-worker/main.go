@@ -36,6 +36,7 @@ import (
 	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/dispatch"
+	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/platform/africastalking"
 	"sautihealth.com/sauti/internal/platform/channels"
 	"sautihealth.com/sauti/internal/platform/devkeys"
@@ -250,7 +251,7 @@ func smsChannel(ctx context.Context, cfg config.Bundle, store *opstore.Store, se
 	if err != nil {
 		return nil, err
 	}
-	gaz, err := store.Snapshot(ctx)
+	gaz, err := gazetteerInForce(ctx, store.Snapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +270,20 @@ func smsChannel(ctx context.Context, cfg config.Bundle, store *opstore.Store, se
 	// the dispatch mode.
 	return channels.NewSMS(channels.SMSConfig{Directory: store, Opener: crypto.NewEnvelope(keys, rand.Reader), Sender: client,
 		Templates: cfg.SMS, Tool1: cfg.Tool1, Gazetteer: gaz, Amended: cfg.Dispatch.Mode == dispatch.ModeAmended})
+}
+
+// snapshotTimeout bounds the startup read of the gazetteer in force (as
+// wiring.BuildDispatch bounds its own).
+const snapshotTimeout = 30 * time.Second
+
+// gazetteerInForce reads the gazetteer under a deadline of its own: the read
+// runs before the health endpoints exist, and the run context brings only
+// cancellation, so a stalled database would otherwise hold the start until a
+// signal (CodeRabbit PR #11).
+func gazetteerInForce(ctx context.Context, read func(context.Context) (location.File, error)) (location.File, error) {
+	sctx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
+	return read(sctx)
 }
 
 // simMessenger logs each message (identifiers only, never a number).

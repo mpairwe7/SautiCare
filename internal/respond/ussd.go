@@ -124,6 +124,13 @@ func (s *Service) HandleUSSD(ctx context.Context, r intake.USSDRequest) (intake.
 				return s.decline(ctx, id, alert, "")
 			case in == "2" && pending:
 				at = atReasons
+			case in == "2" && hasAlert && !alert.Assigned:
+				// The pinned alert is no longer pending: a retried decline,
+				// or one that reached a closed alert. op.decline_alert
+				// answers the stored outcome without writing, so the retry
+				// gets the first answer (an open assignment is shown again
+				// instead, below).
+				return s.decline(ctx, id, alert, "")
 			case in == "3":
 				at = atAvailability
 			default:
@@ -330,7 +337,10 @@ func (s *Service) checkScreens() error {
 			for _, role := range responder.Roles() {
 				screens[fmt.Sprintf("reasons/%s/%v", role, invalid)] = s.reasonsScreen(role, invalid, lang)
 			}
-			screens[fmt.Sprintf("availability/%v", invalid)] = s.availabilityScreen(time.Date(2026, 1, 1, 20, 59, 0, 0, time.UTC), true, invalid, lang)
+			for _, on := range []bool{true, false} {
+				screens[fmt.Sprintf("availability/%s/%v", map[bool]string{true: "on", false: "off"}[on], invalid)] =
+					s.availabilityScreen(time.Date(2026, 1, 1, 20, 59, 0, 0, time.UTC), on, invalid, lang)
+			}
 		}
 		for name := range s.c.Copy.Menu {
 			screens["end/"+name] = s.fill(s.c.Copy.Text(name, lang), v)

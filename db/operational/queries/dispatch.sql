@@ -213,10 +213,11 @@ FROM op.begin_forward_attempt(sqlc.arg(incident_id)::uuid, sqlc.arg(facility_id)
 -- name: FinishForwardAttempt :one
 SELECT op.finish_forward_attempt(sqlc.arg(attempt_id)::uuid, sqlc.arg(status)::text, sqlc.narg(provider_ref)::text)::boolean AS changed;
 
--- Forwards awaiting acknowledgement and not yet called (ivr-controller).
+-- Forwards awaiting acknowledgement and not yet called (ivr-controller), of
+-- incidents still open (a closed or merged one takes no acknowledgement).
 -- name: DueForwardCalls :many
-SELECT f.incident_id, f.facility_id FROM op.forwards f
-WHERE f.acknowledged_at IS NULL AND f.timed_out_at IS NULL
+SELECT f.incident_id, f.facility_id FROM op.forwards f JOIN op.incidents i ON i.id = f.incident_id
+WHERE f.acknowledged_at IS NULL AND f.timed_out_at IS NULL AND i.state NOT IN ('closed', 'merged')
   AND NOT EXISTS (SELECT 1 FROM op.forward_attempts x WHERE x.incident_id = f.incident_id AND x.facility_id = f.facility_id AND x.channel = 'voice')
 ORDER BY f.sent_at LIMIT sqlc.arg(max_rows)::int;
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -47,23 +48,39 @@ func TestReadinessIncludesTheARIEventStream(t *testing.T) {
 // over), and calls are placed only while that stream is connected
 // (CodeRabbit PR #11 4558029983): a call answered while it is down would
 // never reach Sauti. Readiness fails on the leader while its stream is down.
+// The term returns only once its subscription and both loops have exited
+// (CodeRabbit PR #11 4560453586): a later term in this process never runs
+// beside a stale websocket.
 func TestOutboundCallsOnlyWhileLeaderAndConnected(t *testing.T) {
 	outboundPoll = 5 * time.Millisecond
 	var up atomic.Bool
 	subscribed := make(chan context.Context, 1)
+	subDone := make(chan struct{})
 	events := func(ctx context.Context, _ func(ari.Event)) error {
+		defer close(subDone)
 		subscribed <- ctx
 		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // closing the websocket takes a moment
 		return ctx.Err()
 	}
-	var running atomic.Int32
-	starts := make(chan struct{}, 10)
+	type loopRun struct{ started, exited chan struct{} }
+	runs := make(chan loopRun, 10)
 	loop := func(ctx context.Context) error {
-		running.Add(1)
-		starts <- struct{}{}
+		r := loopRun{make(chan struct{}), make(chan struct{})}
+		runs <- r
+		close(r.started)
 		<-ctx.Done()
-		running.Add(-1)
+		close(r.exited)
 		return ctx.Err()
+	}
+	// both waits for the two loops of one connection to start.
+	both := func() [2]loopRun {
+		t.Helper()
+		var out [2]loopRun
+		for i := range out {
+			out[i] = within(t, runs, "a loop to start")
+		}
+		return out
 	}
 	st := &outboundStatus{connected: up.Load}
 	check := outboundReady(st)
@@ -71,41 +88,71 @@ func TestOutboundCallsOnlyWhileLeaderAndConnected(t *testing.T) {
 		t.Fatalf("not leading: %v", err)
 	}
 	lctx, end := context.WithCancel(context.Background())
+	defer end()
 	done := make(chan error, 1)
 	go func() { done <- outboundTerm(events, st, ivr.Outbound{}, loop, loop)(lctx) }()
-	sub := <-subscribed
+	within(t, subscribed, "the subscription")
 	time.Sleep(50 * time.Millisecond)
-	if running.Load() != 0 {
+	if len(runs) != 0 {
 		t.Fatal("calls placed before the stream connected")
 	}
 	if err := check(context.Background()); err == nil {
 		t.Fatal("the leader is ready with its outbound stream down")
 	}
 	up.Store(true)
-	<-starts
-	<-starts
+	first := both()
 	if err := check(context.Background()); err != nil {
 		t.Fatalf("connected leader not ready: %v", err)
 	}
 	up.Store(false)
-	deadline := time.Now().Add(2 * time.Second)
-	for running.Load() != 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if running.Load() != 0 {
-		t.Fatal("calls still placed after the stream dropped")
+	for i, r := range first {
+		within(t, r.exited, fmt.Sprintf("loop %d to stop after the stream dropped", i))
 	}
 	up.Store(true)
-	<-starts
-	<-starts
+	second := both()
 	end()
-	<-done
+	within(t, done, "the term to end")
 	select {
-	case <-sub.Done():
-	case <-time.After(time.Second):
-		t.Fatal("the subscription outlived the leadership term")
+	case <-subDone:
+	default:
+		t.Fatal("the term returned while its event subscription was still running")
+	}
+	for i, r := range second {
+		select {
+		case <-r.exited:
+		default:
+			t.Fatalf("the term returned while loop %d was still running", i)
+		}
 	}
 	if err := check(context.Background()); err != nil {
 		t.Fatalf("after the term: %v", err)
+	}
+}
+
+// within waits a bounded time for one value from ch.
+func within[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+	var zero T
+	return zero
+}
+
+// CodeRabbit PR #11 (4560453641): the no-input time of answered forwarding
+// and coordinator calls is configurable within bounds; unset, the default.
+func TestNoInputSetting(t *testing.T) {
+	for v, want := range map[string]time.Duration{"": ivr.DefaultNoInput, "90s": 90 * time.Second, "5m": 5 * time.Minute} {
+		if got, err := noInputSetting(v); err != nil || got != want {
+			t.Errorf("%q: %v %v, want %v", v, got, err, want)
+		}
+	}
+	for _, v := range []string{"10s", "1h", "two minutes", "-2m"} {
+		if _, err := noInputSetting(v); err == nil {
+			t.Errorf("%q accepted", v)
+		}
 	}
 }

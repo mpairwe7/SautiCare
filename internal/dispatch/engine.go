@@ -358,109 +358,159 @@ func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, re
 	return err
 }
 
-// deliverAll makes the sends of the planned incidents: every alert still
-// pending and every stand-down not yet attempted, the caller notices and the
-// forwarded facilities' SMS. Each is claimed in the store before the provider
-// call and only once, so neither a retry nor a crash sends it twice; one
-// whose result is unknown is never re-sent (the next rung covers it). The
-// sends run concurrently (at most workers at once), the most urgent incident
-// first, each bounded by the send timeout and settled on a context of its
-// own (review I4): a provider that hangs costs a send timeout, never another
-// incident's alerts. It returns each incident's first store error.
-func (e *Engine) deliverAll(ctx context.Context, snaps []Snapshot) map[uuid.UUID]error {
-	type job struct {
-		incident uuid.UUID
-		send     func(context.Context) error
-	}
-	var jobs []job
-	for _, snap := range snaps {
-		for _, a := range snap.Alerts {
-			purpose := ""
-			switch a.Outcome {
-			case OutcomePending:
-				purpose = PurposeAlert
-			case OutcomeStoodDown:
-				purpose = PurposeStandDown
-			default:
-				continue
+// sends lists one planned incident's sends: every alert still pending and
+// every stand-down not yet attempted, the caller notices and the forwarded
+// facilities' SMS. Each is claimed in the store before the provider call and
+// only once, so neither a retry nor a crash sends it twice; one whose result
+// is unknown is never re-sent (the next rung covers it). Each provider call
+// is bounded by the send timeout and its result settled on a context of its
+// own (review I4).
+func (e *Engine) sends(snap Snapshot) []func(context.Context) error {
+	var out []func(context.Context) error
+	for _, a := range snap.Alerts {
+		purpose := ""
+		switch a.Outcome {
+		case OutcomePending:
+			purpose = PurposeAlert
+		case OutcomeStoodDown:
+			purpose = PurposeStandDown
+		default:
+			continue
+		}
+		out = append(out, func(ctx context.Context) error {
+			attempt, fresh, err := e.store.BeginAttempt(ctx, a.ID, purpose, ChannelSMS)
+			if err != nil || !fresh {
+				return err
 			}
-			jobs = append(jobs, job{snap.IncidentID, func(ctx context.Context) error {
-				attempt, fresh, err := e.store.BeginAttempt(ctx, a.ID, purpose, ChannelSMS)
-				if err != nil || !fresh {
-					return err
-				}
-				ref, derr := e.send(ctx, func(c context.Context) (string, error) {
-					return e.deliverer.Deliver(c, Delivery{AttemptID: attempt, AlertID: a.ID, IncidentID: snap.IncidentID,
-						ResponderID: a.ResponderID, Role: a.Role, Purpose: purpose, Channel: ChannelSMS})
-				})
-				return e.settle(ctx, func(c context.Context) error {
-					_, err := e.store.FinishAttempt(c, attempt, settlement(derr), ref)
-					return err
-				})
-			}})
-		}
-		for _, kind := range snap.CallerNotified {
-			jobs = append(jobs, job{snap.IncidentID, func(ctx context.Context) error {
-				attempt, fresh, err := e.store.BeginNoticeAttempt(ctx, snap.IncidentID, kind, ChannelSMS)
-				if err != nil || !fresh {
-					return err
-				}
-				ref, nerr := e.send(ctx, func(c context.Context) (string, error) {
-					return e.notifier.Notify(c, Notice{AttemptID: attempt, IncidentID: snap.IncidentID, Kind: kind, Channel: ChannelSMS})
-				})
-				return e.settle(ctx, func(c context.Context) error {
-					_, err := e.store.FinishNoticeAttempt(c, attempt, settlement(nerr), ref)
-					return err
-				})
-			}})
-		}
-		// Each forwarded facility's SMS (scenario 7); its call is
-		// ivr-controller's.
-		for _, f := range snap.Forwards {
-			jobs = append(jobs, job{snap.IncidentID, func(ctx context.Context) error {
-				attempt, fresh, err := e.store.BeginForwardAttempt(ctx, snap.IncidentID, f.FacilityID, ChannelSMS)
-				if err != nil || !fresh {
-					return err
-				}
-				ref, ferr := e.send(ctx, func(c context.Context) (string, error) {
-					return e.notifier.NotifyFacility(c, snap.IncidentID, f.FacilityID)
-				})
-				return e.settle(ctx, func(c context.Context) error {
-					_, err := e.store.FinishForwardAttempt(c, attempt, settlement(ferr), ref)
-					return err
-				})
-			}})
-		}
+			ref, derr := e.send(ctx, func(c context.Context) (string, error) {
+				return e.deliverer.Deliver(c, Delivery{AttemptID: attempt, AlertID: a.ID, IncidentID: snap.IncidentID,
+					ResponderID: a.ResponderID, Role: a.Role, Purpose: purpose, Channel: ChannelSMS})
+			})
+			return e.settle(ctx, func(c context.Context) error {
+				_, err := e.store.FinishAttempt(c, attempt, settlement(derr), ref)
+				return err
+			})
+		})
 	}
-	errs := map[uuid.UUID]error{}
-	if len(jobs) == 0 {
-		return errs
+	for _, kind := range snap.CallerNotified {
+		out = append(out, func(ctx context.Context) error {
+			attempt, fresh, err := e.store.BeginNoticeAttempt(ctx, snap.IncidentID, kind, ChannelSMS)
+			if err != nil || !fresh {
+				return err
+			}
+			ref, nerr := e.send(ctx, func(c context.Context) (string, error) {
+				return e.notifier.Notify(c, Notice{AttemptID: attempt, IncidentID: snap.IncidentID, Kind: kind, Channel: ChannelSMS})
+			})
+			return e.settle(ctx, func(c context.Context) error {
+				_, err := e.store.FinishNoticeAttempt(c, attempt, settlement(nerr), ref)
+				return err
+			})
+		})
 	}
-	workers := e.workers
-	if workers <= 0 {
-		workers = DefaultDeliveryWorkers
+	// Each forwarded facility's SMS (scenario 7); its call is ivr-controller's.
+	for _, f := range snap.Forwards {
+		out = append(out, func(ctx context.Context) error {
+			attempt, fresh, err := e.store.BeginForwardAttempt(ctx, snap.IncidentID, f.FacilityID, ChannelSMS)
+			if err != nil || !fresh {
+				return err
+			}
+			ref, ferr := e.send(ctx, func(c context.Context) (string, error) {
+				return e.notifier.NotifyFacility(c, snap.IncidentID, f.FacilityID)
+			})
+			return e.settle(ctx, func(c context.Context) error {
+				_, err := e.store.FinishForwardAttempt(c, attempt, settlement(ferr), ref)
+				return err
+			})
+		})
 	}
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	queue := make(chan job)
-	for range min(workers, len(jobs)) {
-		wg.Go(func() {
-			for j := range queue {
-				if err := j.send(ctx); err != nil {
+	return out
+}
+
+// pipeline makes planned incidents' sends on at most workers provider calls
+// at once, shared by a whole batch, in the order the incidents are added
+// (the most urgent first). An incident's sends start as soon as it is added,
+// while later incidents are still planning (CodeRabbit PR #11): neither a
+// slow provider nor a slow or failing plan delays an alert already issued.
+type pipeline struct {
+	ctx       context.Context
+	queue     chan func()
+	turn      chan struct{} // closed once the last added incident's sends are all queued
+	workers   sync.WaitGroup
+	incidents sync.WaitGroup
+}
+
+func (e *Engine) newPipeline(ctx context.Context) *pipeline {
+	n := e.workers
+	if n <= 0 {
+		n = DefaultDeliveryWorkers
+	}
+	p := &pipeline{ctx: ctx, queue: make(chan func()), turn: make(chan struct{})}
+	close(p.turn)
+	for range n {
+		p.workers.Go(func() {
+			for f := range p.queue {
+				f()
+			}
+		})
+	}
+	return p
+}
+
+// add queues an incident's sends behind those of the incidents added before
+// it and, once they have all been made, calls done with the first error (nil
+// when every send was made and settled). add never waits for a send.
+func (p *pipeline) add(sends []func(context.Context) error, done func(error)) {
+	prev, mine := p.turn, make(chan struct{})
+	p.turn = mine
+	p.incidents.Go(func() {
+		var made sync.WaitGroup
+		var mu sync.Mutex
+		var first error
+		<-prev
+		for _, send := range sends {
+			made.Add(1)
+			p.queue <- func() {
+				defer made.Done()
+				if err := send(p.ctx); err != nil {
 					mu.Lock()
-					if errs[j.incident] == nil {
-						errs[j.incident] = err
+					if first == nil {
+						first = err
 					}
 					mu.Unlock()
 				}
 			}
+		}
+		close(mine)
+		made.Wait()
+		done(first)
+	})
+}
+
+// wait returns once every added incident's sends are made and its done has
+// returned; the workers then stop.
+func (p *pipeline) wait() {
+	p.incidents.Wait()
+	close(p.queue)
+	p.workers.Wait()
+}
+
+// deliverAll makes the sends of the given incidents (at most workers at
+// once, the first incident first) and returns each incident's first store
+// error.
+func (e *Engine) deliverAll(ctx context.Context, snaps []Snapshot) map[uuid.UUID]error {
+	errs := map[uuid.UUID]error{}
+	var mu sync.Mutex
+	p := e.newPipeline(ctx)
+	for _, snap := range snaps {
+		p.add(e.sends(snap), func(err error) {
+			if err != nil {
+				mu.Lock()
+				errs[snap.IncidentID] = err
+				mu.Unlock()
+			}
 		})
 	}
-	for _, j := range jobs {
-		queue <- j
-	}
-	close(queue)
-	wg.Wait()
+	p.wait()
 	return errs
 }
 
@@ -490,48 +540,62 @@ func (e *Engine) RunOnce(ctx context.Context, batch int, lease time.Duration, on
 	if err != nil {
 		return 0, err
 	}
-	failed := false
+	// Sends and their wakes finish on the pipeline's goroutines while the
+	// next incident plans: failures are reported one at a time.
+	var mu sync.Mutex
+	failed, interrupted := false, false
 	fail := func(id uuid.UUID, err error) {
+		mu.Lock()
 		failed = true
 		onErr(id, err)
+		mu.Unlock()
 		// Fail safe to a human (rule 3.14): the coordinator sees it now.
 		if _, eerr := e.store.DispatchEscalate(ctx, id, ReasonDispatchError, "", e.logic); eerr != nil {
+			mu.Lock()
 			onErr(id, eerr)
+			mu.Unlock()
 		}
 	}
-	// Every due incident is planned first (its alerts issued, T3 recorded),
-	// then all their sends go out together (review I4): a slow provider
-	// delays no incident's planning within the batch.
-	var ready []planned
-	for _, d := range due {
-		pctx, cancel := context.WithTimeout(ctx, e.passTimeout)
-		p, err := e.plan(pctx, d)
-		cancel()
-		if err != nil {
-			if ctx.Err() != nil {
-				return len(due), ctx.Err()
+	if len(due) > 0 {
+		// Each incident is planned in turn (its alerts issued, T3 recorded),
+		// most urgent first, and its sends start at once on the batch's
+		// shared workers while the next one plans (review I4; CodeRabbit PR
+		// #11). Its next wake is stored only after its sends: a failure
+		// while sending leaves it leased, and the pass after the lease
+		// retries it.
+		p := e.newPipeline(ctx)
+		for _, d := range due {
+			pctx, cancel := context.WithTimeout(ctx, e.passTimeout)
+			pl, err := e.plan(pctx, d)
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					interrupted = true
+					break
+				}
+				fail(d.IncidentID, err)
+				continue
 			}
-			fail(d.IncidentID, err)
-			continue
+			p.add(e.sends(pl.snap), func(err error) {
+				if err == nil {
+					err = e.store.ScheduleDispatch(ctx, pl.due.IncidentID, pl.due.Gen, pl.next)
+				}
+				if err == nil {
+					return
+				}
+				if ctx.Err() != nil {
+					mu.Lock()
+					interrupted = true
+					mu.Unlock()
+					return
+				}
+				fail(pl.due.IncidentID, err)
+			})
 		}
-		ready = append(ready, p)
+		p.wait()
 	}
-	snaps := make([]Snapshot, 0, len(ready))
-	for _, p := range ready {
-		snaps = append(snaps, p.snap)
-	}
-	errs := e.deliverAll(ctx, snaps)
-	for _, p := range ready {
-		err := errs[p.due.IncidentID]
-		if err == nil {
-			err = e.store.ScheduleDispatch(ctx, p.due.IncidentID, p.due.Gen, p.next)
-		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return len(due), ctx.Err()
-			}
-			fail(p.due.IncidentID, err)
-		}
+	if interrupted {
+		return len(due), ctx.Err()
 	}
 	if !failed {
 		e.lastPass.Store(time.Now().UnixNano())

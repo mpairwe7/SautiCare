@@ -4,6 +4,7 @@ package opstore_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 	"uuid"
@@ -12,6 +13,7 @@ import (
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
+	"sautihealth.com/sauti/internal/platform/pg/pgtest"
 	"sautihealth.com/sauti/internal/responder"
 )
 
@@ -168,5 +170,92 @@ func TestUnacknowledgedEscalationsKeepRinging(t *testing.T) {
 	}
 	if calls, err := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10); err != nil || len(calls) != 1 || calls[0].IncidentID != r.incident {
 		t.Fatalf("a two-day-old unacknowledged escalation: %+v %v", calls, err)
+	}
+}
+
+// CodeRabbit PR #11 (4560453596): a forward still open when its incident
+// closes (or merges) is neither called nor texted — pressing 1 could not
+// acknowledge it, since a terminal incident takes no more events. The claim
+// share-locks the incident, so one racing the closure waits for it and then
+// sees the incident closed.
+func TestNoForwardAttemptOnceTheIncidentCloses(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	gv := gazetteerVersion(t, r.c)
+	if _, err := r.dispatcher.RecordForward(ctx, r.incident, "hc_1", gv, dispatchLogic); err != nil {
+		t.Fatal(err)
+	}
+	appendEv(t, r.intake, r.incident, incident.EvClosed, `{"reason":"completed"}`, "")
+	if due, err := r.ivr.DueForwardCalls(ctx, 10); err != nil || len(due) != 0 {
+		t.Fatalf("a closed incident's forward is due a call: %+v %v", due, err)
+	}
+	if _, fresh, err := r.ivr.BeginForwardAttempt(ctx, r.incident, "hc_1", dispatch.ChannelVoice); err != nil || fresh {
+		t.Fatalf("call claimed for a closed incident: %v %v", fresh, err)
+	}
+	if _, fresh, err := r.dispatcher.BeginForwardAttempt(ctx, r.incident, "hc_1", dispatch.ChannelSMS); err != nil || fresh {
+		t.Fatalf("SMS claimed for a closed incident: %v %v", fresh, err)
+	}
+
+	racing := dispatchedIncident(t, r.intake).IncidentID
+	if _, err := r.dispatcher.RecordForward(ctx, racing, "hc_1", gv, dispatchLogic); err != nil {
+		t.Fatal(err)
+	}
+	closing := beginAs(t, r.c, "op_intake")
+	if _, err := closing.Exec(ctx, `SELECT * FROM op.append_incident_event($1::uuid, 0, 'incident.closed', '{"reason":"resolved"}',
+		'system', NULL, 'close-forward-race', NULL)`, racing.String()); err != nil {
+		t.Fatal(err)
+	}
+	type claim struct {
+		fresh bool
+		err   error
+	}
+	done := make(chan claim, 1)
+	go func() {
+		_, fresh, err := r.ivr.BeginForwardAttempt(ctx, racing, "hc_1", dispatch.ChannelVoice)
+		done <- claim{fresh, err}
+	}()
+	waitForALockWait(t, r.c, func() (bool, string) {
+		select {
+		case c := <-done:
+			return true, fmt.Sprintf("the claim did not wait for the closure: %+v", c)
+		default:
+			return false, ""
+		}
+	})
+	if err := closing.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case c := <-done:
+		if c.err != nil || c.fresh {
+			t.Fatalf("call claimed for an incident that closed meanwhile: %+v", c)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the claim did not finish after the closure committed")
+	}
+}
+
+// waitForALockWait polls until some session waits on a lock, failing at once
+// when finished reports the waiter already done.
+func waitForALockWait(t *testing.T, c *pgtest.TestCluster, finished func() (bool, string)) {
+	t.Helper()
+	su := c.Superuser(t, pg.StoreOperational)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var waiting int
+		if err := su.QueryRow(context.Background(), `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if done, why := finished(); done {
+			t.Fatal(why)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("nothing waited for the concurrent transaction")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -29,6 +29,11 @@ type alertARI struct {
 	hungUp     []string
 	stopped    []string
 	failPlay   bool
+	// onOriginate runs before Originate returns the new channel (an answer
+	// event handled before the caller stores it).
+	onOriginate func(channelID string)
+	gone        map[string]bool // channels that no longer exist (ChannelExists)
+	existsErr   error           // ChannelExists fails
 }
 
 func (a *alertARI) StopPlayback(_ context.Context, pb string) error {
@@ -38,10 +43,23 @@ func (a *alertARI) StopPlayback(_ context.Context, pb string) error {
 
 func (a *alertARI) Originate(_ context.Context, endpoint, _ string, args []string, _ time.Duration) (string, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.originated = append(a.originated, endpoint)
 	a.args = append(a.args, args)
-	return fmt.Sprintf("out-%d", len(a.originated)), nil
+	id := fmt.Sprintf("out-%d", len(a.originated))
+	hook := a.onOriginate
+	a.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	return id, nil
+}
+func (a *alertARI) ChannelExists(_ context.Context, ch string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.existsErr != nil {
+		return false, a.existsErr
+	}
+	return !a.gone[ch], nil
 }
 func (a *alertARI) Answer(_ context.Context, ch string) error {
 	a.answered = append(a.answered, ch)
@@ -62,8 +80,23 @@ func (a *alertARI) finish(t *testing.T, h interface{ Handle(context.Context, Eve
 	h.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: a.pbs[len(a.pbs)-1]})
 }
 func (a *alertARI) Hangup(_ context.Context, ch string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.hungUp = append(a.hungUp, ch)
 	return nil
+}
+
+// hangups counts the hang-ups of ch (timers hang up from their own goroutine).
+func (a *alertARI) hangups(ch string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, h := range a.hungUp {
+		if h == ch {
+			n++
+		}
+	}
+	return n
 }
 
 type alertStore struct {
@@ -257,4 +290,26 @@ func repoForAlerts(t *testing.T) (config.Bundle, error) {
 		t.Fatal(err)
 	}
 	return b, nil
+}
+
+// CodeRabbit PR #11 (4560453615): a key the menu being heard does not offer
+// leaves its prompt playing (no silence): 9 during the alert, 9 during the
+// reasons. Valid keys still cut the prompt.
+func TestAnInvalidKeyDoesNotCutTheAlertPrompt(t *testing.T) {
+	c, a, st := alertRig(t, true)
+	ch := answer(t, c, a, st)
+	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "9"})
+	if len(a.stopped) != 0 || len(a.plays) != 1 || st.accepted != 0 {
+		t.Fatalf("invalid key during the alert: stopped %v plays %d", a.stopped, len(a.plays))
+	}
+	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "2"})
+	if !slices.Equal(a.stopped, a.pbs[:1]) || len(a.plays) != 2 {
+		t.Fatalf("2 did not cut the alert for the reasons: stopped %v plays %v", a.stopped, a.plays)
+	}
+	for _, k := range []string{"9", "0", "*"} {
+		c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: k})
+	}
+	if len(a.stopped) != 1 || len(st.declined) != 0 {
+		t.Fatalf("invalid keys during the reasons: stopped %v declined %v", a.stopped, st.declined)
+	}
 }

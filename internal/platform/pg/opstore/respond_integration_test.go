@@ -9,6 +9,7 @@ import (
 
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/platform/pg"
+	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/responder"
 )
 
@@ -22,10 +23,17 @@ func TestScenario10DeclineReasonStoredAndShown(t *testing.T) {
 	if out, err := r.intake.DeclineAlert(ctx, a.AlertID, tr, "bike_or_fuel"); err != nil || out != dispatch.OutcomeDeclined {
 		t.Fatalf("decline: %s %v", out, err)
 	}
-	hist, err := r.ro.AlertHistoryFor(ctx, tr, 10)
-	if err != nil || len(hist) != 1 || hist[0].Outcome != dispatch.OutcomeDeclined || hist[0].DeclineReason != "bike_or_fuel" ||
-		hist[0].IncidentID != r.incident {
-		t.Fatalf("history %+v %v", hist, err)
+	// The history reads as op_readonly and as op_console (CodeRabbit PR #11
+	// 4560453650: a column grant, so the console sees the history and no more).
+	for role, s := range map[string]*opstore.Store{"op_readonly": r.ro, "op_console": r.console} {
+		hist, err := s.AlertHistoryFor(ctx, tr, 10)
+		if err != nil || len(hist) != 1 || hist[0].Outcome != dispatch.OutcomeDeclined || hist[0].DeclineReason != "bike_or_fuel" ||
+			hist[0].IncidentID != r.incident {
+			t.Fatalf("history as %s: %+v %v", role, hist, err)
+		}
+	}
+	if _, err := beginAs(t, r.c, "op_console").Exec(ctx, "SELECT logic_version FROM op.alerts"); err == nil {
+		t.Fatal("op_console reads alert columns beyond the history")
 	}
 	var reason string
 	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(ctx, `SELECT payload ->> 'reason' FROM op.incident_events
@@ -46,10 +54,12 @@ func TestScenario10DeclineReasonStoredAndShown(t *testing.T) {
 
 // The responder menu reads the alert its session is about (op_intake): pinned
 // at the session's first screen, so a newer alert cannot redirect an answer
-// already under way (I3); at the first screen the newest pending alert of the
-// hour, else the responder's active assignment (C1: an accepted responder
-// sees where to go again), else the newest alert of the hour (a retried
-// answer finds it). Nothing about other responders.
+// already under way (I3); at the first screen the responder's active
+// assignment (C1: an accepted responder sees where to go again, even with an
+// alert still pending that they could not take: CodeRabbit PR #11
+// 4560453593), else the newest pending alert of the hour, else the newest
+// alert of the hour (a retried answer finds it). Nothing about other
+// responders.
 func TestResponderMenuReads(t *testing.T) {
 	r := newDispatchRig(t)
 	ctx := context.Background()
@@ -85,15 +95,26 @@ func TestResponderMenuReads(t *testing.T) {
 	if got, _, _ := r.intake.MenuAlert(ctx, key(4), vht); got.AlertID != z.AlertID {
 		t.Fatalf("new session %+v", got)
 	}
-	// Accepted and nothing pending: the active assignment, flagged.
+	// Accepted while z is still pending: a new session shows the active
+	// assignment, flagged — z could not be accepted (already assigned).
 	if _, err := r.intake.AcceptAlert(ctx, x.AlertID, vht); err != nil {
 		t.Fatal(err)
+	}
+	if out, err := r.intake.AcceptAlert(ctx, z.AlertID, vht); err != nil || out.Result != dispatch.AlreadyAssigned {
+		t.Fatalf("the pending alert beside the assignment: %+v %v", out, err)
+	}
+	if got, ok, _ := r.intake.MenuAlert(ctx, key(5), vht); !ok || got.AlertID != x.AlertID || !got.Assigned ||
+		got.Outcome != dispatch.OutcomeAccepted {
+		t.Fatalf("assignment with an alert pending: %+v %v", got, ok)
+	}
+	// A session pinned before the acceptance keeps its alert.
+	if got, _, _ := r.intake.MenuAlert(ctx, key(4), vht); got.AlertID != z.AlertID {
+		t.Fatalf("pinned session redirected to the assignment: %+v", got)
 	}
 	if _, err := r.dispatcher.CloseAlert(ctx, z.AlertID, dispatch.OutcomeStoodDown); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok, _ := r.intake.MenuAlert(ctx, key(5), vht); !ok || got.AlertID != x.AlertID || !got.Assigned ||
-		got.Outcome != dispatch.OutcomeAccepted {
+	if got, ok, _ := r.intake.MenuAlert(ctx, key(6), vht); !ok || got.AlertID != x.AlertID || !got.Assigned {
 		t.Fatalf("after accepting: %+v %v", got, ok)
 	}
 	// Another responder's session key never reads this responder's pin.

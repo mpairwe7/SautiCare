@@ -1,6 +1,7 @@
 // Package ari is Sauti's minimal Asterisk REST Interface client (ADR-0023):
 // answer a channel, play and stop prompts, hand a call back to the dialplan,
-// hang up, and receive the Stasis event stream. It deliberately has no recording, snooping or bridging call: the
+// hang up, ask whether a channel still exists, and receive the Stasis event
+// stream. It deliberately has no recording, snooping or bridging call: the
 // IVR records nothing (Build Prompt §10.2). REST goes through the egress
 // allowlist (the configured Asterisk host only); events arrive over one
 // WebSocket that reconnects with backoff.
@@ -114,9 +115,19 @@ func (c *Client) doBody(ctx context.Context, method, path string, q url.Values) 
 		return nil, fmt.Errorf("ari: %s %s: %w", method, path, err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("ari: %s %s: status %d", method, path, resp.StatusCode)
+		return nil, &statusError{method: method, path: path, code: resp.StatusCode}
 	}
 	return body, nil
+}
+
+// statusError is a request Asterisk answered with a status other than 2xx.
+type statusError struct {
+	method, path string
+	code         int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("ari: %s %s: status %d", e.method, e.path, e.code)
 }
 
 // Originate dials endpoint into this client's Stasis application with
@@ -258,6 +269,21 @@ func (c *Client) DestroyBridge(ctx context.Context, bridgeID string) error {
 // EventsConnected reports whether the event stream is up: without it no
 // call can be served (ivr-controller readiness).
 func (c *Client) EventsConnected() bool { return c.connected.Load() }
+
+// ChannelExists asks Asterisk whether the channel still exists (GET
+// /ari/channels/{id}): false only on 404. Any other failure is an error, so a
+// caller never mistakes an unreachable Asterisk for a call that has ended.
+func (c *Client) ChannelExists(ctx context.Context, channelID string) (bool, error) {
+	if err := ids(channelID); err != nil {
+		return false, err
+	}
+	_, err := c.doBody(ctx, http.MethodGet, "/ari/channels/"+channelID, nil)
+	var se *statusError
+	if errors.As(err, &se) && se.code == http.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
 
 // Hangup ends the channel.
 func (c *Client) Hangup(ctx context.Context, channelID string) error {

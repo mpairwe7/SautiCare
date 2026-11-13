@@ -12,9 +12,14 @@
 --
 -- A menu session is pinned to one alert at its first screen
 -- (op.responder_menu_alert), so a newer alert arriving mid-session cannot
--- redirect an answer already under way; the first screen shows the newest
--- pending alert of the hour, else the responder's active assignment (to see
--- where to go again), else the newest alert of the hour.
+-- redirect an answer already under way. The first screen shows the
+-- responder's active assignment (to see where to go again: a responder who
+-- holds one cannot take another alert, op.accept_alert answers
+-- already_assigned), else the newest pending alert of the hour, else the
+-- newest alert of the hour (a retried answer finds it).
+--
+-- op_console reads a responder's alert history (scenario 10: decline reasons
+-- shown), through a column grant: what was sent and answered, nothing more.
 
 CREATE OR REPLACE FUNCTION op.decline_alert(p_alert uuid, p_responder uuid, p_reason text) RETURNS text
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER
@@ -48,6 +53,7 @@ END
 $$;
 
 GRANT SELECT (id, incident_id, responder_id, role, outcome, sent_at) ON op.alerts TO op_intake, op_ivr;
+GRANT SELECT (id, incident_id, responder_id, role, sent_at, outcome, decline_reason, responded_at) ON op.alerts TO op_console;
 GRANT SELECT ON op.availability TO op_intake, op_ivr;
 
 CREATE TABLE op.responder_menu_pins (
@@ -74,13 +80,13 @@ BEGIN
      WHERE p.session_key = p_session AND p.responder_id = p_responder;
     IF NOT coalesce(v_pinned, false) THEN
         DELETE FROM op.responder_menu_pins p WHERE p.pinned_at < clock_timestamp() - interval '1 hour';
-        SELECT a.id INTO v_alert FROM op.alerts a
-         WHERE a.responder_id = p_responder AND a.outcome = 'pending' AND a.sent_at > clock_timestamp() - interval '1 hour'
-         ORDER BY a.sent_at DESC LIMIT 1;
+        SELECT s.alert_id INTO v_alert FROM op.assignments s JOIN op.incidents i ON i.id = s.incident_id
+         WHERE s.responder_id = p_responder AND s.released_at IS NULL AND i.state NOT IN ('closed', 'merged')
+         ORDER BY s.accepted_at DESC LIMIT 1;
         IF v_alert IS NULL THEN
-            SELECT s.alert_id INTO v_alert FROM op.assignments s JOIN op.incidents i ON i.id = s.incident_id
-             WHERE s.responder_id = p_responder AND s.released_at IS NULL AND i.state NOT IN ('closed', 'merged')
-             ORDER BY s.accepted_at DESC LIMIT 1;
+            SELECT a.id INTO v_alert FROM op.alerts a
+             WHERE a.responder_id = p_responder AND a.outcome = 'pending' AND a.sent_at > clock_timestamp() - interval '1 hour'
+             ORDER BY a.sent_at DESC LIMIT 1;
         END IF;
         IF v_alert IS NULL THEN
             SELECT a.id INTO v_alert FROM op.alerts a

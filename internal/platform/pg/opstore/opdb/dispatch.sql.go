@@ -837,8 +837,8 @@ func (q *Queries) DispatchSuspended(ctx context.Context) (bool, error) {
 }
 
 const dueForwardCalls = `-- name: DueForwardCalls :many
-SELECT f.incident_id, f.facility_id FROM op.forwards f
-WHERE f.acknowledged_at IS NULL AND f.timed_out_at IS NULL
+SELECT f.incident_id, f.facility_id FROM op.forwards f JOIN op.incidents i ON i.id = f.incident_id
+WHERE f.acknowledged_at IS NULL AND f.timed_out_at IS NULL AND i.state NOT IN ('closed', 'merged')
   AND NOT EXISTS (SELECT 1 FROM op.forward_attempts x WHERE x.incident_id = f.incident_id AND x.facility_id = f.facility_id AND x.channel = 'voice')
 ORDER BY f.sent_at LIMIT $1::int
 `
@@ -848,7 +848,8 @@ type DueForwardCallsRow struct {
 	FacilityID string
 }
 
-// Forwards awaiting acknowledgement and not yet called (ivr-controller).
+// Forwards awaiting acknowledgement and not yet called (ivr-controller), of
+// incidents still open (a closed or merged one takes no acknowledgement).
 func (q *Queries) DueForwardCalls(ctx context.Context, maxRows int32) ([]DueForwardCallsRow, error) {
 	rows, err := q.db.Query(ctx, dueForwardCalls, maxRows)
 	if err != nil {

@@ -26,7 +26,7 @@ The toll-free line must ask the same Tool 1 questions as USSD, in recorded Lugan
 ## Decision Outcome
 
 Chosen option: **in-house ARI client** (`internal/platform/ari`).
-- The client answers, plays (one playback per prompt), stops a playback (barge-in), hands a call back to the dialplan (`continue`) and hangs up, and receives events over one WebSocket that reconnects with backoff and reports whether it is up (`EventsConnected`, part of `/readyz` as `ari_events`). It has no record, snoop, bridge or external-media method (`TestNoRecordingEndpointsUsed`).
+- The client answers, plays (one playback per prompt), stops a playback (barge-in), hands a call back to the dialplan (`continue`) and hangs up. For outbound calls (M2, ADR-0027) it also originates a call and asks whether a channel still exists (`ChannelExists`: `GET /ari/channels/{id}`, gone only on 404, any other failure an error). It receives events over one WebSocket that reconnects with backoff and reports whether it is up (`EventsConnected`, part of `/readyz` as `ari_events`). It has no record, snoop, bridge or external-media method (`TestNoRecordingEndpointsUsed`).
 - REST and the handshake go through the egress allowlist, which holds the configured Asterisk host only.
 - The controller (`internal/platform/ivr/controller.go`) maps events to `intake.Service.StartIVR` and `AnswerIVR`. These use the **same** `intake.Machine`, write path, triage, location, deduplication and resume as USSD.
 - The voice differences are small:

@@ -218,7 +218,9 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		a.mu.Lock()
 		st := a.calls[e.ChannelID]
 		a.mu.Unlock()
-		if st == nil || st.done {
+		// A key the menu being heard does not offer is ignored: cutting its
+		// prompt would leave the responder in silence.
+		if st == nil || st.done || !a.offers(st, e.Digit) {
 			return
 		}
 		cut(op, a.c.ARI, &st.current)
@@ -243,12 +245,21 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 	}
 }
 
+// offers reports whether the menu being heard takes digit: a reason's number
+// in the reasons list, else 1, 2 or 3.
+func (a *AlertCalls) offers(st *alertCall, digit string) bool {
+	if st.reasons {
+		k, err := strconv.Atoi(digit)
+		return err == nil && k >= 1 && k <= len(a.c.Copy.DeclineReasons[string(st.alert.Role)])
+	}
+	return digit == "1" || digit == "2" || digit == "3"
+}
+
+// key acts on a digit the menu offers (offers).
 func (a *AlertCalls) key(ctx context.Context, ch string, st *alertCall, digit string) {
 	if st.reasons {
-		reasons := a.c.Copy.DeclineReasons[string(st.alert.Role)]
-		if k, err := strconv.Atoi(digit); err == nil && k >= 1 && k <= len(reasons) {
-			a.decline(ctx, ch, st, reasons[k-1].Code)
-		}
+		k, _ := strconv.Atoi(digit)
+		a.decline(ctx, ch, st, a.c.Copy.DeclineReasons[string(st.alert.Role)][k-1].Code)
 		return
 	}
 	switch digit {

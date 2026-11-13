@@ -2,9 +2,11 @@ package ivr
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
@@ -209,4 +211,197 @@ func TestCoordinatorLineIsRungOneCallAtATime(t *testing.T) {
 	if n, _ := cc2.RunOnce(ctx); n != 2 || st2.limits[0] != 2 {
 		t.Fatalf("two lines: %d %v", n, st2.limits)
 	}
+}
+
+// CodeRabbit PR #11 (4560453615): on forwarding and coordinator calls only 1
+// and 3 are keys; any other leaves the prompt playing.
+func TestAnInvalidKeyDoesNotCutAnOutboundPrompt(t *testing.T) {
+	a := &alertARI{}
+	fs := &forwardStore{claimed: map[string]bool{}}
+	fc, err := NewForwardCalls(ForwardCallsConfig{ARI: a, Store: fs, Dial: "PJSIP/{number}@sauti-trunk", Gazetteer: gazetteer(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "fwd-1", Args: []string{"forward", uuid.NewV7().String(), "hc_test_1"}})
+	cs := &coordStore{acked: map[uuid.UUID]int64{}}
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: cs, Endpoint: "PJSIP/coordinators"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "esc-1",
+		Args: []string{"escalation", uuid.NewV7().String(), "3", "dispatch_stalled", "1234567894"}})
+	for _, k := range []string{"2", "9", "#"} {
+		fc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "fwd-1", Digit: k})
+		cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "esc-1", Digit: k})
+	}
+	if len(a.stopped) != 0 || len(a.plays) != 2 || len(fs.acked) != 0 || len(cs.acked) != 0 {
+		t.Fatalf("invalid keys: stopped %v plays %d", a.stopped, len(a.plays))
+	}
+	fc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "fwd-1", Digit: "3"})
+	cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "esc-1", Digit: "3"})
+	if len(a.stopped) != 2 || len(a.plays) != 4 {
+		t.Fatalf("3 repeats, cutting the prompt: stopped %v plays %d", a.stopped, len(a.plays))
+	}
+}
+
+func escalation(n int64) dispatch.CoordinatorCall {
+	return dispatch.CoordinatorCall{IncidentID: uuid.NewV7(), Seq: n, Reason: "dispatch_stalled", Reference: "1234567894", Calls: 1}
+}
+
+// CodeRabbit PR #11 (4560453632): an answer event handled before RunOnce has
+// stored the call it placed still marks the line answered, and RunOnce keeps
+// that mark instead of a ringing reservation that would lapse while the call
+// is under way.
+func TestAnEarlyAnswerKeepsTheLine(t *testing.T) {
+	a := &alertARI{}
+	st := &coordStore{calls: []dispatch.CoordinatorCall{escalation(1), escalation(2)}, acked: map[uuid.UUID]int64{}}
+	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Ring: 30 * time.Second,
+		Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	a.onOriginate = func(ch string) {
+		cc.Handle(ctx, Event{Type: EventStasisStart, ChannelID: ch, Args: a.args[len(a.args)-1]})
+	}
+	if n, _ := cc.RunOnce(ctx); n != 1 {
+		t.Fatalf("first ring %d", n)
+	}
+	a.onOriginate = nil
+	now = now.Add(5 * time.Minute) // long past the ring time
+	if n, _ := cc.RunOnce(ctx); n != 0 || len(a.originated) != 1 {
+		t.Fatalf("rang during a call answered before it was stored: %d %v", n, a.originated)
+	}
+	cc.Handle(ctx, Event{Type: EventStasisEnd, ChannelID: "out-1"})
+	if n, _ := cc.RunOnce(ctx); n != 1 {
+		t.Fatal("line not freed when the call ended")
+	}
+}
+
+// CodeRabbit PR #11 (4560453637): a call's end can be lost while another
+// process leads (its StasisEnd goes to that leader's websocket). When this
+// process leads again, Run first asks Asterisk about every line it holds: a
+// channel that no longer exists frees its line; one that still exists, or
+// that Asterisk cannot be asked about, keeps it (never ring a line in use).
+func TestANewTermFreesLinesWhoseCallsEnded(t *testing.T) {
+	a := &alertARI{gone: map[string]bool{}}
+	st := &coordStore{calls: []dispatch.CoordinatorCall{escalation(1), escalation(2), escalation(3)}, acked: map[uuid.UUID]int64{}}
+	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if n, _ := cc.RunOnce(ctx); n != 1 {
+		t.Fatalf("first ring %d", n)
+	}
+	cc.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "out-1", Args: a.args[0]})
+	a.mu.Lock()
+	a.gone["out-1"] = true // ended while another process led: no StasisEnd here
+	a.mu.Unlock()
+	if n, _ := cc.RunOnce(ctx); n != 0 {
+		t.Fatal("rang during an answered call")
+	}
+	rctx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- cc.Run(rctx, time.Hour, nil) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		a.mu.Lock()
+		rang := len(a.originated)
+		a.mu.Unlock()
+		if rang == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the new term did not free the line of a call that had ended")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+	cc.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "out-2", Args: a.args[1]})
+	a.existsErr = errors.New("asterisk unreachable")
+	cc.reconcile(ctx)
+	if n, _ := cc.RunOnce(ctx); n != 0 {
+		t.Fatal("a line was freed on an Asterisk that could not be asked")
+	}
+	a.existsErr = nil
+	cc.reconcile(ctx)
+	if n, _ := cc.RunOnce(ctx); n != 0 {
+		t.Fatal("the line of a call still under way was freed")
+	}
+	a.gone["out-2"] = true
+	cc.reconcile(ctx)
+	if n, _ := cc.RunOnce(ctx); n != 1 {
+		t.Fatal("line not freed once its call had ended")
+	}
+}
+
+// CodeRabbit PR #11 (4560453641): an answered coordinator or forwarding call
+// with no key pressed for the no-input time (default 2 minutes) is hung up,
+// freeing the line; the escalation, unacknowledged, rings again at its
+// interval. A key the call offers restarts the time (an invalid one does
+// not); the end of the call stops it.
+func TestAnAnsweredCallWithNoInputIsHungUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := &alertARI{}
+		st := &coordStore{calls: []dispatch.CoordinatorCall{escalation(1), escalation(2)}, acked: map[uuid.UUID]int64{}}
+		cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cc.c.NoInput != 2*time.Minute {
+			t.Fatalf("default no-input time %v", cc.c.NoInput)
+		}
+		ctx := context.Background()
+		if n, _ := cc.RunOnce(ctx); n != 1 {
+			t.Fatalf("first ring %d", n)
+		}
+		cc.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "out-1", Args: a.args[0]})
+		time.Sleep(90 * time.Second)
+		cc.Handle(ctx, Event{Type: EventDTMF, ChannelID: "out-1", Digit: "3"}) // heard again: input
+		time.Sleep(90 * time.Second)
+		synctest.Wait()
+		if a.hangups("out-1") != 0 {
+			t.Fatal("hung up 90 s after a key")
+		}
+		if n, _ := cc.RunOnce(ctx); n != 0 {
+			t.Fatal("rang during the answered call")
+		}
+		time.Sleep(31 * time.Second)
+		synctest.Wait()
+		if a.hangups("out-1") != 1 {
+			t.Fatal("an answered call with no input was not hung up")
+		}
+		if n, _ := cc.RunOnce(ctx); n != 1 {
+			t.Fatal("the line was not freed after the no-input hang-up")
+		}
+		// Acknowledged, heard, ended: the timer stops with the call.
+		cc.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "out-2", Args: a.args[1]})
+		cc.Handle(ctx, Event{Type: EventDTMF, ChannelID: "out-2", Digit: "1"})
+		a.finish(t, cc, "out-2")
+		cc.Handle(ctx, Event{Type: EventStasisEnd, ChannelID: "out-2"})
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if n := a.hangups("out-2"); n != 1 {
+			t.Fatalf("an ended call was hung up %d times", n)
+		}
+
+		fs := &forwardStore{claimed: map[string]bool{}}
+		fc, err := NewForwardCalls(ForwardCallsConfig{ARI: a, Store: fs, Dial: "PJSIP/{number}@sauti-trunk", Gazetteer: gazetteer(t),
+			NoInput: time.Minute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fc.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "fwd-1", Args: []string{"forward", uuid.NewV7().String(), "hc_test_1"}})
+		time.Sleep(40 * time.Second)
+		fc.Handle(ctx, Event{Type: EventDTMF, ChannelID: "fwd-1", Digit: "9"}) // not a key of this call: no input
+		time.Sleep(21 * time.Second)
+		synctest.Wait()
+		if a.hangups("fwd-1") != 1 {
+			t.Fatal("a forwarding call with no input was not hung up")
+		}
+	})
 }
