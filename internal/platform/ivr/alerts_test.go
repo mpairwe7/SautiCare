@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
@@ -325,4 +326,41 @@ func TestAFailedAlertPromptHangsUp(t *testing.T) {
 	if a.hangups(ch) != 1 || st.accepted != 0 || len(st.declined) != 0 {
 		t.Fatalf("hangups %d accepted %d declined %v", a.hangups(ch), st.accepted, st.declined)
 	}
+}
+
+// ADR-0029 rule 2: an answered alert call that hears no key is told the
+// alert once more, then a short closing prompt, then the line is freed.
+// Nothing is recorded as an answer: the alert stays pending for the ladder.
+func TestAnUnansweredAlertCallRepeatsThenHangsUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		first := a.plays[0]
+		a.finish(t, c, ch) // heard to the end; no key
+		time.Sleep(10*time.Second - time.Millisecond)
+		synctest.Wait()
+		if len(a.plays) != 1 {
+			t.Fatalf("replayed before the no-input time: %v", a.plays)
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if len(a.plays) != 2 || !slices.Equal(a.plays[1], first) {
+			t.Fatalf("plays %v, want the alert again", a.plays)
+		}
+		a.finish(t, c, ch)
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		if last := a.plays[len(a.plays)-1]; !slices.Equal(last, []string{"sauti/en/alert-no-input-closing"}) || a.hangups(ch) != 0 {
+			t.Fatalf("plays %v hangups %d", a.plays, a.hangups(ch))
+		}
+		a.finish(t, c, ch)
+		if a.hangups(ch) != 1 || st.accepted != 0 || len(st.declined) != 0 {
+			t.Fatalf("hangups %d accepted %d declined %v", a.hangups(ch), st.accepted, st.declined)
+		}
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if len(a.plays) != 3 {
+			t.Fatalf("played on after closing: %v", a.plays)
+		}
+	})
 }

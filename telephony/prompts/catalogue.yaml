@@ -35,6 +35,7 @@ sounds:
     - sauti/en/alert-colour-yellow
     - sauti/en/alert-declined
     - sauti/en/alert-intro
+    - sauti/en/alert-no-input-closing
     - sauti/en/alert-no-longer-needed
     - sauti/en/alert-options
     - sauti/en/bridge-choose-role
@@ -162,6 +163,7 @@ sounds:
     - sauti/lg/alert-colour-yellow
     - sauti/lg/alert-declined
     - sauti/lg/alert-intro
+    - sauti/lg/alert-no-input-closing
     - sauti/lg/alert-no-longer-needed
     - sauti/lg/alert-options
     - sauti/lg/bridge-choose-role

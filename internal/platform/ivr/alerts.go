@@ -70,6 +70,10 @@ type AlertCallsConfig struct {
 	Language   string
 	Log        *slog.Logger
 	OpTimeout  time.Duration // each store or ARI operation (default 3 s)
+	// NoInput is how long an answered call waits for a key after the menu
+	// ends (default 10 s): the menu is heard once more, then a closing
+	// prompt, then the line is freed (ADR-0029 rule 2).
+	NoInput time.Duration
 }
 
 type alertCall struct {
@@ -81,6 +85,9 @@ type alertCall struct {
 	done      bool
 	current   string // the prompt being heard: a key cuts it
 	hangupOn  string // the closing prompt: hang up once it has been heard
+	replays   int    // menus heard again after no input
+	timer     *time.Timer
+	timerGen  int // bumped whenever the timer is armed or stopped: a stale one does nothing
 }
 
 // AlertCalls places and runs outbound alert calls.
@@ -88,6 +95,7 @@ type AlertCalls struct {
 	c     AlertCallsConfig
 	mu    sync.Mutex
 	calls map[string]*alertCall
+	run   sync.Mutex // serialises the calls' events and their no-input timers
 }
 
 // NewAlertCalls validates the wiring.
@@ -103,6 +111,9 @@ func NewAlertCalls(c AlertCallsConfig) (*AlertCalls, error) {
 	}
 	if c.OpTimeout <= 0 {
 		c.OpTimeout = 3 * time.Second
+	}
+	if c.NoInput <= 0 {
+		c.NoInput = 10 * time.Second
 	}
 	if c.Log == nil {
 		c.Log = slog.Default()
@@ -187,6 +198,8 @@ func (a *AlertCalls) Run(ctx context.Context, every time.Duration, onErr func(er
 // Handle runs the answered alert calls' events (the alert application's
 // event stream). Each operation has its own deadline.
 func (a *AlertCalls) Handle(ctx context.Context, e Event) {
+	a.run.Lock()
+	defer a.run.Unlock()
 	op, cancel := context.WithTimeout(ctx, a.c.OpTimeout)
 	defer cancel()
 	switch e.Type {
@@ -223,6 +236,7 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		if st == nil || st.done || !a.offers(st, e.Digit) {
 			return
 		}
+		a.disarm(st)
 		cut(op, a.c.ARI, &st.current)
 		a.key(op, e.ChannelID, st, e.Digit)
 	case EventPlaybackFinished:
@@ -236,14 +250,62 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		if current {
 			st.current = ""
 		}
-		if (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)) {
+		switch {
+		case (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)):
 			_ = a.c.ARI.Hangup(op, e.ChannelID)
+		case current && !st.done:
+			a.arm(ctx, e.ChannelID, st) // the menu was heard: wait for a key
 		}
 	case EventStasisEnd, EventHangupRequest:
 		a.mu.Lock()
+		if st := a.calls[e.ChannelID]; st != nil {
+			a.disarm(st)
+		}
 		delete(a.calls, e.ChannelID)
 		a.mu.Unlock()
 	}
+}
+
+// arm starts the no-input time of a menu just heard.
+func (a *AlertCalls) arm(ctx context.Context, ch string, st *alertCall) {
+	a.disarm(st)
+	gen, bg := st.timerGen, context.WithoutCancel(ctx) // the wait outlives the event
+	st.timer = time.AfterFunc(a.c.NoInput, func() { a.noInput(bg, ch, st, gen) })
+}
+
+func (a *AlertCalls) disarm(st *alertCall) {
+	st.timerGen++
+	if st.timer != nil {
+		st.timer.Stop()
+		st.timer = nil
+	}
+}
+
+// noInput: no key since the menu ended. The menu is heard once more; after
+// that the call closes, freeing the responder's phone and the trunk, with
+// nothing recorded as an answer (ADR-0029 rule 2).
+func (a *AlertCalls) noInput(ctx context.Context, ch string, st *alertCall, gen int) {
+	a.run.Lock()
+	defer a.run.Unlock()
+	a.mu.Lock()
+	live := a.calls[ch] == st
+	a.mu.Unlock()
+	if !live || st.done || st.timerGen != gen {
+		return
+	}
+	op, cancel := context.WithTimeout(ctx, a.c.OpTimeout)
+	defer cancel()
+	if st.replays == 0 {
+		st.replays++
+		if st.reasons {
+			a.play(op, ch, st, []string{a.sound("decline-reasons-" + string(st.alert.Role))})
+		} else {
+			a.play(op, ch, st, a.alertSounds(st.alert))
+		}
+		return
+	}
+	a.c.Log.Warn("alert call closed after no input", "alert", st.alert.AlertID)
+	a.finish(op, ch, st, a.sound("alert-no-input-closing"))
 }
 
 // offers reports whether the menu being heard takes digit: a reason's number
@@ -365,7 +427,7 @@ func AlertSounds(tool1 config.Tool1, copy config.Responder) []string {
 	for _, lang := range copy.Languages {
 		b := "sauti/" + lang + "/"
 		out = append(out, b+"alert-intro", b+"alert-options", b+"alert-accepted", b+"alert-bridge-instructions", b+"alert-already-taken",
-			b+"alert-already-assigned", b+"alert-no-longer-needed", b+"alert-declined")
+			b+"alert-already-assigned", b+"alert-no-longer-needed", b+"alert-declined", b+"alert-no-input-closing")
 		for _, sev := range []string{"red", "yellow", "green"} {
 			out = append(out, b+"alert-colour-"+sev)
 		}
