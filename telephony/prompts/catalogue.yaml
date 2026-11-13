@@ -137,6 +137,8 @@ sounds:
     - sauti/en/ward-w03
     - sauti/en/ward-w04
     - sauti/fallback
+    - sauti/fallback-closing
+    - sauti/fallback-hold
     - sauti/invalid
     - sauti/language
     - sauti/lg/age_band

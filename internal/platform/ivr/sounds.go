@@ -64,8 +64,9 @@ func Sounds(pr intake.Prompt) []string {
 	return out
 }
 
-// Fallback is the bilingual message the dialplan's fallback context plays
-// before it rings a coordinator (telephony/asterisk/extensions.conf): when
-// ivr-controller is down, or hands over a call it cannot serve. The language
-// may not be known yet, so it is one recording in both languages.
-func Fallback() []string { return []string{"sauti/fallback"} }
+// Fallback lists the bilingual messages the dialplan's fallback context
+// plays (telephony/asterisk/extensions.conf): before it rings a coordinator
+// (when ivr-controller is down, or hands over a call it cannot serve),
+// between tries, and the closing message after the last. The language may
+// not be known yet, so each is one recording in both languages.
+func Fallback() []string { return []string{"sauti/fallback", "sauti/fallback-hold", "sauti/fallback-closing"} }
