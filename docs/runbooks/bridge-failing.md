@@ -15,6 +15,7 @@ Responders and callers reach each other through the bridge number without learni
 - As `op_readonly`: `SELECT result, initiated_by, count(*) FROM op.bridge_calls WHERE started_at > now() - interval '1 hour' GROUP BY 1, 2;`
 - Startup warnings: "SAUTI_ARI_DIAL is not set" means no bridge; "SAUTI_ARI_CALLER_ID is not set: no masked bridge" means the same.
 - `/readyz` on the outbound leader reports `outbound_events` while its event stream is down. Bridge calls then fall to the dialplan fallback, where a coordinator answers.
+- A call the bridge cannot serve goes to a coordinator, through the same fallback. That covers a database error while recognising the number, a leg that cannot be placed, three wrong choices, or no bridge in the serving process. Coordinators receiving many bridge calls is itself a sign of this runbook's fault.
 
 ## Impact
 Responders cannot ask callers for directions, and callers cannot reach their responder. Dispatch, alerts and acceptances are unaffected. **Never give a responder the caller's number, or a caller the responder's, by any other means (rule 5).** Coordinators relay messages by calling each party from the console (M5).
@@ -34,7 +35,9 @@ Responders cannot ask callers for directions, and callers cannot reach their res
 Technical operator lead within 30 minutes; the telephony provider for trunk faults.
 
 ## Verification
-A test call from a test responder's phone with an open test assignment reaches the test caller's phone, which shows Sauti's number. The call appears in `op.bridge_calls` as `connected`.
+A test call from a test responder's phone with an open test assignment reaches the test caller's phone. Both phones show Sauti's number while ringing, once connected, and in their call logs afterwards; a phone showing the other party's number means a connected-line update leaked (set `send_connected_line=no` on the trunk). The call appears in `op.bridge_calls` as `connected`.
+
+**Known limit:** a caller who gave a different call-back number at screen 8 is not recognised when calling the bridge from that number. Only the numbers they called Sauti from are hashed for lookup; adding a lookup hash for call-back numbers needs the Data Protection Officer (rule 12). Their responder can still reach them, and the coordinators can relay.
 
 ## References
 [ADR-0028](../adr/ADR-0028-masked-bridge-and-surge.md), [ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md), [voice-alerts-failing.md](voice-alerts-failing.md), Build Prompt §10.5, rule 5.

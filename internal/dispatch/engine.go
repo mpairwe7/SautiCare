@@ -238,6 +238,9 @@ func (e *Engine) plan(ctx context.Context, due Due) (planned, error) {
 func (e *Engine) state(ctx context.Context, snap Snapshot, suspended bool, now time.Time, refused map[uuid.UUID]bool) (State, Pool, error) {
 	st := State{Severity: snap.Severity, Assigned: snap.Assigned, Alerts: snap.Alerts, Forwards: snap.Forwards,
 		Escalations: snap.Escalations, CallerNotified: snap.CallerNotified, Suspended: suspended}
+	if snap.AcceptedAt != nil {
+		st.AcceptedAt = *snap.AcceptedAt
+	}
 	if snap.DispatchedAt != nil {
 		st.DispatchedAt = *snap.DispatchedAt
 	}

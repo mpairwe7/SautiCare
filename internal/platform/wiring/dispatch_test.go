@@ -51,7 +51,7 @@ func TestDispatchParamsFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := dispatch.Params{Mode: dispatch.ModeProtocol, RingInterval: time.Minute, MaxRing: 5, CascadeTimeout: 90 * time.Second,
-		RedParallel: 3, ForwardAckTimeout: time.Minute, RedEscalationAfter: 3 * time.Minute}
+		RedParallel: 3, ForwardAckTimeout: time.Minute, RedEscalationAfter: 3 * time.Minute, FollowUpAfter: 20 * time.Minute}
 	if p != want {
 		t.Fatalf("params %+v, want %+v", p, want)
 	}

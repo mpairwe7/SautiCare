@@ -69,7 +69,7 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 | 11 | Triage rule error: red and coordinator alerted | M2 — **verified**: red + flag + escalation (`internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`), coordinator voice call until acknowledged (`internal/platform/wiring/forward_integration_test.go::TestScenario11RuleErrorRingsTheCoordinator`) |
 | 12 | Implausible arrival flagged | M3 |
 | 13 | Payment timeout: status by reference, one disbursement | M4 |
-| 14 | Primary DB fails over mid-cascade: no lost or duplicate alert | M2 — **verified** (engine and store): `internal/platform/wiring/dispatch_integration_test.go::TestEngineFailoverMidCascade` (recovery through the lease), `::TestEngineCrashBetweenRecordAndDelivery`, `::TestEngineCrashAfterTheAttemptClaim`, `internal/platform/pg/opstore/dispatch_integration_test.go::TestAttemptsAreClaimedOnce`; end to end in Part C |
+| 14 | Primary DB fails over mid-cascade: no lost or duplicate alert | M2 — **verified** (engine and store): `internal/platform/wiring/dispatch_integration_test.go::TestEngineFailoverMidCascade` (recovery through the lease), `::TestEngineCrashBetweenRecordAndDelivery`, `::TestEngineCrashAfterTheAttemptClaim`, `internal/platform/pg/opstore/dispatch_integration_test.go::TestAttemptsAreClaimedOnce` |
 | 15 | Inter-site link drops: Site B never self-promotes | M7 |
 | 16 | Withdrawal then analytic restore: suppression replayed | M6 |
 | 17 | Follow-up: 3 failed attempts, 50 h contact late | M5 |

@@ -73,6 +73,7 @@ type Snapshot struct {
 	Ward            string
 	Alerts          []Alert
 	Assigned        map[responder.Role]uuid.UUID
+	AcceptedAt      *time.Time // the first open acceptance
 	Forwards        []ForwardState
 	Escalations     []string
 	CallerNotified  []string

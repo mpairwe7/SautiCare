@@ -13,7 +13,7 @@ import (
 )
 
 var amended = Params{Mode: ModeAmended, RingInterval: 60 * time.Second, MaxRing: 5, CascadeTimeout: 90 * time.Second,
-	RedParallel: 3, ForwardAckTimeout: 60 * time.Second, RedEscalationAfter: 3 * time.Minute}
+	RedParallel: 3, ForwardAckTimeout: 60 * time.Second, RedEscalationAfter: 3 * time.Minute, FollowUpAfter: 20 * time.Minute}
 
 var protocol = func() Params { p := amended; p.Mode = ModeProtocol; return p }()
 
@@ -576,5 +576,37 @@ func TestForwardsSettleWhenDispatchStopsSearching(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Part C review (rule 14), interim until M3's arrival verification: an
+// incident still open FollowUpAfter after its first acceptance is escalated
+// once, so a coordinator checks with the caller; it wakes for it; a closed
+// incident is not followed up.
+func TestFollowUpAfterAcceptance(t *testing.T) {
+	t2 := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	accepted := t2.Add(2 * time.Minute)
+	s := State{Severity: incident.SevYellow, DispatchedAt: t2, AcceptedAt: accepted,
+		Assigned:       map[responder.Role]uuid.UUID{responder.RoleVHT: uuid.NewV7(), responder.RoleTransporter: uuid.NewV7()},
+		CallerNotified: []string{CallerHelperOnTheWay}}
+	acts, wake := Plan(s, pool{}, nil, protocol, accepted.Add(10*time.Minute))
+	if len(acts) != 0 || !wake.Equal(accepted.Add(20*time.Minute)) {
+		t.Fatalf("before the follow-up: %+v wake %v", acts, wake)
+	}
+	acts, _ = Plan(s, pool{}, nil, protocol, accepted.Add(20*time.Minute))
+	if len(acts) != 1 || acts[0].Kind != ActEscalate || acts[0].Reason != ReasonFollowUp {
+		t.Fatalf("at the follow-up: %+v", acts)
+	}
+	s.Escalations = []string{incident.EscalationKey(ReasonFollowUp, "")}
+	if acts, _ := Plan(s, pool{}, nil, protocol, accepted.Add(40*time.Minute)); len(acts) != 0 {
+		t.Fatalf("followed up twice: %+v", acts)
+	}
+	s.Escalations, s.Done = nil, true
+	if acts, _ := Plan(s, pool{}, nil, protocol, accepted.Add(40*time.Minute)); len(acts) != 0 {
+		t.Fatalf("a closed incident followed up: %+v", acts)
+	}
+	if err := (Params{Mode: ModeProtocol, RingInterval: time.Minute, MaxRing: 1, CascadeTimeout: time.Minute, RedParallel: 1,
+		ForwardAckTimeout: time.Minute, RedEscalationAfter: time.Minute}).Validate(); err == nil {
+		t.Fatal("parameters without a follow-up interval accepted")
 	}
 }

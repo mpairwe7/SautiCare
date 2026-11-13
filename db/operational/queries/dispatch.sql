@@ -55,7 +55,7 @@ SELECT id, responder_id, role, ring, wave, sent_at, outcome FROM op.alerts
 WHERE incident_id = sqlc.arg(incident_id)::uuid ORDER BY sent_at, id;
 
 -- name: DispatchAssignments :many
-SELECT role, responder_id FROM op.assignments
+SELECT role, responder_id, accepted_at FROM op.assignments
 WHERE incident_id = sqlc.arg(incident_id)::uuid AND released_at IS NULL;
 
 -- name: DispatchForwards :many

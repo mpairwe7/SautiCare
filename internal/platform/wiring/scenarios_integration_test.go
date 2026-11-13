@@ -250,3 +250,37 @@ func TestScenario2YellowObstetricThroughTheChannels(t *testing.T) {
 	}
 	r.noDrift(t)
 }
+
+// Part C review (rule 14), interim until M3: both roles accepted, the
+// incident still open 20 minutes later — it is escalated once
+// (assigned_follow_up) so a coordinator checks with the caller, and the
+// coordinator line is rung about it.
+func TestAcceptedIncidentIsFollowedUp(t *testing.T) {
+	r := newEngineRig(t, nil)
+	vht, tr := r.responder(t, responder.RoleVHT), r.responder(t, responder.RoleTransporter)
+	id := r.incident(t, incident.SevYellow)
+	snap := r.mustProcess(t, id)
+	for _, a := range snap.Alerts {
+		who := vht
+		if a.Role == responder.RoleTransporter {
+			who = tr
+		}
+		if _, err := r.intake.AcceptAlert(context.Background(), a.ID, who); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap = r.mustProcess(t, id)
+	if len(snap.Assigned) != 2 || dispatch.HasEscalation(snap.Escalations, dispatch.ReasonFollowUp) {
+		t.Fatalf("just accepted: %+v", snap)
+	}
+	r.age(t, id, 20*time.Minute+time.Second)
+	snap = r.mustProcess(t, id)
+	if !dispatch.HasEscalation(snap.Escalations, dispatch.ReasonFollowUp) {
+		t.Fatalf("not followed up after 20 minutes: %v", snap.Escalations)
+	}
+	calls, err := r.ivr.ClaimCoordinatorCalls(context.Background(), 2*time.Minute, 10)
+	if err != nil || len(calls) != 1 || calls[0].IncidentID != id || calls[0].Reason != dispatch.ReasonFollowUp {
+		t.Fatalf("coordinator line: %+v %v", calls, err)
+	}
+	r.noDrift(t)
+}

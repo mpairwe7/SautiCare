@@ -65,6 +65,7 @@ sounds:
     - sauti/en/escalation-options
     - sauti/en/escalation-reason-abandoned_after_danger_yes
     - sauti/en/escalation-reason-abandoned_red_before_dispatch
+    - sauti/en/escalation-reason-assigned_follow_up
     - sauti/en/escalation-reason-dispatch_error
     - sauti/en/escalation-reason-dispatch_stalled
     - sauti/en/escalation-reason-dispatch_suspended
@@ -184,6 +185,7 @@ sounds:
     - sauti/lg/escalation-options
     - sauti/lg/escalation-reason-abandoned_after_danger_yes
     - sauti/lg/escalation-reason-abandoned_red_before_dispatch
+    - sauti/lg/escalation-reason-assigned_follow_up
     - sauti/lg/escalation-reason-dispatch_error
     - sauti/lg/escalation-reason-dispatch_stalled
     - sauti/lg/escalation-reason-dispatch_suspended

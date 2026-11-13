@@ -512,11 +512,12 @@ threats:
     asset: the caller's and responders' numbers
     hard_constraints: [5, 8]
     mitigations:
-      - Each leg shows Sauti's number; a number is opened only to dial it and never logged; the bridge log holds identifiers only
+      - Each leg shows Sauti's number; the calling party's caller ID is set to Sauti's before it joins the bridge, so no connected-line update carries the real number (the trunk should also set send_connected_line=no); a number is opened only to dial it and never logged; the bridge log holds identifiers only
       - The ARI client can create only plain mixing bridges — no recording, snooping or external media
     verified_by:
       - internal/platform/ivr/bridge_test.go::TestBridgeResponderToCaller
       - internal/platform/wiring/scenarios_integration_test.go::TestScenario1RedTraumaThroughTheChannels
       - internal/platform/ari/client_test.go::TestNoRecordingEndpointsUsed
       - internal/platform/ari/client_test.go::TestClientMixingBridge
+      - internal/platform/ari/client_test.go::TestClientCallerIDAndRingback
 

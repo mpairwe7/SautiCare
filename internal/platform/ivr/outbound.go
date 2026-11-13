@@ -543,7 +543,7 @@ var reasonCode = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 var EscalationReasons = []string{
 	"triage_rule_error", "abandoned_after_danger_yes", "abandoned_red_before_dispatch", "merged_call_escalated",
 	"no_eligible_responder", "no_responder_nearby", "red_no_acceptance", "forwarded_to_facility",
-	"no_facility_acknowledged", "dispatch_suspended", "dispatch_error", "dispatch_stalled",
+	"no_facility_acknowledged", "dispatch_suspended", "dispatch_error", "dispatch_stalled", "assigned_follow_up",
 }
 
 func escalationReasonSound(lang, reason string) string {

@@ -40,7 +40,7 @@ func DispatchParams(d config.Dispatch) (dispatch.Params, error) {
 	}
 	p := dispatch.Params{Mode: d.Mode, RingInterval: d.RingInterval.Duration, MaxRing: d.MaxRadiusMetres / d.RingStepMetres,
 		CascadeTimeout: d.CascadeTimeout.Duration, RedParallel: d.RedParallelCount, ForwardAckTimeout: d.ForwardAckTimeout.Duration,
-		RedEscalationAfter: d.RedEscalationAfter.Duration}
+		RedEscalationAfter: d.RedEscalationAfter.Duration, FollowUpAfter: d.FollowUpAfter.Duration}
 	return p, p.Validate()
 }
 

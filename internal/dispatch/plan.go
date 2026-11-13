@@ -30,6 +30,10 @@ type Params struct {
 	RedParallel        int           // 3 per role per ring step
 	ForwardAckTimeout  time.Duration // 60 s for a facility to press 1
 	RedEscalationAfter time.Duration // 3 min: red with a role unaccepted (decision 2)
+	// FollowUpAfter: an incident still open this long after its first
+	// acceptance is escalated once so a coordinator checks with the caller
+	// (interim until M3's arrival verification; ADR-0028).
+	FollowUpAfter time.Duration
 }
 
 // Validate refuses parameters the planner cannot run safely.
@@ -37,7 +41,7 @@ func (p Params) Validate() error {
 	switch {
 	case p.Mode != ModeProtocol && p.Mode != ModeAmended:
 		return fmt.Errorf("dispatch: mode %q is neither %s nor %s", p.Mode, ModeProtocol, ModeAmended)
-	case p.RingInterval <= 0, p.CascadeTimeout <= 0, p.ForwardAckTimeout <= 0, p.RedEscalationAfter <= 0:
+	case p.RingInterval <= 0, p.CascadeTimeout <= 0, p.ForwardAckTimeout <= 0, p.RedEscalationAfter <= 0, p.FollowUpAfter <= 0:
 		return errors.New("dispatch: every interval must be positive")
 	case p.MaxRing < 1, p.RedParallel < 1:
 		return errors.New("dispatch: maximum ring and red parallel count must be at least 1")
@@ -86,6 +90,7 @@ const (
 	ReasonSuspended           = "dispatch_suspended"
 	ReasonExhausted           = "no_eligible_responder"
 	ReasonNoneNearby          = "no_responder_nearby" // amended mode: ring 1 empty at T2 (the search widens)
+	ReasonFollowUp            = "assigned_follow_up"  // still open FollowUpAfter after acceptance: a coordinator checks with the caller
 	ReasonRedNoAcceptance     = "red_no_acceptance"
 	ReasonForwarded           = "forwarded_to_facility"
 	ReasonForwardingExhausted = "no_facility_acknowledged"
@@ -108,6 +113,7 @@ type State struct {
 	Forwards       []ForwardState
 	Escalations    []string  // escalation keys already recorded (incident.EscalationKey)
 	RedSince       time.Time // when the incident became red (zero: from T2)
+	AcceptedAt     time.Time // the first open acceptance (zero: none)
 	CallerNotified []string  // caller message kinds already sent
 	Suspended      bool      // dispatch suspended (O6)
 	Done           bool      // closed or merged
@@ -207,6 +213,17 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 			return a.Kind == ActEscalate && incident.EscalationKey(a.Reason, string(a.Role)) == key
 		}) {
 			acts = append(acts, Action{Kind: ActEscalate, Reason: reason, Role: role})
+		}
+	}
+
+	// Interim until M3's arrival verification (ADR-0028, rule 14): an
+	// incident still open FollowUpAfter after its first acceptance is
+	// escalated once, so a coordinator checks with the caller that help came.
+	if !s.AcceptedAt.IsZero() {
+		if at := s.AcceptedAt.Add(p.FollowUpAfter); !now.Before(at) {
+			escalate(ReasonFollowUp, "")
+		} else {
+			soon(at)
 		}
 	}
 

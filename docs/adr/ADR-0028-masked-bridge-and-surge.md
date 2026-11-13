@@ -44,7 +44,13 @@ Chosen option: **the masked bridge in ivr-controller**.
 - **A responder calling.** They are recognised by their number's keyed hash, then by their open assignments. With one assignment they are connected at once. With several they key the last 4 digits of the incident number (three tries).
 - **A caller calling.** They are recognised by the hash of a number any of their open incident's sessions came from. With both roles assigned they choose 1 (health worker) or 2 (transport).
 - **An unknown number**, or one with nothing open, hears the same "nothing to connect" message. The bridge never reveals who is registered.
-- **The legs.** Sauti places the other party's leg showing its own number (`SAUTI_ARI_CALLER_ID`) and joins both legs in a mixing bridge. When either party hangs up, the other is hung up and the bridge destroyed.
+- **A responder who also reported an emergency** chooses which party to reach (the person they are helping, or their own helper). Nobody reaches themselves.
+- **The legs.** Sauti places the other party's leg showing its own number (`SAUTI_ARI_CALLER_ID`). Before the calling party joins the mixing bridge, their own caller ID is set to Sauti's number, so the other party is never sent the real one as a connected-line update. The trunk should also set `send_connected_line=no`, as defence in depth. The calling party hears the connecting prompt, then ringback until the answer. A leg destroyed before any answer (a phone off or unreachable) ends the call at once as `no_answer`. When either party hangs up, the other is hung up and the bridge destroyed.
+- **Failures reach a human (rule 14).** The following all hand the call to the dialplan fallback, where a coordinator answers:
+  - a database error while recognising the number;
+  - a call that cannot be begun or placed;
+  - three wrong choices;
+  - the bridge number reaching a process with no bridge wired.
 - **The log.** `op.bridge_calls` records the incident, who began the call (`vht`, `transporter`, `caller`), when it started, was answered and ended, and the result (`connected`, `no_answer` after the ring time, `failed`).
 - **What the client can do.** The ARI client gains plain mixing bridges (create, add a channel, destroy). It still has no way to record, snoop or stream media out.
 
@@ -62,15 +68,20 @@ Chosen option: **the masked bridge in ivr-controller**.
 * Good: a responder and a caller can talk without either learning the other's number. Every bridge call is logged. Scenarios 1 and 2 run through the channels and the store, and scenario 1 ends with the bridge.
 * Good: in a surge the longest-waiting call of each severity is served first, and the surge is visible.
 * Bad: the bridge number, the caller ID shown and the trunk are provisioned in P0. The bridge prompts are PENDING recordings.
-* Bad: a responder who accepted and then went silent is not followed up automatically until M3. Build Prompt §10.4's "the caller is asked at set intervals whether help has arrived" needs field status (§10.6) to define silence, and the verification record (§10.7) to keep the answer, both in M3 (rule 12). Until then, the console list and the caller's call-back through the bridge cover it.
+* Bad: Build Prompt §10.4's "the caller is asked at set intervals whether help has arrived" waits for M3. It needs field status (§10.6) to define silence, and the verification record (§10.7) to keep the answer (rule 12). Interim cover, using existing escalation records: an incident still open `follow_up_after` (20 min, PENDING the PI) after its first acceptance is escalated once (`assigned_follow_up`). The coordinator line rings, so a coordinator checks with the caller.
+* Bad: a caller who gave a different call-back number at screen 8 is not recognised when calling the bridge from it. Only the numbers they called Sauti from carry a lookup hash. Adding one for call-back numbers is proposed to the Data Protection Officer (rule 12). Meanwhile their responder can still reach them, and coordinators relay.
 * Neutral: ADR-0023's client gains three bridge calls. Its rule that nothing is recorded stands, and `TestNoRecordingEndpointsUsed` enforces it.
 
 ### Confirmation
 
 - `internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeTargetsAndLog`
-- `internal/platform/ari/client_test.go::TestClientMixingBridge`, `::TestNoRecordingEndpointsUsed`
+- `internal/platform/ari/client_test.go::TestClientMixingBridge`, `::TestNoRecordingEndpointsUsed`, `::TestClientCallerIDAndRingback`
+- `internal/dispatch/plan_test.go::TestFollowUpAfterAcceptance`; `internal/platform/wiring/scenarios_integration_test.go::TestAcceptedIncidentIsFollowedUp`
 - `internal/platform/ivr/bridge_test.go`:
-  - `TestBridgeResponderToCaller`
+  - `TestBridgeResponderToCaller` (Sauti's caller ID set before the bridge)
+  - `TestBridgeFailuresGoToACoordinator`
+  - `TestBridgeEndsWhenTheOtherPhoneIsUnreachable`
+  - `TestBridgeResponderWhoIsAlsoACaller`
   - `TestBridgeSeveralAssignmentsAskTheLastFourDigits`
   - `TestBridgeCallerCallsBack`
   - `TestBridgeUnknownNumber`

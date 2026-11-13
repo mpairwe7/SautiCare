@@ -620,13 +620,14 @@ func (q *Queries) DispatchAlerts(ctx context.Context, incidentID pgtype.UUID) ([
 }
 
 const dispatchAssignments = `-- name: DispatchAssignments :many
-SELECT role, responder_id FROM op.assignments
+SELECT role, responder_id, accepted_at FROM op.assignments
 WHERE incident_id = $1::uuid AND released_at IS NULL
 `
 
 type DispatchAssignmentsRow struct {
 	Role        string
 	ResponderID pgtype.UUID
+	AcceptedAt  pgtype.Timestamptz
 }
 
 func (q *Queries) DispatchAssignments(ctx context.Context, incidentID pgtype.UUID) ([]DispatchAssignmentsRow, error) {
@@ -638,7 +639,7 @@ func (q *Queries) DispatchAssignments(ctx context.Context, incidentID pgtype.UUI
 	var items []DispatchAssignmentsRow
 	for rows.Next() {
 		var i DispatchAssignmentsRow
-		if err := rows.Scan(&i.Role, &i.ResponderID); err != nil {
+		if err := rows.Scan(&i.Role, &i.ResponderID, &i.AcceptedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
