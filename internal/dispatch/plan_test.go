@@ -50,7 +50,9 @@ var facilities = []location.Facility{
 }
 
 // sim drives Plan the way dispatch-worker does: apply the actions to the
-// state, then wake at the next wake time.
+// state, then wake at the next wake time. Each alert gets an ID, as the store
+// gives it, and an expiry or stand-down closes the alert its AlertID names:
+// a planner naming the wrong alert fails the test (CodeRabbit PR #10).
 type sim struct {
 	t     *testing.T
 	s     State
@@ -68,13 +70,14 @@ func newSim(t *testing.T, sev incident.Severity, p pool, par Params) *sim {
 func (m *sim) apply(a Action) {
 	switch a.Kind {
 	case ActAlert:
-		m.s.Alerts = append(m.s.Alerts, Alert{ResponderID: a.ResponderID, Role: a.Role, Ring: a.Ring, Wave: a.Wave, SentAt: m.now, Outcome: OutcomePending})
+		m.s.Alerts = append(m.s.Alerts, Alert{ID: uuid.NewV7(), ResponderID: a.ResponderID, Role: a.Role, Ring: a.Ring, Wave: a.Wave,
+			SentAt: m.now, Outcome: OutcomePending})
 	case ActExpire, ActStandDown:
-		for i := range m.s.Alerts {
-			if m.s.Alerts[i].ResponderID == a.ResponderID {
-				m.s.Alerts[i].Outcome = map[ActionKind]string{ActExpire: OutcomeNoResponse, ActStandDown: OutcomeStoodDown}[a.Kind]
-			}
+		i := slices.IndexFunc(m.s.Alerts, func(x Alert) bool { return x.ID == a.AlertID })
+		if i < 0 || m.s.Alerts[i].ResponderID != a.ResponderID || m.s.Alerts[i].Outcome != OutcomePending {
+			m.t.Fatalf("%s names alert %v, which is not the pending alert of responder %v", a.Kind, a.AlertID, a.ResponderID)
 		}
+		m.s.Alerts[i].Outcome = map[ActionKind]string{ActExpire: OutcomeNoResponse, ActStandDown: OutcomeStoodDown}[a.Kind]
 	case ActEscalate:
 		m.s.Escalations = append(m.s.Escalations, incident.EscalationKey(a.Reason, string(a.Role)))
 	case ActForward:
