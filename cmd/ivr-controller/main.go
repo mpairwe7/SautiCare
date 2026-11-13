@@ -226,8 +226,16 @@ func run(log *slog.Logger) error {
 					return fmt.Errorf("SAUTI_COORDINATOR_LINES must be 1-50, got %q", v)
 				}
 			}
+			// Tier 2 (ADR-0029 rule 8): the backup line rings as well after
+			// escalation.backup_after_calls unanswered rings. UX-7 refuses
+			// production without it.
+			backup := os.Getenv("SAUTI_COORDINATOR_BACKUP_DIAL")
+			if backup == "" {
+				log.Warn("SAUTI_COORDINATOR_BACKUP_DIAL is not set: an unanswered escalation rings only the coordinator line")
+			}
 			if out.Coordinator, err = ivr.NewCoordinatorCalls(ivr.CoordinatorCallsConfig{ARI: alertClient, Store: store, Endpoint: line,
-				CallerID: callerID, Lines: lines, Log: log, NoInput: noInput}); err != nil {
+				CallerID: callerID, Lines: lines, Log: log, NoInput: noInput,
+				BackupEndpoint: backup, BackupAfterCalls: cfg.Dispatch.Escalation.BackupAfterCalls}); err != nil {
 				return err
 			}
 			loops = append(loops, func(lctx context.Context) error { return out.Coordinator.Run(lctx, 5*time.Second, onErr) })

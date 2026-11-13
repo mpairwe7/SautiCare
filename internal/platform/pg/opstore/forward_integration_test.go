@@ -5,6 +5,7 @@ package opstore_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 	"uuid"
@@ -63,7 +64,7 @@ func TestCoordinatorCalls(t *testing.T) {
 	ctx := context.Background()
 	appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"triage_rule_error"}`, "")
 	calls, err := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10)
-	if err != nil || len(calls) != 1 || calls[0].IncidentID != r.incident || calls[0].Reason != "triage_rule_error" || calls[0].Reference == "" {
+	if err != nil || len(calls) != 1 || calls[0].IncidentID != r.incident || !slices.Equal(calls[0].Reasons, []string{"triage_rule_error"}) || calls[0].Reference == "" {
 		t.Fatalf("calls %+v %v", calls, err)
 	}
 	if again, _ := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10); len(again) != 0 {
@@ -88,7 +89,7 @@ func TestCoordinatorCalls(t *testing.T) {
 	if _, err := r.dispatcher.DispatchEscalate(ctx, r.incident, dispatch.ReasonExhausted, responder.RoleVHT, dispatchLogic); err != nil {
 		t.Fatal(err)
 	}
-	if later, _ := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10); len(later) != 1 || later[0].Reason != dispatch.ReasonExhausted {
+	if later, _ := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10); len(later) != 1 || !slices.Equal(later[0].Reasons, []string{dispatch.ReasonExhausted}) {
 		t.Fatalf("a later escalation did not ring: %+v", later)
 	}
 }

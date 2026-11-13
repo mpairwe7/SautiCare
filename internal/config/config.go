@@ -93,6 +93,14 @@ type Dispatch struct {
 	StoppingRule       StoppingRule `yaml:"stopping_rule"`
 	RankingOrder       []string     `yaml:"ranking_order"`
 	RankingVersion     string       `yaml:"ranking_version"`
+	Escalation         Escalation   `yaml:"escalation"`
+}
+
+// Escalation tiers the coordinator line (ADR-0029 rule 8): after
+// BackupAfterCalls unanswered rings of one escalation, the backup endpoint
+// rings as well.
+type Escalation struct {
+	BackupAfterCalls int `yaml:"backup_after_calls"`
 }
 
 // StoppingRule is the study's dispatch stopping rule (Guide §14): red

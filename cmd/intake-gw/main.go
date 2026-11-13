@@ -167,10 +167,27 @@ func run(log *slog.Logger) error {
 	// The dispatch watchdog (review I8) runs here, apart from dispatch-worker:
 	// an incident dispatch has not touched two minutes after T2 is escalated.
 	watchdog := intake.NewWatchdog(store, built.Incidents, intake.DispatchWatchdogAfter)
+	// Tier 3 (ADR-0029 rule 8): the dead-man gauges, exported from here
+	// because intake-gw survives an ivr-controller outage.
+	gauges := newEscalationGauges(reg)
 	go func() {
 		_ = pg.RunAsLeader(ctx, pool, sweeperLeaderKey, 5*time.Second, func(lctx context.Context) error {
 			go func() {
 				_ = watchdog.Run(lctx, sweepEvery, func(err error) { log.Error("dispatch watchdog failed", "err", err) })
+			}()
+			go func() {
+				t := time.NewTicker(sweepEvery)
+				defer t.Stop()
+				for {
+					if err := gauges.update(lctx, store); err != nil && lctx.Err() == nil {
+						log.Error("escalation gauges not updated", "err", err)
+					}
+					select {
+					case <-lctx.Done():
+						return
+					case <-t.C:
+					}
+				}
 			}()
 			return sweeper.Run(lctx, sweepEvery, func(err error) { log.Error("abandonment sweep failed", "err", err) })
 		})
@@ -189,6 +206,33 @@ func run(log *slog.Logger) error {
 	defer cancel()
 	_ = public.Shutdown(sctx)
 	_ = adminSrv.Shutdown(sctx)
+	return nil
+}
+
+// escalationAges reads the dead-man signal (the operational store, op_intake).
+type escalationAges interface {
+	OldestUnacknowledgedEscalation(ctx context.Context) (seconds float64, incidents int, err error)
+}
+
+// escalationGauges are the dead-man signal: how many open incidents hold an
+// escalation no coordinator has acknowledged, and the oldest one's age. An
+// alert on the age pages the on-call engineer (P0 alerting).
+type escalationGauges struct{ count, oldest *metrics.Gauge }
+
+func newEscalationGauges(reg *metrics.Registry) escalationGauges {
+	return escalationGauges{
+		count:  reg.Gauge("sauti_escalations_unacknowledged", "Open incidents with an escalation no coordinator has acknowledged."),
+		oldest: reg.Gauge("sauti_escalation_oldest_unacknowledged_seconds", "Age of the oldest unacknowledged escalation (0 when none)."),
+	}
+}
+
+func (g escalationGauges) update(ctx context.Context, r escalationAges) error {
+	secs, n, err := r.OldestUnacknowledgedEscalation(ctx)
+	if err != nil {
+		return err
+	}
+	g.count.Set(float64(n))
+	g.oldest.Set(secs)
 	return nil
 }
 

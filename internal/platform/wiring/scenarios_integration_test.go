@@ -279,7 +279,7 @@ func TestAcceptedIncidentIsFollowedUp(t *testing.T) {
 		t.Fatalf("not followed up after 20 minutes: %v", snap.Escalations)
 	}
 	calls, err := r.ivr.ClaimCoordinatorCalls(context.Background(), 2*time.Minute, 10)
-	if err != nil || len(calls) != 1 || calls[0].IncidentID != id || calls[0].Reason != dispatch.ReasonFollowUp {
+	if err != nil || len(calls) != 1 || calls[0].IncidentID != id || !slices.Equal(calls[0].Reasons, []string{dispatch.ReasonFollowUp}) {
 		t.Fatalf("coordinator line: %+v %v", calls, err)
 	}
 	r.noDrift(t)

@@ -119,7 +119,7 @@ func (s *coordStore) AcknowledgeCoordinatorCall(_ context.Context, id uuid.UUID,
 func TestCoordinatorCallsRingAndAcknowledge(t *testing.T) {
 	a := &alertARI{}
 	inc := uuid.NewV7()
-	st := &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: inc, Seq: 7, Reason: "triage_rule_error", Reference: "1234567894", Calls: 1}},
+	st := &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: inc, Seq: 7, Reasons: []string{"triage_rule_error"}, Reference: "1234567894", Calls: 1}},
 		acked: map[uuid.UUID]int64{}}
 	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Retry: 2 * time.Minute})
 	if err != nil {
@@ -169,7 +169,7 @@ func TestOutboundRoutesByKind(t *testing.T) {
 func TestCoordinatorLineIsRungOneCallAtATime(t *testing.T) {
 	a := &alertARI{}
 	call := func(n byte) dispatch.CoordinatorCall {
-		return dispatch.CoordinatorCall{IncidentID: uuid.NewV7(), Seq: int64(n), Reason: "dispatch_stalled", Reference: "1234567894", Calls: 1}
+		return dispatch.CoordinatorCall{IncidentID: uuid.NewV7(), Seq: int64(n), Reasons: []string{"dispatch_stalled"}, Reference: "1234567894", Calls: 1}
 	}
 	st := &coordStore{calls: []dispatch.CoordinatorCall{call(1), call(2), call(3)}, acked: map[uuid.UUID]int64{}}
 	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
@@ -245,7 +245,7 @@ func TestAnInvalidKeyDoesNotCutAnOutboundPrompt(t *testing.T) {
 }
 
 func escalation(n int64) dispatch.CoordinatorCall {
-	return dispatch.CoordinatorCall{IncidentID: uuid.NewV7(), Seq: n, Reason: "dispatch_stalled", Reference: "1234567894", Calls: 1}
+	return dispatch.CoordinatorCall{IncidentID: uuid.NewV7(), Seq: n, Reasons: []string{"dispatch_stalled"}, Reference: "1234567894", Calls: 1}
 }
 
 // CodeRabbit PR #11 (4560453632): an answer event handled before RunOnce has
@@ -402,6 +402,69 @@ func TestAnAnsweredCallWithNoInputIsHungUp(t *testing.T) {
 		synctest.Wait()
 		if a.hangups("fwd-1") != 1 {
 			t.Fatal("a forwarding call with no input was not hung up")
+		}
+	})
+}
+
+// F-06 (ADR-0029 rule 8): a call announces every reason it acknowledges,
+// the most urgent first.
+func TestCoordinatorCallSpeaksReasonsInPriorityOrder(t *testing.T) {
+	a := &alertARI{}
+	inc := uuid.NewV7()
+	st := &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: inc, Seq: 9, Reasons: []string{"no_eligible_responder", "triage_rule_error"},
+		Reference: "1234567894", Calls: 1}}, acked: map[uuid.UUID]int64{}}
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Retry: 2 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "esc-1", Args: a.args[0]})
+	p := a.plays[0]
+	rule, none := slices.Index(p, "sauti/en/escalation-reason-triage_rule_error"), slices.Index(p, "sauti/en/escalation-reason-no_eligible_responder")
+	if rule < 0 || none < 0 || rule > none {
+		t.Fatalf("plays %v: want the triage rule error first, then no eligible responder", p)
+	}
+	cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "esc-1", Digit: "1"})
+	if st.acked[inc] != 9 {
+		t.Fatalf("acknowledged %v, want the claim's seq", st.acked)
+	}
+}
+
+// Tier 2 (F-01; ADR-0029 rule 8): once an escalation has rung backup_after
+// times unanswered, the backup line rings as well. The first 1 on either
+// acknowledges, and the other is hung up.
+func TestBackupLineRingsAfterThreeUnansweredCalls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var a *alertARI
+		var cc *CoordinatorCalls
+		var st *coordStore
+		inc := uuid.NewV7()
+		for _, tc := range []struct {
+			calls int
+			want  []string
+		}{{2, []string{"PJSIP/coordinators"}}, {3, []string{"PJSIP/coordinators", "PJSIP/backup"}}} {
+			a = &alertARI{}
+			st = &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: inc, Seq: 7, Reasons: []string{"triage_rule_error"},
+				Reference: "1234567894", Calls: tc.calls}}, acked: map[uuid.UUID]int64{}}
+			var err error
+			cc, err = NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators",
+				BackupEndpoint: "PJSIP/backup", BackupAfterCalls: 3, Retry: 2 * time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cc.RunOnce(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(a.originated, tc.want) {
+				t.Fatalf("after %d calls rang %v, want %v", tc.calls, a.originated, tc.want)
+			}
+		}
+		cc.Handle(t.Context(), Event{Type: EventStasisStart, ChannelID: "out-2", Args: a.args[1]})
+		cc.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: "out-2", Digit: "1"})
+		if st.acked[inc] != 7 || a.hangups("out-1") != 1 || a.hangups("out-2") != 0 {
+			t.Fatalf("acknowledged %v hung up %v", st.acked, a.hungUp)
 		}
 	})
 }

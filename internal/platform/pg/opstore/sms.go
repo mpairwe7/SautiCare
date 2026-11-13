@@ -177,7 +177,7 @@ func (s *Store) DueForwardCalls(ctx context.Context, limit int) ([]dispatch.Forw
 }
 
 // ClaimCoordinatorCalls claims the coordinator calls due now (ivr-controller):
-// each incident's latest unacknowledged escalation, rung again after retry.
+// each incident's unacknowledged escalation reasons, rung again after retry.
 func (s *Store) ClaimCoordinatorCalls(ctx context.Context, retry time.Duration, limit int) ([]dispatch.CoordinatorCall, error) {
 	rows, err := s.q.ClaimCoordinatorCalls(ctx, opdb.ClaimCoordinatorCallsParams{Retry: pgtype.Interval{Microseconds: retry.Microseconds(), Valid: true},
 		MaxRows: int32(min(limit, 1000))}) //nolint:gosec // bounded above
@@ -186,10 +186,21 @@ func (s *Store) ClaimCoordinatorCalls(ctx context.Context, retry time.Duration, 
 	}
 	out := make([]dispatch.CoordinatorCall, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, dispatch.CoordinatorCall{IncidentID: uuid.UUID(r.IncidentID.Bytes), Seq: r.Seq, Reason: r.Reason,
-			Reference: incident.Reference(r.Reference), Calls: int(r.Calls)})
+		out = append(out, dispatch.CoordinatorCall{IncidentID: uuid.UUID(r.IncidentID.Bytes), Seq: r.Seq, Reasons: r.Reasons, Roles: r.Roles,
+			Reference: incident.Reference(r.Reference), Calls: int(r.Calls), Severity: r.Severity})
 	}
 	return out, nil
+}
+
+// OldestUnacknowledgedEscalation reports the dead-man signal (intake-gw,
+// op_intake): the age in seconds of the oldest escalation no coordinator has
+// acknowledged on an open incident, and how many incidents hold one.
+func (s *Store) OldestUnacknowledgedEscalation(ctx context.Context) (float64, int, error) {
+	r, err := s.q.OldestUnacknowledgedEscalation(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("opstore: oldest unacknowledged escalation: %w", err)
+	}
+	return r.Seconds, int(r.Incidents), nil
 }
 
 // AcknowledgeCoordinatorCall records a coordinator's acknowledgement of the

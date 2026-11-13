@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/platform/africastalking"
+	"sautihealth.com/sauti/internal/platform/metrics"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 )
 
@@ -75,5 +78,31 @@ func TestServiceCodesMustNotOverlap(t *testing.T) {
 	}
 	if _, err := responderCodeSet([]string{"*384*1#", "*384*2#"}, []string{"*384*2#"}); err == nil || !strings.Contains(err.Error(), "*384*2#") {
 		t.Fatalf("overlap accepted: %v", err)
+	}
+}
+
+type escalationAgeFunc func(context.Context) (float64, int, error)
+
+func (f escalationAgeFunc) OldestUnacknowledgedEscalation(ctx context.Context) (float64, int, error) {
+	return f(ctx)
+}
+
+// Tier 3 (F-01): the leader exports how many incidents hold an
+// unacknowledged escalation and the age of the oldest; a failed read leaves
+// the last values and is reported.
+func TestEscalationGaugesExportTheDeadManSignal(t *testing.T) {
+	reg := metrics.NewRegistry()
+	g := newEscalationGauges(reg)
+	if err := g.update(context.Background(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 420, 2, nil })); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "sauti_escalations_unacknowledged 2") || !strings.Contains(body, "sauti_escalation_oldest_unacknowledged_seconds 420") {
+		t.Fatalf("metrics:\n%s", body)
+	}
+	if err := g.update(context.Background(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 0, 0, errors.New("db down") })); err == nil {
+		t.Fatal("a failed read was not reported")
 	}
 }
