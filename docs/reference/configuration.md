@@ -33,7 +33,9 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `stopping_rule` | `{window: 30, max_failure_rate: 0.15}` | Guide §14, O6: red dispatch failure above 15% across 30 consecutive red incidents suspends dispatch automatically; the worker refuses a window below 1 or a rate that is not a number strictly between 0 and 1 (`.nan` included) |
 | | `ranking_order` | `zone_distance, response_history, least_recently_dispatched` | decision 4 **open**: safe default |
 | | `ranking_version` | `default-2026-11-12` | stamped on incidents (M2) |
+| | `escalation.backup_after_calls` | `3` (PENDING the PI) | tier 2 (ADR-0029 rule 8, ADR-0034): after this many unanswered rings of one escalation, the backup line `SAUTI_COORDINATOR_BACKUP_DIAL` rings as well; at least 1 |
 | `config/gated/flags.yaml` | `android_app`, `caller_link`, `speech_assist`, `app_api` | all `false` | decision 10 |
+| | `out_of_area_escalate_after_danger` | `false` (protocol flag, PENDING the PI and the amendment gate) | F-07, ADR-0034: on, "Somewhere else" after a danger yes or a red classification flags and escalates the incident (`out_of_area_after_danger`) and leaves it open instead of closing it |
 | `config/gated/screens.yaml` | `internal_error` (`en`, `lg`) | names the free voice line; Luganda `PENDING-TRANSLATION` | blocks production |
 | `config/platform.yaml` (ungated) | `checkpoint_interval` | `5m` | Build Prompt §4 |
 | | `outbox_batch_size` / `relay_poll_interval` | `100` / `1s` | tuning |

@@ -5,14 +5,14 @@
 | Owner | Coordinator on duty (clinical call-back) with the Medical Director |
 | Severity | SEV-1 (a person may be in danger with no location) |
 | Alert / trigger | `incident.escalated` with reason `abandoned_after_danger_yes` or `abandoned_red_before_dispatch` |
-| Last reviewed: | 2026-11-13 |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
 A caller answered yes at screen 2 (heavy bleeding, unconscious or not breathing normally), or was classified red by the category's danger question at screen 5 whatever they said at screen 2, then the session went silent for `abandon_after` before dispatch began (no T2). The Guide (§4) calls this the most dangerous partial record. The coordinator calls the caller back at once.
 
 ## Triggers and detection
-intake-gw's abandonment sweeper (one leader across instances) flags the incident `abandoned` and escalates it, in one transaction. A caller who resumed an incident flagged `abandoned` earlier, then gave a danger `yes` (or was classified red) and dropped again before T2, is swept again and escalated, unless the incident is already escalated. Until the console (M5) and the escalation voice call (M2) exist, the on-call engineer watches for the event.
+intake-gw's abandonment sweeper (one leader across instances) flags the incident `abandoned` and escalates it, in one transaction. A caller who resumed an incident flagged `abandoned` earlier, then gave a danger `yes` (or was classified red) and dropped again before T2, is swept again and escalated, unless the incident is already escalated. The escalation rings the coordinator line until a coordinator presses 1. A call located to its ward whose dispatch never started is escalated `dispatch_not_started` the same way ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)). If the line does not ring (ivr-controller down), list the open escalations with `sautictl escalations`.
 
 ## Impact
 No dispatch has started: no location was given, or (rarely) the request that would have recorded T2 failed and the caller did not redial. Every minute counts.

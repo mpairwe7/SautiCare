@@ -4,24 +4,23 @@
 |---|---|
 | Owner | coordinator on duty |
 | Severity | SEV-2 per incident; SEV-1 if it repeats in one area within an hour |
-| Alert / trigger | `incident.escalated` with reason `no_eligible_responder`, `no_responder_nearby`, `red_no_acceptance`, `forwarded_to_facility`, `no_facility_acknowledged` or `dispatch_stalled` |
-| Last reviewed: | 2026-11-13 |
+| Alert / trigger | the coordinator line rings about an `incident.escalated` event (every reason in the table below); `sautictl escalations`; `sauti_escalation_oldest_unacknowledged_seconds` (intake-gw) |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
 Dispatch never ends silently (review focus 3). When nobody can be alerted for a role, dispatch records an escalation for the coordinator at once. This happens when the registry is empty, ring 1 holds nobody available, or everyone has declined or not answered. Red incidents are also escalated at 3 minutes without an acceptance. In amended mode (decision 2), the search widens to 2.5 km and then forwards to the nearest health centre, and an escalation is recorded at that moment ([ADR-0024](../adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md)).
 
-**On this release an escalation is only a recorded event** (`incident.escalated`, with its reason and role): nothing calls, texts or pages a coordinator. Dispatch delivers alerts and stand-downs to responders, never escalations. The coordinator voice call arrives with M2 Part B (PR #11, `ivr.CoordinatorCalls`), and the console's incident list with M5. Until then the coordinator on duty must look for escalations (Triggers and detection); do not wait for an alert.
+**Every escalation rings the coordinator line** until a coordinator presses 1 ([ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md), [ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)). One call announces every reason on the incident that nobody has acknowledged, most urgent first, and pressing 1 acknowledges exactly those; a reason recorded later rings again. The line is rung every 2 minutes. After `escalation.backup_after_calls` unanswered rings (3, PENDING the PI), the backup line (`SAUTI_COORDINATOR_BACKUP_DIAL`) rings as well, and the first 1 on either stops both. intake-gw exports the age of the oldest unacknowledged escalation for the on-call engineer's page (tier 3).
 
 ## Triggers and detection
-The escalation is an `incident.escalated` event with its reason and, where there is one, the role (`vht` or `transporter`). Until the M5 console lists it, the coordinator on duty checks at least every minute, as `op_readonly`:
+The escalation is an `incident.escalated` event with its reason and, where there is one, the role (`vht` or `transporter`). The coordinator line rings about it. When ivr-controller is down the line does not ring ([ivr-controller-down.md](ivr-controller-down.md)): the coordinator on duty then lists the open escalations at least every minute, on Sauti's servers, as `op_readonly`:
 
-```sql
-SELECT incident_id, payload ->> 'reason' AS reason, payload ->> 'role' AS role, recorded_at
-  FROM op.incident_events
- WHERE type = 'incident.escalated' AND recorded_at > now() - interval '1 hour'
- ORDER BY recorded_at DESC;
+```sh
+sautictl escalations --dsn "$SAUTI_DSN"   # add --json for a machine-readable list
 ```
+
+It prints each open incident with unacknowledged escalations (reference, severity, reasons most urgent first, age, rings) and the open location call-back tasks. It prints references only, never a number.
 
 | Reason | Meaning |
 |---|---|
@@ -52,7 +51,7 @@ The incident is recorded and the search goes on: a responder who switches availa
 3. Was the location ward-level (no landmark)? The search then runs from every zone of the ward, and the location call-back task also applies.
 
 ## Mitigation
-1. Call the caller back with the incident number. Confirm the location and the patient's condition.
+1. Not possible before M5: calling the caller back needs the console's audited reveal. Until then, act on what the incident shows (steps 2 to 4), and if the caller rings again, confirm the location and the patient's condition then.
 2. Phone responders known to be near, even those who are not marked available. A responder whose alert lapsed can still accept it while the role is open.
 3. For a red incident with no transport, call the nearest health centre or ambulance service directly.
 4. Record what you did on the incident (console, M5). Do not edit alerts or assignments by hand.

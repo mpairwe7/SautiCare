@@ -64,6 +64,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** At 02:00 the duty coordinator's phone is flat. A red call has no eligible responder. The line rings every two minutes all night, and nobody else is told.
 - **Standard:** PagerDuty, Being on-call ("Always have a backup schedule"): https://response.pagerduty.com/oncall/being_oncall/ · Google SRE, Being On-Call (the secondary as a fall-through): https://sre.google/sre-book/being-on-call/
 - **Decision:** UX-1. After `escalation_backup_after_calls` unanswered rings (default 3), also ring a backup endpoint, and export the age of the oldest unacknowledged escalation from intake-gw, which survives an ivr-controller outage. With no backup endpoint configured, behaviour is unchanged and production refuses to start (UX-7). Who the second tier is: recommendation R-1.
+- **Status (2026-11-14):** implemented in UX-1 ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)): tier 2 after `escalation.backup_after_calls` (3, PENDING the PI) and the dead-man gauges from intake-gw. The production refusal without a backup line is UX-7.
 
 ### F-02 · High · (a) · Voice paths that end without a person
 - **Sources:** CV-1, CV-2, CV-3, CV-5, CV-9, CU-14, RS-1, RS-14, RR-9, SO-15. **Surfaces:** IVR, dialplan fallback, masked bridge, voice alerts.
@@ -77,6 +78,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** A caller holding a bleeding child cannot press keys. She hears the question three times and the line drops. Had she answered "danger: no", nobody would call back.
 - **Standard:** ETSI EG 202 116 V1.2.2 §7.1.6 and §7.1.9 (recoverable errors; confirm before disconnecting): https://www.etsi.org/deliver/etsi_eg/202100_202199/202116/01.02.02_60/eg_202116v010202p.pdf · NENA-STA-020.2-2026 §5.4 (re-contact abandoned and silent calls): https://cdn.ymaws.com/www.nena.org/resource/resmgr/standards/standards1/NENA-STA-020.2-2026_911CallP.pdf · Asterisk `Dial()`: https://docs.asterisk.org/Latest_API/API_Documentation/Dialplan_Applications/Dial/ · Build Prompt §3 rule 14.
 - **Decision:** UX-1, under ADR-0029's retry and escalation rules. Three no-matches hand over to a coordinator. Silence hands over once any screen after the language screen is answered (a call silent from the first prompt is still hung up, as a pocket dial). Every hand-over appends an `incident.escalated` event (`voice_handed_over`), so the coordinator line keeps ringing if the dialplan's dial fails. The dialplan tries the coordinator a bounded number of times, then plays a closing message. A prompt has a backstop timer, live channels are handed over on reconnect and on shutdown, the bridge sends an unanswered or unassigned caller to a coordinator, and an answered alert call repeats once and then closes.
+- **Status (2026-11-14):** implemented in UX-1 ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)). The bridge case was hardened in review: an open report with nobody assigned sounds exactly like an unknown number (T-030), and is escalated quietly.
 
 ### F-03 · High · (a) · A failed recording plays as silence and counts as heard
 - **Sources:** CV-4 (and the sound check of RR-13). **Surfaces:** IVR, bridge, alerts.
@@ -84,6 +86,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** The Luganda ward recording was never copied to the host. The caller hears nothing three times and is hung up.
 - **Standard:** ARI data models (Playback `state` includes `failed`): https://docs.asterisk.org/Latest_API/API_Documentation/Asterisk_REST_Interface/Asterisk_REST_Data_Models/ · Build Prompt §3 rule 14.
 - **Decision:** UX-1. Decode `state`; treat `failed` like a play error (hand over a question, hang up a closing message). UX-7 adds the start-up check that every catalogued sound exists. The runbook is corrected.
+- **Status (2026-11-14):** implemented in UX-1 ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)); the bridge runbook quotes the real log line. The start-up sound check is UX-7.
 
 ### F-04 · High · (a) · An incident with no T2 is neither dispatched nor escalated unless it is danger-yes or red
 - **Sources:** CU-5, RR-3. **Surfaces:** USSD and IVR intake, the abandonment sweeper.
@@ -91,6 +94,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** A mother reports a yellow poisoning and picks her ward. The screen-7 request times out on a database blip. She is told to call a line she cannot call, and the record says she abandoned.
 - **Standard:** Build Prompt §3 rule 14; the spec's "fail safe to a human" (`docs/superpowers/specs/2026-11-12-sauti-dispatch-design.md`); OWASP Top 10:2025 A10, Mishandling of Exceptional Conditions: https://top10.owasp.org/2025/
 - **Decision:** UX-1. The sweeper first runs the existing catch-up, which records T2 when the landmark is answered (what a redial would do). Any idle incident still without T2 after a ward answer, or after the trigger screen, is escalated `dispatch_not_started`. Whether such calls should instead be dispatched at ward level is the PI's choice (R-9); the safe default is a person.
+- **Status (2026-11-14):** implemented in UX-1 ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)): catch-up first, then `dispatch_not_started`. Ward-level dispatch stays the PI's choice (R-9).
 
 ### F-05 · High · (a) · A dispatch stall after the first alert reaches no one
 - **Sources:** SO-5. **Surfaces:** the dispatch watchdog.
@@ -98,6 +102,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** A VHT is alerted at T3 and the worker is killed ten seconds later. The alert never lapses and nothing escalates, because T3 is set.
 - **Standard:** Build Prompt §3 rule 14 · Google SRE Workbook, On-Call: https://sre.google/workbook/on-call/
 - **Decision:** UX-1. The watchdog also lists an incident whose dispatch timer is overdue by the watchdog interval, and escalates it `dispatch_stalled` as today.
+- **Status (2026-11-14):** implemented in UX-1 ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)).
 
 ### F-06 · High · (a) · Earlier escalation reasons are acknowledged unheard, and a merge drops an unacknowledged escalation
 - **Sources:** SO-3. **Surfaces:** coordinator calls, deduplication.
@@ -105,6 +110,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** A triage-rule error is escalated and missed. Two minutes later "no eligible responder" rings, the coordinator presses 1, and the rule error is closed without anyone hearing it.
 - **Standard:** PagerDuty, Alerting principles (every page actionable): https://response.pagerduty.com/oncall/alerting_principles/ · Build Prompt §3 rule 14.
 - **Decision:** UX-1, in a new migration (the merged 0022 is not edited). The claim returns every unacknowledged reason, played most urgent first; a merge escalates the survivor whenever the absorbed call holds an unacknowledged escalation.
+- **Status (2026-11-14):** implemented in UX-1 ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md); migration 0033). The survivor's payload stays `{reason}`: the event schema admits no `from_reason`.
 
 ### F-07 · High (was Critical) · (b) · "Somewhere else" closes the incident on one key, with no confirmation and no escalation
 - **Sources:** CU-1, CV-14. **Surfaces:** Tool 1 screen 6, USSD and IVR.
@@ -112,6 +118,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** A caller whose husband is not breathing does not recognise her parish name and presses the last option. She is told Sauti does not cover the area. Her red report closes and no coordinator hears of it.
 - **Standard:** ISO 9241-110:2020, use error robustness: https://cdn.standards.iteh.ai/samples/75258/83c8cf072187487686645aad04eff40e/ISO-9241-110-2020.pdf · NENA-STA-020.2-2026 §4.1.2 (verify location first) · Nielsen heuristic 5: https://www.nngroup.com/articles/ten-usability-heuristics/
 - **Decision:** Build Prompt §10.1 says the incident closes, so both fixes are protocol changes, behind flags that default to today's behaviour, for the PI and the amendment gate. UX-1: with `out_of_area_escalate_after_danger` on, an out-of-area answer after a danger yes or a red classification flags and escalates the incident and leaves it open. UX-6: with `out_of_area_confirm` on, a confirmation step ("1 yes, 2 show the wards again") precedes the close, as PENDING copy.
+- **Status (2026-11-14):** UX-1 part implemented behind `out_of_area_escalate_after_danger`, committed `false` ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)); the confirmation step is UX-6.
 
 ### F-08 · High · (a) · No pre-M5 tool lists the unacknowledged escalations and the open tasks
 - **Sources:** SO-7, SO-21. **Surfaces:** `sautictl`, runbooks.
@@ -119,6 +126,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** When calls fail, a clinical coordinator keeps a psql session open on a weak link and reads UUIDs that do not match the reference they hear.
 - **Standard:** Google SRE Workbook, On-Call (automate deterministic playbooks): https://sre.google/workbook/on-call/
 - **Decision:** UX-1. `sautictl escalations` lists open incidents with unacknowledged escalations (reference, severity, reasons, rings, age) and the location call-back tasks, most severe first, as `op_readonly`.
+- **Status (2026-11-14):** implemented in UX-1: `sautictl escalations` ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)).
 
 ### F-09 · High · (a) · The runbooks are stale on escalation calls and silent on what an ivr-controller outage stops
 - **Sources:** SO-6, SO-8, SO-18. **Surfaces:** runbooks.
@@ -126,6 +134,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** At 03:00 the phone rings "no eligible responder". The runbook says escalations do not ring and tells the coordinator to call the caller back, which they cannot lawfully do.
 - **Standard:** Diátaxis, how-to guides: https://diataxis.fr/how-to-guides/ · NIST SP 800-61r3 (actionable playbooks): https://csrc.nist.gov/pubs/sp/800/61/r3/final
 - **Decision:** UX-1 docs task, with a docs test that fails on the stale phrases. What a coordinator does before M5 when a call-back is needed is a protocol question (R-3).
+- **Status (2026-11-14):** implemented in UX-1: runbooks updated, with `governance/tests/test_runbooks.py::test_no_stale_escalation_phrases`. The pre-M5 call-back remains R-3.
 
 ### F-15 · Critical · (a) · Leader locks stay held for hours after a host is lost
 - **Sources:** RR-1. **Surfaces:** every leader: outbox-relay, the sweeper and watchdog, dispatch-worker, outbound and coordinator calls.
@@ -231,15 +240,15 @@ Each entry gives the severity and class, the source IDs and surfaces, the eviden
 
 ### UX-1: every path ends with a person
 
-**F-10 · Medium · (a) · The safety nets stop at the first incident that fails.** RR-18 · sweeper, watchdog. Evidence: `internal/intake/sweeper.go:88-90`, `internal/intake/watchdog.go:61-64`; both lists are stably ordered (`db/operational/queries/incidents.sql:103`). Story: one incident whose append keeps failing sits first in both lists, and every red incident behind it waits for ever. Standard: OWASP Top 10:2025 A10, https://top10.owasp.org/2025/. Decision: UX-1; log and count each failure, continue, return a joined error.
+**F-10 · Medium · (a) · The safety nets stop at the first incident that fails.** RR-18 · sweeper, watchdog. Evidence: `internal/intake/sweeper.go:88-90`, `internal/intake/watchdog.go:61-64`; both lists are stably ordered (`db/operational/queries/incidents.sql:103`). Story: one incident whose append keeps failing sits first in both lists, and every red incident behind it waits for ever. Standard: OWASP Top 10:2025 A10, https://top10.owasp.org/2025/. Decision: UX-1; log and count each failure, continue, return a joined error. **Status (2026-11-14):** implemented in UX-1 ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)).
 
-**F-11 · Medium · (a) · Escalation reasons have no single registry.** SO-20 · reasons, recordings, runbooks. Evidence: hand-kept in `internal/dispatch/plan.go:89-97`, `internal/platform/ivr/outbound.go:695-699`, `db/operational/queries/incidents.sql:152-154`, `docs/reference/events.md` and `docs/runbooks/no-eligible-responders.md`; `assigned_follow_up` has no runbook row. Story: a reason added in one place is announced as "other", and a coordinator finds no runbook for what they hear. Standard: Diátaxis, reference: https://diataxis.fr/reference/. Decision: UX-1, before UX-1 adds four reasons; a test ties every reason to a recording and a runbook row.
+**F-11 · Medium · (a) · Escalation reasons have no single registry.** SO-20 · reasons, recordings, runbooks. Evidence: hand-kept in `internal/dispatch/plan.go:89-97`, `internal/platform/ivr/outbound.go:695-699`, `db/operational/queries/incidents.sql:152-154`, `docs/reference/events.md` and `docs/runbooks/no-eligible-responders.md`; `assigned_follow_up` has no runbook row. Story: a reason added in one place is announced as "other", and a coordinator finds no runbook for what they hear. Standard: Diátaxis, reference: https://diataxis.fr/reference/. Decision: UX-1, before UX-1 adds four reasons; a test ties every reason to a recording and a runbook row. **Status (2026-11-14):** implemented in UX-1: `internal/incident/reasons.go`.
 
-**F-12 · Medium · (a) · A coordinator taking a fallback call sees the caller's own number and no reference.** CV-17 · dialplan fallback. Evidence: `internal/platform/ivr/controller.go:374` continues with the caller ID untouched; `telephony/asterisk/extensions.conf:42` passes no reference. Story: the coordinator answers with no idea the caller already answered five screens, and the caller's number appears outside the audited reveal. Standard: NENA-STA-020.2-2026 §5.3 (warm transfer relays what is known); Build Prompt §3 rule 5. Decision: UX-1; before the hand-over, set the caller ID name to "SAUTI" and the reference, and the number to Sauti's.
+**F-12 · Medium · (a) · A coordinator taking a fallback call sees the caller's own number and no reference.** CV-17 · dialplan fallback. Evidence: `internal/platform/ivr/controller.go:374` continues with the caller ID untouched; `telephony/asterisk/extensions.conf:42` passes no reference. Story: the coordinator answers with no idea the caller already answered five screens, and the caller's number appears outside the audited reveal. Standard: NENA-STA-020.2-2026 §5.3 (warm transfer relays what is known); Build Prompt §3 rule 5. Decision: UX-1; before the hand-over, set the caller ID name to "SAUTI" and the reference, and the number to Sauti's. **Status (2026-11-14):** implemented in UX-1 ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)).
 
-**F-13 · Low · (a) · The inbound dialplan misses a '+'-prefixed DID.** CV-28 · dialplan. Evidence: `_X.` is the only extension in each inbound context (`telephony/asterisk/extensions.conf:14`). Story: a carrier that delivers `+256…` gets a 404 before Stasis, and even the fallback never runs. Standard: Build Prompt §3 rule 14. Decision: UX-1; add `_+X.` beside `_X.`; confirm the DID format in P0.
+**F-13 · Low · (a) · The inbound dialplan misses a '+'-prefixed DID.** CV-28 · dialplan. Evidence: `_X.` is the only extension in each inbound context (`telephony/asterisk/extensions.conf:14`). Story: a carrier that delivers `+256…` gets a 404 before Stasis, and even the fallback never runs. Standard: Build Prompt §3 rule 14. Decision: UX-1; add `_+X.` beside `_X.`; confirm the DID format in P0. **Status (2026-11-14):** implemented in UX-1; the DID format is still to confirm in P0.
 
-**F-14 · Low · (a) · The USSD adapter reference cites a test that does not exist.** CU-21 · docs. Evidence: `docs/reference/ussd-at-adapter.md:40`. Story: a reviewer checking the screen gate follows a dead pointer. Standard: the living-documentation rule (pointers resolve). Decision: UX-1 docs task; point at `internal/intake/machine_test.go::TestEveryRenderedScreenFitsLimitAndGSM7`.
+**F-14 · Low · (a) · The USSD adapter reference cites a test that does not exist.** CU-21 · docs. Evidence: `docs/reference/ussd-at-adapter.md:40`. Story: a reviewer checking the screen gate follows a dead pointer. Standard: the living-documentation rule (pointers resolve). Decision: UX-1 docs task; point at `internal/intake/machine_test.go::TestEveryRenderedScreenFitsLimitAndGSM7`. **Status (2026-11-14):** implemented in UX-1.
 
 ### UX-2: leader and connection robustness
 

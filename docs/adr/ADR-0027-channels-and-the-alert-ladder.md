@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted; superseded in part by ADR-0034 (2026-11-14)
 date: 2026-11-13
 decision-makers: Sauti engineering (repository owner)
 consulted: Build Prompt §3 rules 5, 6, 14; §10.4–10.5; §16 scenarios 7–11; §19 decisions 1, 6, 8; spec O2

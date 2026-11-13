@@ -5,14 +5,15 @@
 | Owner | technical operator on call |
 | Severity | SEV-1 when coordinator calls fail (escalations do not reach a person by voice); SEV-2 otherwise |
 | Alert / trigger | `ivr-controller` log "voice alert not placed", "forwarding call not placed", "coordinator call not placed" or "outbound calls failed"; attempts with `channel = 'voice'` settling `unknown`/`failed`; `op.coordinator_calls.calls` growing without acknowledgement |
-| Last reviewed: | 2026-11-13 |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
 ivr-controller places three kinds of outbound call on the `sauti-alerts` Stasis application ([ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md)):
-- **Responder alerts:** an alert still pending at 20 s.
+- **Responder alerts:** an alert still pending at 20 s. An answered alert call with no key for 10 s after the options hears the alert once more, then a short closing prompt (PENDING copy), and is hung up ("alert call closed after no input"); nothing is recorded as an answer, and the alert stays pending for the rest of the ladder ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)).
 - **Forwarding calls:** to a health centre.
-- **Coordinator calls:** every escalation, retried every 2 minutes until a coordinator presses 1. The line is never rung twice at once (`SAUTI_COORDINATOR_LINES`, default 1); the most severe escalation goes first, and a closed incident is not rung about.
+- **Coordinator calls:** every escalation, retried every 2 minutes until a coordinator presses 1. One call announces every reason not yet acknowledged, most urgent first. The line is never rung twice at once (`SAUTI_COORDINATOR_LINES`, default 1); the most severe escalation goes first, and a closed incident is not rung about. After `escalation.backup_after_calls` unanswered rings (3), the backup line (`SAUTI_COORDINATOR_BACKUP_DIAL`) rings as well; the first 1 on either acknowledges and the other call is hung up. Without a backup line, ivr-controller warns at start-up.
+- A prompt Asterisk reports as `failed` (a missing recording) ends the outbound call as unanswered: nobody heard what to do.
 - An answered forwarding or coordinator call with no key pressed for `SAUTI_OUTBOUND_NO_INPUT` (default 2 minutes) is hung up ("coordinator call hung up after no input", "forwarding call hung up after no input"), so an unattended answer cannot hold the line; the escalation rings again at its interval.
 
 One leader (advisory lock 7347005) places the calls and alone holds the `sauti-alerts` application's websocket. Asterisk gives an application one websocket, and a newer connection takes it over. A failover therefore moves both; a call answered on the old leader during the switch loses its keys and is rung again by its next rung.

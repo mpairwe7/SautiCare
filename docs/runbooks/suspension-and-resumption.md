@@ -5,7 +5,7 @@
 | Owner | coordinator lead, with the Medical Director and PI |
 | Severity | SEV-1 when the stopping rule fires; SEV-2 for a planned suspension |
 | Alert / trigger | log line `DISPATCH SUSPENDED by the stopping rule`; a `stopping_rule_breached` row in the register; `sautictl dispatch status` shows `SUSPENDED` |
-| Last reviewed: | 2026-11-13 |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -17,9 +17,9 @@ While dispatch is suspended, intake continues and records are kept, but no respo
 - Check with `sautictl dispatch status --dsn <op_readonly DSN>`. It shows the state and the last ten register rows, each dated, with the staff identity or "automatic".
 
 ## Impact
-**The dispatch path is deliberately stopped.** Callers hear the suspended message with their incident number (pending the Medical Director's and PI's approval of its wording) instead of "help is coming". Every incident is escalated (`dispatch_suspended`). Coordinators must handle each one: call the caller back, call a responder or a health centre. Alerts sent before the suspension may still be accepted. Nothing new is forwarded to a health centre (the database refuses it); a forward already made still times out, and a centre's acknowledgement still reaches the caller.
+**The dispatch path is deliberately stopped.** Callers hear the suspended message with their incident number (pending the Medical Director's and PI's approval of its wording) instead of "help is coming". Every incident is escalated (`dispatch_suspended`). Coordinators must handle each one: call a responder or a health centre (calling the caller back is not possible before M5, which gives the audited reveal). Alerts sent before the suspension may still be accepted. Nothing new is forwarded to a health centre (the database refuses it); a forward already made still times out, and a centre's acknowledgement still reaches the caller.
 
-A caller whose call ended while the suspension was being committed may have heard "help is coming": their closing screen was decided before the suspension. Their incident is in dispatch, so it is escalated like every other incident in flight, and the call-back covers them. Until M2 Part B adds the coordinator's voice call, an escalation is only a recorded event: list them with the query in [no-eligible-responders.md](no-eligible-responders.md).
+A caller whose call ended while the suspension was being committed may have heard "help is coming": their closing screen was decided before the suspension. Their incident is in dispatch, so it is escalated like every other incident in flight, and the coordinator line rings about it. If ivr-controller is down and the line does not ring, list the open escalations with `sautictl escalations` ([no-eligible-responders.md](no-eligible-responders.md)).
 
 ## Diagnosis
 1. `sautictl dispatch status --dsn <op_readonly DSN>`: who suspended dispatch, when, and why.

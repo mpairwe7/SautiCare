@@ -5,7 +5,7 @@
 | Owner | Coordinator on duty (decision) with the on-call engineer (until the console, M5) |
 | Severity | SEV-2 (a separate emergency may be waiting without its own dispatch) |
 | Alert / trigger | a coordinator or responder reports that a merged call is a different emergency |
-| Last reviewed: | 2026-11-13 |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -25,7 +25,7 @@ Until the split, the second emergency has no dispatch of its own. The dispatch p
 1. Split, as the console role, with the coordinator's identity-provider subject:
    `sautictl incident split --dsn <op_console DSN> --survivor <survivor id> --member <member id> --staff <coordinator subject UUID>`
 2. The member returns to `dispatching` and is picked up for its own dispatch (M2). The survivor's T1 is recomputed from the calls that remain. If the member had raised the survivor's severity or escalated it, that stays: severity never falls. Reassess the survivor by voice.
-3. If the survivor has already closed, the split still works (migration 0018): the survivor stays closed, and the call is revived and dispatched at once. Call the caller back: their emergency has waited since T2.
+3. If the survivor has already closed, the split still works (migration 0018): the survivor stays closed, and the call is revived and dispatched at once. Call the caller back through the audited reveal (M5; not possible before M5): their emergency has waited since T2.
 4. Never edit `op.incidents` by hand. The split is two events, logged in the audit ledger. Only the console role can record them: the database refuses a split, an unmerge or any staff action from intake, IVR or the read-only role.
 
 ## Escalation

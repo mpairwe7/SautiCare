@@ -16,7 +16,7 @@ threats:
     verified_by:
       - internal/platform/egress/egress_test.go::TestEgressDeniesUnlistedHost
       - internal/platform/egress/egress_test.go::TestEgressDeniesRedirectToUnlistedHost
-      - "planned:M2 SMS template content test (no patient name or clinical field)"
+      - internal/config/sms_test.go::TestSMSTemplatesAreCompliant
       - "planned:P0 nftables default-deny drill"
 
   - id: T-002
@@ -60,7 +60,7 @@ threats:
       - internal/incident/tool1_test.go::TestApplyRefusesAChangedAnswer
       - internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRefusesAChangedAnswer
       - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
-      - "planned:M1 rule-signature verification test"
+      - internal/triage/triage_test.go::TestLoadRejectsBadSignature
 
   - id: T-004
     title: Protocol timestamps forged by a handset or application clock
@@ -89,7 +89,8 @@ threats:
       - internal/platform/logging/redact_test.go::TestRedactionMasksPhoneInsideErrorValues
       - internal/crypto/crypto_test.go::TestOpenFailsWithSwappedAAD
       - internal/crypto/crypto_test.go::TestSealAndOpenRequireACompleteLocation
-      - "planned:M2 responder-facing payload scan and masked bridge test"
+      - internal/platform/ivr/bridge_test.go::TestBridgeResponderToCaller
+      - internal/platform/ivr/controller_test.go::TestHandOverShowsSautiAndTheReference
 
   - id: T-006
     title: Coordinator overrides dispatch outside the defined exceptions
@@ -483,7 +484,8 @@ threats:
       - Every attempt is claimed once per channel before the provider call; an unknown outcome is never re-sent, and the next rung covers it
       - An alert is delivered only while its responder is still eligible (available, gates in force); a responder who switched off is not rung
       - SMS at 0 s, voice at 20 s, the responder menu at any time; the cascade moves on regardless of channel failures
-      - Every escalation rings the coordinator line, retried every 2 minutes until a coordinator presses 1
+      - Every escalation rings the coordinator line, retried every 2 minutes until a coordinator presses 1; one call announces every reason not yet acknowledged and its acknowledgement covers exactly those; after escalation.backup_after_calls unanswered rings the backup line rings too; intake-gw exports the age of the oldest unacknowledged escalation (ADR-0034)
+      - "UX-1 (ADR-0034): every voice hand-over, an unanswered bridge caller, an incident with a ward but no T2 and an overdue dispatch timer record an escalation; a failed or lost prompt, a restart and a shutdown hand live calls over; an answered alert call times out; a merge carries an unacknowledged escalation; one failing incident never stops the sweeper or the watchdog"
       - An incident's messages go out as soon as it is planned; a later incident's slow or failing plan never holds them back
       - A coordinator line is held only while its call lasts; an early answer keeps it, an answered call with no key is hung up after the no-input time, and each new term frees lines whose channel Asterisk reports gone (never one it cannot be asked about)
       - A closed or merged incident's forward is neither texted nor called (the claim is ordered against the closure)
@@ -498,6 +500,20 @@ threats:
       - internal/platform/pg/opstore/forward_integration_test.go::TestCoordinatorCalls
       - internal/platform/ivr/alerts_test.go::TestAlertCallsDialDueAlertsOnce
       - internal/platform/wiring/voice_integration_test.go::TestScenario9VoiceAt20Seconds
+      - internal/platform/pg/opstore/coordinator_integration_test.go::TestClaimAnnouncesEveryUnacknowledgedReason
+      - internal/platform/pg/opstore/coordinator_integration_test.go::TestAReasonAfterTheClaimRingsAgain
+      - internal/platform/pg/opstore/coordinator_integration_test.go::TestOldestUnacknowledgedEscalationGauge
+      - internal/platform/ivr/outbound_test.go::TestBackupLineRingsAfterThreeUnansweredCalls
+      - internal/platform/ivr/controller_test.go::TestHandOverRecordsAnEscalationEvenWhenContinueFails
+      - internal/platform/ivr/controller_test.go::TestShutdownHandsOverLiveCalls
+      - internal/platform/ivr/controller_test.go::TestReconnectHandsOverOrphanedChannels
+      - internal/platform/ivr/bridge_test.go::TestBridgeCallerNoAnswerGoesToACoordinator
+      - internal/platform/ivr/alerts_test.go::TestAnUnansweredAlertCallRepeatsThenHangsUp
+      - internal/intake/sweeper_test.go::TestSweeperEscalatesALocatedYellowCallWithoutT2
+      - internal/intake/sweeper_test.go::TestOneFailingIncidentDoesNotStopTheSweep
+      - internal/intake/watchdog_test.go::TestOneFailingIncidentDoesNotStopTheWatchdog
+      - internal/platform/pg/opstore/idle_integration_test.go::TestWatchdogEscalatesAnOverdueTimerAfterT3
+      - internal/intake/dedup_test.go::TestMergedUnacknowledgedEscalationRingsOnTheSurvivor
       - internal/platform/wiring/forward_integration_test.go::TestScenario7ForwardAcknowledged
       - internal/platform/wiring/forward_integration_test.go::TestScenario11RuleErrorRingsTheCoordinator
   - id: T-029

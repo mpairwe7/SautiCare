@@ -1,6 +1,6 @@
 # Traceability matrix
 
-**Type:** Reference (Diátaxis) · **Last updated:** 2026-11-13 (M0) · **Checked by:** `python3 -m tools.freshness --check` (every test pointer must name a test function that exists)
+**Type:** Reference (Diátaxis) · **Last updated:** 2026-11-14 (UX-1) · **Checked by:** `python3 -m tools.freshness --check` (every test pointer must name a test function that exists)
 
 This matrix maps each policy requirement (MVP stack doc, 15 requirements), each of the 14 hard constraints (Build Prompt §3) and each of the 17 scenarios (Build Prompt §16) to the automated test or drill that proves it.
 
@@ -105,3 +105,23 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 | A key the menu being heard does not offer | `internal/platform/ivr/alerts_test.go::TestAnInvalidKeyDoesNotCutTheAlertPrompt`, `internal/platform/ivr/outbound_test.go::TestAnInvalidKeyDoesNotCutAnOutboundPrompt` |
 | A menu callback retried after its decline committed; an open assignment beside a pending alert | `internal/respond/ussd_test.go::TestARetriedDeclineGetsTheSameAnswer`; `internal/platform/pg/opstore/respond_integration_test.go::TestResponderMenuReads` |
 | An off-duty availability screen over the limit | `internal/respond/ussd_test.go::TestAvailabilityScreensAreCheckedInBothStates` |
+
+## Review focus (UX hardening plan, phase UX-1; ADR-0034)
+
+| Input class | Proof |
+|---|---|
+| A hand-over that itself fails: the dialplan's dial busy, unanswered or a placeholder; ARI `continue` errors; ivr-controller stops mid-call | `internal/platform/ivr/controller_test.go::TestHandOverRecordsAnEscalationEvenWhenContinueFails`, `::TestShutdownHandsOverLiveCalls`; `internal/platform/ivr/dialplan_test.go::TestFallbackDialplanRetriesThenCloses`; `internal/intake/ivr_test.go::TestHandOverEscalatesOncePerCall` |
+| A pocket dial against a silent caller who has engaged; three wrong keys | `internal/platform/ivr/controller_test.go::TestSilenceAfterAnAnswerHandsOver`, `::TestSilenceFromTheFirstPromptHangsUp`, `::TestThreeNoMatchesHandOver`, `::TestNoMatchCountResetsOnAValidAnswer` |
+| Escalations racing an acknowledgement, and a merge | `internal/platform/pg/opstore/coordinator_integration_test.go::TestClaimAnnouncesEveryUnacknowledgedReason`, `::TestAReasonAfterTheClaimRingsAgain`, `::TestHasUnacknowledgedEscalation`; `internal/intake/dedup_test.go::TestMergedUnacknowledgedEscalationRingsOnTheSurvivor`; `internal/platform/ivr/outbound_test.go::TestCoordinatorCallSpeaksReasonsInPriorityOrder` |
+| Every protocol flag off keeps today's protocol | `internal/intake/service_test.go::TestOutOfAreaFlagOffClosesAsToday`, `::TestOutOfAreaAfterDangerEscalatesWhenFlagged` |
+| ivr-controller restarts, or its event stream reconnects, with calls live | `internal/platform/ivr/controller_test.go::TestReconnectHandsOverOrphanedChannels`, `::TestReconnectLeavesOwnedChannelsAlone`; `internal/platform/ivr/asterisk_test.go::TestRunHandsOverACallParkedWhileTheStreamWasDown`; `internal/platform/ari/client_test.go::TestClientStreamReportsEachConnect`, `::TestClientListsChannelsWithTheirApplication` |
+| A prompt whose end event is lost; a recording that fails to play | `internal/platform/ivr/controller_test.go::TestALostEndOfPromptStillRepromptsWithinTheBackstop`, `::TestAFailedQuestionPromptHandsOver`; `internal/platform/ivr/bridge_test.go::TestAFailedBridgePromptGoesToACoordinator`; `internal/platform/ivr/alerts_test.go::TestAFailedAlertPromptHangsUp`; `internal/platform/ari/client_test.go::TestDecodePlaybackFailedState` |
+| A coordinator taking a handed-over call never sees the caller's number | `internal/platform/ivr/controller_test.go::TestHandOverShowsSautiAndTheReference`; `internal/platform/ari/client_test.go::TestClientSetsCallerName` |
+| A DID delivered with a leading `+`; the bridge number with its application down | `internal/platform/ivr/dialplan_test.go::TestInboundContextsMatchPlusPrefixedDIDs`, `::TestBridgeInboundFallsBackOnStasisFailure` |
+| A bridge caller who reaches nobody; an unknown number; an open report with nobody assigned (no enumeration oracle, T-030) | `internal/platform/ivr/bridge_test.go::TestBridgeCallerNoAnswerGoesToACoordinator`, `::TestBridgeUnknownNumberCanPressZeroForACoordinator`, `::TestBridgeOpenIncidentIsIndistinguishableFromAnUnknownNumber`, `::TestBridgeUnknownNumber`; `internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeOpenIncidentForCallerAndEscalate` |
+| An answered alert call nobody answers | `internal/platform/ivr/alerts_test.go::TestAnUnansweredAlertCallRepeatsThenHangsUp` |
+| An unanswered escalation: tier 2 and the dead-man gauge | `internal/platform/ivr/outbound_test.go::TestBackupLineRingsAfterThreeUnansweredCalls`; `internal/platform/pg/opstore/coordinator_integration_test.go::TestOldestUnacknowledgedEscalationGauge`; `cmd/intake-gw/main_test.go::TestEscalationGaugesExportTheDeadManSignal` |
+| A located incident whose dispatch never started; a stall after T3; a poison incident in either safety net | `internal/intake/sweeper_test.go::TestSweeperEscalatesALocatedYellowCallWithoutT2`, `::TestSweeperRecordsT2ByCatchUpWhenTheLandmarkIsKnown`, `::TestSweeperBeforeTheWardStillOnlyFlags`, `::TestSweeperDoesNotTakeSomewhereElseForAWard`, `::TestOneFailingIncidentDoesNotStopTheSweep`; `internal/intake/watchdog_test.go::TestWatchdogEscalatesOverdueTimers`, `::TestOneFailingIncidentDoesNotStopTheWatchdog`; `internal/platform/pg/opstore/idle_integration_test.go::TestListIdleCarriesTheWard`, `::TestWatchdogEscalatesAnOverdueTimerAfterT3` |
+| Every escalation reason has a recording and a runbook row | `internal/incident/reasons_test.go::TestReasonRankOrdersTriageRuleErrorFirst`; `internal/platform/ivr/catalogue_test.go::TestEveryEscalationReasonHasARecordingAndARunbookRow` |
+| The pre-M5 escalation list | `cmd/sautictl/escalations_integration_test.go::TestEscalationsListsOnlyUnacknowledged` |
+| A runbook that still says escalations do not ring, or asks for a call-back without M5 | `governance/tests/test_runbooks.py::test_no_stale_escalation_phrases` |

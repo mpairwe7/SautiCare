@@ -16,7 +16,8 @@ risks:
     mitigation: >-
       Deterministic decision table authored by the emergency-medicine
       co-investigators; severity can only rise, enforced in Go and in the SQL
-      write path; a rule error makes the incident red and alerts a coordinator.
+      write path; a rule error makes the incident red and alerts a coordinator,
+      and its escalation is announced first and survives a merge (ADR-0034).
     verified_by:
       - internal/incident/fold_test.go::TestApplyRejectsSeverityLowering
       - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering
@@ -30,6 +31,8 @@ risks:
       - internal/intake/atomicity_test.go::TestRuleErrorFlagAndEscalationSurviveAFailure
       - internal/platform/pg/opstore/dedup_integration_test.go::TestMergeCarriesSeverityAndEscalation
       - tests/e2e/m1_intake_test.go::TestScenario3PoisoningIsYellow
+      - internal/incident/reasons_test.go::TestReasonRankOrdersTriageRuleErrorFirst
+      - internal/intake/dedup_test.go::TestMergedUnacknowledgedEscalationRingsOnTheSurvivor
   - id: AIR-002
     title: Logic version not recorded, so a mid-study amendment corrupts the dataset
     nist_function: GOVERN
@@ -89,11 +92,21 @@ risks:
     owner_role: Medical Director
     mitigation: >-
       Fail safe to a human (rule 3.14): intake always answers and gives the
-      voice line on error; durable escalation workflow places a coordinator
-      voice call on any error or timeout.
+      voice line on error; every escalation rings the coordinator line until
+      acknowledged, with every unacknowledged reason announced, a backup line
+      after three unanswered rings and a dead-man gauge from intake-gw; every
+      voice hand-over, unanswered bridge caller, undispatched located incident
+      and overdue dispatch timer is escalated (ADR-0029, ADR-0034).
     verified_by:
       - internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine
-      - "planned:M2 escalation port and durable escalation workflow tests"
+      - internal/platform/pg/opstore/forward_integration_test.go::TestCoordinatorCalls
+      - internal/platform/pg/opstore/coordinator_integration_test.go::TestClaimAnnouncesEveryUnacknowledgedReason
+      - internal/platform/ivr/outbound_test.go::TestBackupLineRingsAfterThreeUnansweredCalls
+      - internal/platform/ivr/controller_test.go::TestHandOverRecordsAnEscalationEvenWhenContinueFails
+      - internal/platform/ivr/controller_test.go::TestThreeNoMatchesHandOver
+      - internal/platform/ivr/bridge_test.go::TestBridgeCallerNoAnswerGoesToACoordinator
+      - internal/intake/sweeper_test.go::TestSweeperEscalatesALocatedYellowCallWithoutT2
+      - internal/platform/pg/opstore/idle_integration_test.go::TestWatchdogEscalatesAnOverdueTimerAfterT3
   - id: AIR-007
     title: Learned dispatch introduced without approved data or ethics approval
     nist_function: GOVERN
