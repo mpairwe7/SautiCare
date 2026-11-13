@@ -264,8 +264,11 @@ func TestRelayLeaderRecampaignsAfterLockLoss(t *testing.T) {
 	super := c.Superuser(t, pg.StoreOperational)
 	var killed bool
 	qctx, qcancel := context.WithTimeout(ctx, 30*time.Second)
+	// Advisory locks are per database but pg_locks is server-wide: without
+	// the database filter this could kill another test run's lock holder.
 	err = super.QueryRow(qctx, `SELECT pg_terminate_backend(pid) FROM pg_locks
-		WHERE locktype = 'advisory' AND objid = $1 AND objsubid = 1 AND granted`, key).Scan(&killed)
+		WHERE locktype = 'advisory' AND objid = $1 AND objsubid = 1 AND granted
+		  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`, key).Scan(&killed)
 	qcancel()
 	if err != nil || !killed {
 		t.Fatalf("terminate lock holder: %v (killed=%v)", err, killed)
