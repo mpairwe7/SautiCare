@@ -24,6 +24,7 @@ sounds:
     - sauti/en/alert-accepted
     - sauti/en/alert-already-assigned
     - sauti/en/alert-already-taken
+    - sauti/en/alert-bridge-instructions
     - sauti/en/alert-category-acute_medical
     - sauti/en/alert-category-obstetric
     - sauti/en/alert-category-other
@@ -36,6 +37,13 @@ sounds:
     - sauti/en/alert-intro
     - sauti/en/alert-no-longer-needed
     - sauti/en/alert-options
+    - sauti/en/bridge-choose-role
+    - sauti/en/bridge-choose-side
+    - sauti/en/bridge-connecting
+    - sauti/en/bridge-last-four
+    - sauti/en/bridge-last-four-again
+    - sauti/en/bridge-no-answer
+    - sauti/en/bridge-no-assignment
     - sauti/en/callback
     - sauti/en/callback-same_number
     - sauti/en/callback-withheld
@@ -57,6 +65,7 @@ sounds:
     - sauti/en/escalation-options
     - sauti/en/escalation-reason-abandoned_after_danger_yes
     - sauti/en/escalation-reason-abandoned_red_before_dispatch
+    - sauti/en/escalation-reason-assigned_follow_up
     - sauti/en/escalation-reason-dispatch_error
     - sauti/en/escalation-reason-dispatch_stalled
     - sauti/en/escalation-reason-dispatch_suspended
@@ -135,6 +144,7 @@ sounds:
     - sauti/lg/alert-accepted
     - sauti/lg/alert-already-assigned
     - sauti/lg/alert-already-taken
+    - sauti/lg/alert-bridge-instructions
     - sauti/lg/alert-category-acute_medical
     - sauti/lg/alert-category-obstetric
     - sauti/lg/alert-category-other
@@ -147,6 +157,13 @@ sounds:
     - sauti/lg/alert-intro
     - sauti/lg/alert-no-longer-needed
     - sauti/lg/alert-options
+    - sauti/lg/bridge-choose-role
+    - sauti/lg/bridge-choose-side
+    - sauti/lg/bridge-connecting
+    - sauti/lg/bridge-last-four
+    - sauti/lg/bridge-last-four-again
+    - sauti/lg/bridge-no-answer
+    - sauti/lg/bridge-no-assignment
     - sauti/lg/callback
     - sauti/lg/callback-same_number
     - sauti/lg/callback-withheld
@@ -168,6 +185,7 @@ sounds:
     - sauti/lg/escalation-options
     - sauti/lg/escalation-reason-abandoned_after_danger_yes
     - sauti/lg/escalation-reason-abandoned_red_before_dispatch
+    - sauti/lg/escalation-reason-assigned_follow_up
     - sauti/lg/escalation-reason-dispatch_error
     - sauti/lg/escalation-reason-dispatch_stalled
     - sauti/lg/escalation-reason-dispatch_suspended

@@ -142,7 +142,8 @@ func TestAcceptFromTheMenu(t *testing.T) {
 	_, g := repoConfig(t)
 	w, _ := g.Ward("w01")
 	done := dial(t, s, "1")
-	if !done.End || !strings.Contains(done.Text, "123 456 7894") || !strings.Contains(done.Text, w.Name.EN) || len(f.accepted) != 1 {
+	if !done.End || !strings.Contains(done.Text, "123 456 7894") || !strings.Contains(done.Text, w.Name.EN) || len(f.accepted) != 1 ||
+		!strings.Contains(done.Text, "bridge line") {
 		t.Fatalf("accepted %q %v", done.Text, f.accepted)
 	}
 	f.accept = dispatch.AlreadyTaken
@@ -210,7 +211,7 @@ func TestMenuShowsTheActiveAssignment(t *testing.T) {
 	w, _ := g.Ward("w01")
 	top := dial(t, s, "")
 	if top.End || !strings.Contains(top.Text, "123 456 7894") || !strings.Contains(top.Text, w.Name.EN) ||
-		strings.Contains(top.Text, "1 Accept") || !strings.Contains(top.Text, "3 Availability") {
+		strings.Contains(top.Text, "1 Accept") || !strings.Contains(top.Text, "3 Availability") || !strings.Contains(top.Text, "bridge line") {
 		t.Fatalf("assigned menu %q", top.Text)
 	}
 	if sc := dial(t, s, "1"); sc.End || len(f.accepted) != 0 {

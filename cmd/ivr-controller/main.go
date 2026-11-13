@@ -17,6 +17,7 @@
 //	SAUTI_ARI_CALLER_ID   the number responders see on an alert call (placeholder until P0)
 //	SAUTI_COORDINATOR_DIAL the coordinator line rung about every escalation (endpoint; placeholder until P0); unset: no escalation calls
 //	SAUTI_COORDINATOR_LINES calls the coordinator line takes at once (default 1): never rung twice at once
+//	SAUTI_ARI_CALLER_ID also the number both parties of the masked bridge see (the bridge needs it and SAUTI_ARI_DIAL)
 //	SAUTI_OUTBOUND_NO_INPUT an answered forwarding or coordinator call with no key for this long is hung up (default 2m; 30s-10m)
 //	SAUTI_ADMIN_ADDR      health and metrics (default 127.0.0.1:9101)
 //	SAUTI_DEVKEYS_DIR     development key directory (refused in production)
@@ -195,6 +196,17 @@ func run(log *slog.Logger) error {
 				return err
 			}
 			out.Alerts, out.Forwards = calls, forwards
+			// The masked bridge (Build Prompt §10.5): responders and callers
+			// reach each other through Sauti's number; nothing is recorded.
+			if callerID != "" {
+				if out.Bridge, err = ivr.NewBridge(ivr.BridgeConfig{ARI: alertClient, Store: store,
+					Keys: crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)}, Opener: crypto.NewEnvelope(keys, rand.Reader),
+					Dial: dial, CallerID: callerID, Log: log}); err != nil {
+					return err
+				}
+			} else {
+				log.Warn("SAUTI_ARI_CALLER_ID is not set: no masked bridge (the other party would see no Sauti number)")
+			}
 			loops = append(loops,
 				func(lctx context.Context) error { return calls.Run(lctx, 2*time.Second, onErr) },
 				func(lctx context.Context) error { return forwards.Run(lctx, 2*time.Second, onErr) })

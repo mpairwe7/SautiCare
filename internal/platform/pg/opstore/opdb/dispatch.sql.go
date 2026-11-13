@@ -168,6 +168,22 @@ func (q *Queries) BeginAttempt(ctx context.Context, arg BeginAttemptParams) (Beg
 	return i, err
 }
 
+const beginBridgeCall = `-- name: BeginBridgeCall :one
+SELECT op.begin_bridge_call($1::uuid, $2::text)::uuid AS id
+`
+
+type BeginBridgeCallParams struct {
+	IncidentID  pgtype.UUID
+	InitiatedBy string
+}
+
+func (q *Queries) BeginBridgeCall(ctx context.Context, arg BeginBridgeCallParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, beginBridgeCall, arg.IncidentID, arg.InitiatedBy)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const beginForwardAttempt = `-- name: BeginForwardAttempt :one
 SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
 FROM op.begin_forward_attempt($1::uuid, $2::text, $3::text) AS a(attempt_id, fresh)
@@ -212,6 +228,89 @@ func (q *Queries) BeginNoticeAttempt(ctx context.Context, arg BeginNoticeAttempt
 	var i BeginNoticeAttemptRow
 	err := row.Scan(&i.AttemptID, &i.Fresh)
 	return i, err
+}
+
+const bridgeCallAnswered = `-- name: BridgeCallAnswered :exec
+SELECT op.bridge_call_answered($1::uuid)
+`
+
+func (q *Queries) BridgeCallAnswered(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, bridgeCallAnswered, id)
+	return err
+}
+
+const bridgeTargetsForCaller = `-- name: BridgeTargetsForCaller :many
+SELECT t.incident_id::uuid AS incident_id, t.reference::text AS reference, t.role::text AS role, t.responder_id::uuid AS responder_id
+FROM op.bridge_targets_for_caller($1::bytea[]) AS t(incident_id, reference, role, responder_id)
+`
+
+type BridgeTargetsForCallerRow struct {
+	IncidentID  pgtype.UUID
+	Reference   string
+	Role        string
+	ResponderID pgtype.UUID
+}
+
+func (q *Queries) BridgeTargetsForCaller(ctx context.Context, macs [][]byte) ([]BridgeTargetsForCallerRow, error) {
+	rows, err := q.db.Query(ctx, bridgeTargetsForCaller, macs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BridgeTargetsForCallerRow
+	for rows.Next() {
+		var i BridgeTargetsForCallerRow
+		if err := rows.Scan(
+			&i.IncidentID,
+			&i.Reference,
+			&i.Role,
+			&i.ResponderID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const bridgeTargetsForResponder = `-- name: BridgeTargetsForResponder :many
+SELECT t.incident_id::uuid AS incident_id, t.reference::text AS reference, t.role::text AS role, t.responder_id::uuid AS responder_id
+FROM op.bridge_targets_for_responder($1::uuid) AS t(incident_id, reference, role, responder_id)
+`
+
+type BridgeTargetsForResponderRow struct {
+	IncidentID  pgtype.UUID
+	Reference   string
+	Role        string
+	ResponderID pgtype.UUID
+}
+
+func (q *Queries) BridgeTargetsForResponder(ctx context.Context, responderID pgtype.UUID) ([]BridgeTargetsForResponderRow, error) {
+	rows, err := q.db.Query(ctx, bridgeTargetsForResponder, responderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BridgeTargetsForResponderRow
+	for rows.Next() {
+		var i BridgeTargetsForResponderRow
+		if err := rows.Scan(
+			&i.IncidentID,
+			&i.Reference,
+			&i.Role,
+			&i.ResponderID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const busyResponders = `-- name: BusyResponders :many
@@ -521,13 +620,14 @@ func (q *Queries) DispatchAlerts(ctx context.Context, incidentID pgtype.UUID) ([
 }
 
 const dispatchAssignments = `-- name: DispatchAssignments :many
-SELECT role, responder_id FROM op.assignments
+SELECT role, responder_id, accepted_at FROM op.assignments
 WHERE incident_id = $1::uuid AND released_at IS NULL
 `
 
 type DispatchAssignmentsRow struct {
 	Role        string
 	ResponderID pgtype.UUID
+	AcceptedAt  pgtype.Timestamptz
 }
 
 func (q *Queries) DispatchAssignments(ctx context.Context, incidentID pgtype.UUID) ([]DispatchAssignmentsRow, error) {
@@ -539,7 +639,7 @@ func (q *Queries) DispatchAssignments(ctx context.Context, incidentID pgtype.UUI
 	var items []DispatchAssignmentsRow
 	for rows.Next() {
 		var i DispatchAssignmentsRow
-		if err := rows.Scan(&i.Role, &i.ResponderID); err != nil {
+		if err := rows.Scan(&i.Role, &i.ResponderID, &i.AcceptedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -707,6 +807,24 @@ func (q *Queries) DispatchRedSince(ctx context.Context, incidentID pgtype.UUID) 
 	return red_since, err
 }
 
+const dispatchSurge = `-- name: DispatchSurge :one
+SELECT s.waiting::int AS waiting, s.available::int AS available, s.surge::boolean AS surge
+FROM op.dispatch_surge() AS s(waiting, available, surge)
+`
+
+type DispatchSurgeRow struct {
+	Waiting   int32
+	Available int32
+	Surge     bool
+}
+
+func (q *Queries) DispatchSurge(ctx context.Context) (DispatchSurgeRow, error) {
+	row := q.db.QueryRow(ctx, dispatchSurge)
+	var i DispatchSurgeRow
+	err := row.Scan(&i.Waiting, &i.Available, &i.Surge)
+	return i, err
+}
+
 const dispatchSuspended = `-- name: DispatchSuspended :one
 SELECT op.dispatch_suspended()::boolean AS suspended
 `
@@ -805,6 +923,22 @@ type FinishAttemptParams struct {
 
 func (q *Queries) FinishAttempt(ctx context.Context, arg FinishAttemptParams) (bool, error) {
 	row := q.db.QueryRow(ctx, finishAttempt, arg.AttemptID, arg.Status, arg.ProviderRef)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
+const finishBridgeCall = `-- name: FinishBridgeCall :one
+SELECT op.finish_bridge_call($1::uuid, $2::text)::boolean AS changed
+`
+
+type FinishBridgeCallParams struct {
+	ID     pgtype.UUID
+	Result string
+}
+
+func (q *Queries) FinishBridgeCall(ctx context.Context, arg FinishBridgeCallParams) (bool, error) {
+	row := q.db.QueryRow(ctx, finishBridgeCall, arg.ID, arg.Result)
 	var changed bool
 	err := row.Scan(&changed)
 	return changed, err

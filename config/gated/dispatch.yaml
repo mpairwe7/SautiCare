@@ -13,6 +13,11 @@ voice_fallback_after: 20s
 # at 3 minutes for red with a role unaccepted (both modes), or when the
 # cascade is exhausted for yellow and green.
 red_escalation_after: 3m
+# Interim until M3's arrival verification (ADR-0028; rule 14): an incident
+# still open this long after its first acceptance is escalated once, so a
+# coordinator checks with the caller that help came. PENDING the PI's
+# interval; Build Prompt §10.4 asks the caller "at set intervals" (M3).
+follow_up_after: 20m
 # Stopping rule (Guide §14; O6): red dispatch failure above 15% across 30
 # consecutive red incidents suspends dispatch automatically. A failure is a
 # red incident with no acceptance before its closure or its escalation for

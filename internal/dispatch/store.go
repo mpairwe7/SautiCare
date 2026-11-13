@@ -73,6 +73,7 @@ type Snapshot struct {
 	Ward            string
 	Alerts          []Alert
 	Assigned        map[responder.Role]uuid.UUID
+	AcceptedAt      *time.Time // the first open acceptance
 	Forwards        []ForwardState
 	Escalations     []string
 	CallerNotified  []string
@@ -154,4 +155,33 @@ type CoordinatorCall struct {
 	Reason     string
 	Reference  incident.Reference
 	Calls      int
+}
+
+// BridgeTarget is an open assignment the masked bridge can connect: the
+// incident, its number (for "the last 4 digits"), and the assigned role and
+// responder (Build Prompt §10.5).
+type BridgeTarget struct {
+	IncidentID  uuid.UUID
+	Reference   incident.Reference
+	Role        responder.Role
+	ResponderID uuid.UUID
+}
+
+// Who began a bridge call, and how it ended (op.bridge_calls).
+const (
+	BridgeByVHT         = "vht"
+	BridgeByTransporter = "transporter"
+	BridgeByCaller      = "caller"
+
+	BridgeConnected = "connected"
+	BridgeNoAnswer  = "no_answer"
+	BridgeFailed    = "failed"
+)
+
+// Surge is more emergencies than responders (Build Prompt §10.4): the
+// incidents waiting for a first acceptance against the responders free now.
+// Incidents queue by severity, then T2; nothing is dropped.
+type Surge struct {
+	Waiting, Available int
+	Surge              bool
 }

@@ -500,3 +500,48 @@ threats:
       - internal/platform/wiring/voice_integration_test.go::TestScenario9VoiceAt20Seconds
       - internal/platform/wiring/forward_integration_test.go::TestScenario7ForwardAcknowledged
       - internal/platform/wiring/forward_integration_test.go::TestScenario11RuleErrorRingsTheCoordinator
+  - id: T-029
+    title: An acceptance forged or made for another responder (a spoofed menu, voice or bridge caller)
+    stride: Spoofing
+    linddun: Non-compliance
+    asset: alerts and assignments
+    hard_constraints: [3, 8, 14]
+    mitigations:
+      - A responder is recognised only by the keyed hash of their registered number; an ambiguous or unknown number is not recognised
+      - The database lets a responder answer only their own alert and serialises a responder's acceptances (one open assignment at a time); the first acceptance per role wins
+      - A menu session is pinned to its alert, so a later alert cannot be answered by a replayed choice
+    verified_by:
+      - internal/platform/pg/opstore/review10cr_integration_test.go::TestAcceptsSerialisePerResponder
+      - internal/platform/wiring/respond_integration_test.go::TestConcurrentAcceptsThroughTheMenu
+      - internal/platform/pg/opstore/respond_integration_test.go::TestResponderMenuReads
+      - internal/respond/ussd_test.go::TestUnregisteredNumber
+  - id: T-030
+    title: Someone calls the bridge number pretending to be a responder or a caller, to reach the other party
+    stride: Spoofing
+    linddun: Identifying
+    asset: the masked bridge
+    hard_constraints: [5]
+    mitigations:
+      - The bridge connects only a number whose keyed hash matches a responder with an open assignment, or a number that a session of an open incident (or of a report merged into it, until a split) came from; anyone else hears the same "nothing to connect" message, so the bridge reveals nobody's registration
+      - Neither party ever learns the other's number; a spoofed caller ID reaches only the voice of the other party, never a number or a record
+    verified_by:
+      - internal/platform/ivr/bridge_test.go::TestBridgeUnknownNumber
+      - internal/platform/ivr/bridge_test.go::TestBridgeCallerCallsBack
+      - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeTargetsAndLog
+      - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeCallerOfAMergedReport
+  - id: T-031
+    title: The bridge exposes the caller's number (caller ID, logs, payloads, a recording)
+    stride: Information disclosure
+    linddun: Disclosure of information
+    asset: the caller's and responders' numbers
+    hard_constraints: [5, 8]
+    mitigations:
+      - Each leg shows Sauti's number; the calling party's caller ID is set to Sauti's before it joins the bridge, so no connected-line update carries the real number (the trunk should also set send_connected_line=no); a number is opened only to dial it and never logged; the bridge log holds identifiers only
+      - The ARI client can create only plain mixing bridges — no recording, snooping or external media
+    verified_by:
+      - internal/platform/ivr/bridge_test.go::TestBridgeResponderToCaller
+      - internal/platform/wiring/scenarios_integration_test.go::TestScenario1RedTraumaThroughTheChannels
+      - internal/platform/ari/client_test.go::TestNoRecordingEndpointsUsed
+      - internal/platform/ari/client_test.go::TestClientMixingBridge
+      - internal/platform/ari/client_test.go::TestClientCallerIDAndRingback
+

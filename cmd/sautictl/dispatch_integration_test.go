@@ -26,7 +26,7 @@ func TestDispatchSuspendStatusResume(t *testing.T) {
 		}
 		return out.String()
 	}
-	if s := run("dispatch", "status", "--dsn", ro); !strings.Contains(s, "dispatch: active") {
+	if s := run("dispatch", "status", "--dsn", ro); !strings.Contains(s, "dispatch: active") || !strings.Contains(s, "surge: no (0 waiting, 0 free responders)") {
 		t.Fatalf("status: %s", s)
 	}
 	run("dispatch", "suspend", "--dsn", console, "--config", "../../config", "--reason", "coordinator_decision", "--staff", staff)

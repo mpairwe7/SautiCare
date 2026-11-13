@@ -89,6 +89,7 @@ type Dispatch struct {
 	ForwardAckTimeout  Duration     `yaml:"forward_ack_timeout"`
 	VoiceFallbackAfter Duration     `yaml:"voice_fallback_after"`
 	RedEscalationAfter Duration     `yaml:"red_escalation_after"`
+	FollowUpAfter      Duration     `yaml:"follow_up_after"`
 	StoppingRule       StoppingRule `yaml:"stopping_rule"`
 	RankingOrder       []string     `yaml:"ranking_order"`
 	RankingVersion     string       `yaml:"ranking_version"`

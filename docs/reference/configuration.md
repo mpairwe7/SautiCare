@@ -29,6 +29,7 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `forward_ack_timeout` | `60s` | decision 2 |
 | | `voice_fallback_after` | `20s` | decision 8 |
 | | `red_escalation_after` | `3m` | decision 2 (protocol answer): coordinator alerted for red with a role unaccepted, both modes |
+| | `follow_up_after` | `20m` (PENDING the PI) | interim until M3's arrival verification (ADR-0028, rule 14): an incident still open this long after its first acceptance is escalated once (`assigned_follow_up`), so a coordinator checks with the caller |
 | | `stopping_rule` | `{window: 30, max_failure_rate: 0.15}` | Guide §14, O6: red dispatch failure above 15% across 30 consecutive red incidents suspends dispatch automatically; the worker refuses a window below 1 or a rate that is not a number strictly between 0 and 1 (`.nan` included) |
 | | `ranking_order` | `zone_distance, response_history, least_recently_dispatched` | decision 4 **open**: safe default |
 | | `ranking_version` | `default-2026-11-12` | stamped on incidents (M2) |

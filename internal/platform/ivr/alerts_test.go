@@ -226,7 +226,8 @@ func TestAlertCallAccept(t *testing.T) {
 	// the call ends only once it has been heard.
 	last := a.plays[len(a.plays)-1]
 	if st.accepted != 1 || !slices.Contains(last, "sauti/en/alert-accepted") || !slices.Contains(last, "sauti/en/ward-w01") ||
-		!slices.Contains(last, "sauti/en/landmark-w01_market") || !slices.Contains(last, "sauti/digits/4") || slices.Contains(a.hungUp, ch) {
+		!slices.Contains(last, "sauti/en/landmark-w01_market") || !slices.Contains(last, "sauti/digits/4") ||
+		last[len(last)-1] != "sauti/en/alert-bridge-instructions" || slices.Contains(a.hungUp, ch) {
 		t.Fatalf("accept: %d plays %v hung up %v", st.accepted, a.plays, a.hungUp)
 	}
 	c.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: "another"})

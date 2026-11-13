@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -32,6 +33,7 @@ type Outbound struct {
 	Alerts      *AlertCalls
 	Forwards    *ForwardCalls
 	Coordinator *CoordinatorCalls
+	Bridge      *Bridge // the masked bridge's calls (bridge, bridge-leg)
 }
 
 type outboundHandler interface {
@@ -50,6 +52,9 @@ func (o Outbound) Handle(ctx context.Context, e Event) {
 	if o.Coordinator != nil {
 		byKind["escalation"] = o.Coordinator
 	}
+	if o.Bridge != nil {
+		byKind["bridge"], byKind["bridge-leg"] = o.Bridge, o.Bridge
+	}
 	if e.Type == EventStasisStart {
 		if len(e.Args) > 0 {
 			if h, ok := byKind[e.Args[0]]; ok {
@@ -57,13 +62,26 @@ func (o Outbound) Handle(ctx context.Context, e Event) {
 				return
 			}
 		}
-		if o.ARI != nil { // not a call Sauti placed: end it
-			_ = o.ARI.Hangup(ctx, e.ChannelID)
+		if o.ARI == nil {
+			return
 		}
+		// The bridge number with no bridge in this process (no caller ID or
+		// dial template configured): a coordinator answers (rule 14).
+		if c, ok := o.ARI.(interface {
+			Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error
+		}); ok && len(e.Args) > 0 && e.Args[0] == "bridge" {
+			if err := c.Continue(ctx, e.ChannelID, FallbackContext, "s", 1); err == nil {
+				return
+			}
+		}
+		_ = o.ARI.Hangup(ctx, e.ChannelID) // not a call Sauti placed: end it
 		return
 	}
-	for _, h := range byKind {
-		h.Handle(ctx, e)
+	// Every other event goes to each kind once (the bridge serves two kinds).
+	for _, h := range []outboundHandler{o.Alerts, o.Forwards, o.Coordinator, o.Bridge} {
+		if h != nil && !reflect.ValueOf(h).IsNil() {
+			h.Handle(ctx, e)
+		}
 	}
 }
 
@@ -677,7 +695,7 @@ var reasonCode = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 var EscalationReasons = []string{
 	"triage_rule_error", "abandoned_after_danger_yes", "abandoned_red_before_dispatch", "merged_call_escalated",
 	"no_eligible_responder", "no_responder_nearby", "red_no_acceptance", "forwarded_to_facility",
-	"no_facility_acknowledged", "dispatch_suspended", "dispatch_error", "dispatch_stalled",
+	"no_facility_acknowledged", "dispatch_suspended", "dispatch_error", "dispatch_stalled", "assigned_follow_up",
 }
 
 func escalationReasonSound(lang, reason string) string {

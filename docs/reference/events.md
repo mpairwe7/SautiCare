@@ -32,7 +32,7 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `incident.unmerged` | — | exactly `from` (the survivor) | staff, console role only; `merged` → `dispatching`; needs T2 |
 | `incident.closed` | — | `reason` | terminal |
 
-Delivery attempts are not incident events. Each SMS or call attempt is a row in `op.alert_attempts`, `op.notice_attempts` or `op.forward_attempts`, claimed once per channel and carrying its result and delivery report. A coordinator's acknowledgement of an escalation call is held in `op.coordinator_calls` ([ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md)). It carries no staff identity, because the phone line does not know who pressed 1. The coordinator's actions on the incident are recorded on the console (M5).
+Delivery attempts are not incident events. Each SMS or call attempt is a row in `op.alert_attempts`, `op.notice_attempts` or `op.forward_attempts`, claimed once per channel and carrying its result and delivery report. A coordinator's acknowledgement of an escalation call is held in `op.coordinator_calls` ([ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md)). It carries no staff identity, because the phone line does not know who pressed 1. The coordinator's actions on the incident are recorded on the console (M5). Masked-bridge calls are logged in `op.bridge_calls` (who began the call, when it started, was answered and ended, and its result; identifiers only, no number), not as incident events ([ADR-0028](../adr/ADR-0028-masked-bridge-and-surge.md)).
 
 ## Idempotency keys and atomic batches
 

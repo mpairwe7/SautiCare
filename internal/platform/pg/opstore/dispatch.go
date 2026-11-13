@@ -198,6 +198,9 @@ func (s *Store) DispatchSnapshot(ctx context.Context, incidentID uuid.UUID) (dis
 	}
 	for _, a := range assigned {
 		snap.Assigned[responder.Role(a.Role)] = uuid.UUID(a.ResponderID.Bytes)
+		if at := a.AcceptedAt.Time; snap.AcceptedAt == nil || at.Before(*snap.AcceptedAt) {
+			snap.AcceptedAt = &at
+		}
 	}
 	forwards, err := q.DispatchForwards(ctx, id)
 	if err != nil {

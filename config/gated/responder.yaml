@@ -32,8 +32,8 @@ menu:
   decline: {en: "Decline", lg: "PENDING-TRANSLATION"}
   availability: {en: "Availability", lg: "PENDING-TRANSLATION"}
   no_alert: {en: "PENDING-RESPONDER Sauti: no active alert.", lg: "PENDING-TRANSLATION"}
-  accepted: {en: "PENDING-RESPONDER Accepted {ref}. Go to {landmark}, {ward}.", lg: "PENDING-TRANSLATION {ref} {landmark} {ward}"}
-  assigned: {en: "PENDING-RESPONDER You are on {ref}. Go to {landmark}, {ward}.", lg: "PENDING-TRANSLATION {ref} {landmark} {ward}"}
+  accepted: {en: "PENDING-RESPONDER Accepted {ref}. Go to {landmark}, {ward}. Caller: Sauti bridge line.", lg: "PENDING-TRANSLATION {ref} {landmark} {ward}"}
+  assigned: {en: "PENDING-RESPONDER On {ref}: {landmark}, {ward}. Caller: Sauti bridge line.", lg: "PENDING-TRANSLATION {ref} {landmark} {ward}"}
   already_taken: {en: "PENDING-RESPONDER Already taken, thank you.", lg: "PENDING-TRANSLATION"}
   already_assigned: {en: "PENDING-RESPONDER You are already on another incident.", lg: "PENDING-TRANSLATION"}
   no_longer_needed: {en: "PENDING-RESPONDER No longer needed. Thank you.", lg: "PENDING-TRANSLATION"}
