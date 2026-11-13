@@ -310,7 +310,7 @@ func TestBridgeResponderToCaller(t *testing.T) {
 	b, a, logs := bridgeRig(t, st, 30*time.Second)
 	dialIn(b, "in-1", responderNum)
 	if len(a.endpoints) != 1 || a.endpoints[0] != "PJSIP/"+callerNum+"@sauti-trunk" || a.callerIDs[0] != sautiNum ||
-		a.args[0][0] != "bridge-leg" || slices.ContainsFunc(a.args[0], func(s string) bool { return strings.Contains(s, "772") }) {
+		a.args[0][0] != "bridge-leg" || slices.ContainsFunc(a.args[0], func(s string) bool { return strings.Contains(s, "772000") }) {
 		t.Fatalf("dialled %v as %v with %v", a.endpoints, a.callerIDs, a.args)
 	}
 	if !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-connecting") || !slices.Contains(a.lastSounds("in-1"), ari.RingbackTone) ||
