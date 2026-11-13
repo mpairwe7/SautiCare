@@ -53,7 +53,7 @@ Chosen option: **ports, adapters, attempts claimed once**.
 - They can accept their most recent alert, then hear where to go. A late accept hears "already taken".
 - They can decline it. Once decision 6's amendment allows, they choose from the role's closed list, whose last option is Other (Build Prompt §10.5, verbatim); the code is stored (scenario 10).
 - They can switch availability on for 8 hours or off.
-- The menu is stateless over USSD and checked against the screen limit and GSM-7 at start.
+- The menu is stateless over USSD: a retried callback gets the same answer (a decline repeated after it was committed, or after the alert closed, reads the stored outcome from `op.decline_alert` without writing). Every screen, both availability states included, is checked against the screen limit and GSM-7 at start.
 
 **Voice** (ivr-controller, a separate Stasis application `sauti-alerts`):
 - **Alert calls:** an alert still pending 20 s after it was sent (`voice_fallback_after`) rings the responder (scenario 9), unless the responder has switched off or a gate has lapsed since (`op.responder_eligible_now`, checked again when the attempt is claimed). Press 1 to accept, 2 to decline (with reasons once allowed), 3 to repeat. Answers go through the same `op.accept_alert` and `op.decline_alert` as the menu.

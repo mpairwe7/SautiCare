@@ -2,6 +2,7 @@ package respond
 
 import (
 	"context"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -30,6 +31,8 @@ type fakeStore struct {
 	declined  map[uuid.UUID]string
 	available []bool
 	sessions  [][]byte
+	// declineCalls counts DeclineAlert calls, written or not.
+	declineCalls int
 }
 
 func (f *fakeStore) ResponderByPhone(context.Context, []crypto.MAC) (uuid.UUID, bool, error) {
@@ -50,7 +53,14 @@ func (f *fakeStore) AcceptAlert(_ context.Context, a, _ uuid.UUID) (dispatch.Acc
 	f.accepted = append(f.accepted, a)
 	return dispatch.AcceptOutcome{Result: f.accept}, nil
 }
+
+// DeclineAlert is op.decline_alert: an alert no longer pending answers its
+// stored outcome and nothing is written.
 func (f *fakeStore) DeclineAlert(_ context.Context, a, _ uuid.UUID, reason string) (string, error) {
+	f.declineCalls++
+	if f.alert.AlertID == a && f.alert.Outcome != dispatch.OutcomePending {
+		return f.alert.Outcome, nil
+	}
 	if f.declined == nil {
 		f.declined = map[uuid.UUID]string{}
 	}
@@ -233,5 +243,64 @@ func TestDeclinedNamesTheIncident(t *testing.T) {
 	f := &fakeStore{id: uuid.NewV7(), known: true, alert: pending(responder.RoleVHT), hasAlert: true}
 	if sc := dial(t, service(t, f, false), "2"); !sc.End || !strings.Contains(sc.Text, "123 456 7894") {
 		t.Fatalf("declined %q", sc.Text)
+	}
+}
+
+// CodeRabbit PR #11 (4560453658): a callback retried after its decline was
+// committed (or after the alert closed) gets the same answer: "2" on the
+// session's pinned alert, no longer pending, asks op.decline_alert, which
+// answers the stored outcome without writing — not "2" ignored and the "3"
+// of the reason read as Availability. An open assignment is not declined by
+// a stray "2": the menu shows it again.
+func TestARetriedDeclineGetsTheSameAnswer(t *testing.T) {
+	for _, askReasons := range []bool{false, true} {
+		f := &fakeStore{id: uuid.NewV7(), known: true, alert: pending(responder.RoleTransporter), hasAlert: true}
+		s := service(t, f, askReasons)
+		text := "2"
+		if askReasons {
+			text = "2*3"
+		}
+		first := dial(t, s, text)
+		f.alert.Outcome = dispatch.OutcomeDeclined // committed by the first callback
+		again := dial(t, s, text)
+		if !first.End || !again.End || again.Text != first.Text || len(f.declined) != 1 {
+			t.Fatalf("reasons=%v: first %q, retried %q, declines written %v", askReasons, first.Text, again.Text, f.declined)
+		}
+	}
+	f := &fakeStore{id: uuid.NewV7(), known: true, alert: pending(responder.RoleVHT), hasAlert: true}
+	f.alert.Outcome = dispatch.OutcomeNoResponse // lapsed before the answer reached Sauti
+	if sc := dial(t, service(t, f, true), "2*3"); !sc.End || !strings.Contains(sc.Text, "No longer needed") || len(f.declined) != 0 {
+		t.Fatalf("decline of a lapsed alert %q %v", sc.Text, f.declined)
+	}
+	a := pending(responder.RoleVHT)
+	a.Outcome, a.Assigned = dispatch.OutcomeAccepted, true
+	f = &fakeStore{id: uuid.NewV7(), known: true, alert: a, hasAlert: true}
+	if sc := dial(t, service(t, f, false), "2"); sc.End || f.declineCalls != 0 || !strings.Contains(sc.Text, "123 456 7894") {
+		t.Fatalf("a stray 2 on the assignment %q (declines asked %d)", sc.Text, f.declineCalls)
+	}
+	f = &fakeStore{id: uuid.NewV7(), known: true}
+	if sc := dial(t, service(t, f, false), "2"); sc.End || f.declineCalls != 0 {
+		t.Fatalf("2 with no alert %q (declines asked %d)", sc.Text, f.declineCalls)
+	}
+}
+
+// CodeRabbit PR #11 (4560453670): every availability screen is checked at
+// start, off duty as well as on, with and without the invalid-choice line:
+// an off-duty text that fits alone but not with the two options is refused.
+func TestAvailabilityScreensAreCheckedInBothStates(t *testing.T) {
+	b, g := repoConfig(t)
+	cp := b.Responder
+	cp.Menu = maps.Clone(cp.Menu)
+	options := len("\n1 ") + len(cp.Text("switch_on", "en")) + len("\n2 ") + len(cp.Text("switch_off", "en"))
+	cp.Menu["switched_off"] = config.Text{"en": strings.Repeat("o", 160-options+1)} // fits alone, not with the options
+	_, err := New(Config{Store: &fakeStore{}, Keys: fakeKeys{}, Copy: cp, Tool1: b.Tool1, Gazetteer: g, ScreenLimit: 160})
+	if err == nil || !strings.Contains(err.Error(), "availability/off/false/en") {
+		t.Fatalf("an oversized off-duty screen was accepted: %v", err)
+	}
+	cp.Menu["switched_off"] = b.Responder.Menu["switched_off"]
+	cp.Menu["invalid"] = config.Text{"en": strings.Repeat("i", 160-options+1)}
+	_, err = New(Config{Store: &fakeStore{}, Keys: fakeKeys{}, Copy: cp, Tool1: b.Tool1, Gazetteer: g, ScreenLimit: 160})
+	if err == nil || !strings.Contains(err.Error(), "availability/off/true/en") || !strings.Contains(err.Error(), "availability/on/true/en") {
+		t.Fatalf("an oversized invalid-choice screen was accepted: %v", err)
 	}
 }
