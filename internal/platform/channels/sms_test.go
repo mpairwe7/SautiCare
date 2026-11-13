@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -216,5 +217,32 @@ func TestFacilitySMS(t *testing.T) {
 	}
 	if _, err := newSMS(t, true, fakeDir{facts: facts}, s).NotifyFacility(context.Background(), uuid.NewV7(), "hc_unknown"); !errors.Is(err, dispatch.ErrRejected) {
 		t.Fatalf("unknown facility: %v", err)
+	}
+}
+
+// CodeRabbit PR #11 (4558030046): every message must fit one GSM-7 segment
+// with the names actually in force — a long or non-GSM-7 ward, landmark,
+// facility name or category label is refused at start, not sent split or
+// re-encoded.
+func TestSMSRefusesNamesThatDoNotFit(t *testing.T) {
+	b, g := repo(t)
+	cfg := func(g location.File, tool1 config.Tool1) SMSConfig {
+		return SMSConfig{Directory: fakeDir{facts: facts}, Opener: fakeOpener{t}, Sender: &fakeSender{}, Templates: b.SMS, Tool1: tool1,
+			Gazetteer: g, Amended: true}
+	}
+	if _, err := NewSMS(cfg(g, b.Tool1)); err != nil {
+		t.Fatalf("the gazetteer in the repository: %v", err)
+	}
+	long := g
+	long.Landmarks = slices.Clone(g.Landmarks)
+	long.Landmarks[0].Name.EN = strings.Repeat("Very long landmark name ", 6)
+	if _, err := NewSMS(cfg(long, b.Tool1)); err == nil || !strings.Contains(err.Error(), "alert_amended") {
+		t.Fatalf("a landmark name too long for one SMS: %v", err)
+	}
+	accented := g
+	accented.Wards = slices.Clone(g.Wards)
+	accented.Wards[0].Name.LG = "Kampala Central ŋ"
+	if _, err := NewSMS(cfg(accented, b.Tool1)); err == nil || !strings.Contains(err.Error(), "GSM") {
+		t.Fatalf("a ward name outside GSM-7: %v", err)
 	}
 }

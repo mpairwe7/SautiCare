@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -126,6 +127,31 @@ func (s SMS) render(name, text string, v SMSValues) string {
 		}
 		return v.lookup(key)
 	})
+}
+
+// CheckFits renders every template in every language with the values for
+// that language (the longest names and labels actually in force) and
+// refuses one that leaves GSM 03.38 or one segment: Validate checks fixed
+// long values, this checks the data a deployment really has.
+func (s SMS) CheckFits(values func(lang string) SMSValues) error {
+	var problems []string
+	for _, name := range slices.Sorted(maps.Keys(s.Templates)) {
+		for _, lang := range s.Languages {
+			out, err := s.Render(name, lang, values(lang))
+			switch {
+			case err != nil:
+				problems = append(problems, err.Error())
+			case !IsGSM7(out):
+				problems = append(problems, fmt.Sprintf("%s/%s leaves the GSM 03.38 basic character set with the names in force", name, lang))
+			case len(out) > smsLimit:
+				problems = append(problems, fmt.Sprintf("%s/%s: %d characters with the longest names in force (limit %d)", name, lang, len(out), smsLimit))
+			}
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New("sms: " + strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 // Render fills a template in lang (English if lang has none). Only the

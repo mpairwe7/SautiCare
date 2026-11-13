@@ -67,7 +67,58 @@ func NewSMS(c SMSConfig) (*SMS, error) {
 	if c.ResponderLanguage == "" {
 		c.ResponderLanguage = "en"
 	}
-	return &SMS{c: c}, nil
+	s := &SMS{c: c}
+	if err := s.checkNames(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// checkNames refuses names that would not fit one GSM-7 segment: every ward,
+// landmark and facility name and category label in force must be GSM 03.38,
+// and every template must fit with the longest of them (hard constraint 6
+// keeps an SMS to one segment; a split or re-encoded message is never sent).
+func (s *SMS) checkNames() error {
+	var problems []string
+	gsm := func(kind, id, lang, text string) {
+		if !config.IsGSM7(text) {
+			problems = append(problems, fmt.Sprintf("%s %s (%s) leaves the GSM 03.38 basic character set", kind, id, lang))
+		}
+	}
+	longest := map[string]config.SMSValues{}
+	for _, lang := range s.c.Templates.Languages {
+		v := config.SMSValues{Ref: "123 456 7890", Colour: "YELLOW", Time: "23:59"}
+		keep := func(cur *string, x string) {
+			if len(x) > len(*cur) {
+				*cur = x
+			}
+		}
+		for _, o := range s.c.Tool1.Category.Options {
+			gsm("category", o.Value, lang, label(o.Label, lang))
+			keep(&v.Category, label(o.Label, lang))
+		}
+		for _, w := range s.c.Gazetteer.Wards {
+			gsm("ward", w.ID, lang, name(w.Name, lang))
+			keep(&v.Ward, name(w.Name, lang))
+		}
+		for _, l := range s.c.Gazetteer.Landmarks {
+			gsm("landmark", l.ID, lang, name(l.Name, lang))
+			keep(&v.Landmark, name(l.Name, lang))
+		}
+		for _, f := range s.c.Gazetteer.Facilities {
+			gsm("facility", f.ID, lang, name(f.Name, lang))
+			keep(&v.FacilityName, name(f.Name, lang))
+			keep(&v.FacilityPhone, f.Phone)
+		}
+		longest[lang] = v
+	}
+	if len(problems) > 0 {
+		return errors.New("channels: SMS: " + strings.Join(problems, "; "))
+	}
+	if err := s.c.Templates.CheckFits(func(lang string) config.SMSValues { return longest[lang] }); err != nil {
+		return fmt.Errorf("channels: %w", err)
+	}
+	return nil
 }
 
 // eat is Uganda's time (UTC+3, no daylight saving): times in SMS are local.
