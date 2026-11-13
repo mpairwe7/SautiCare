@@ -140,6 +140,8 @@ func TestGazetteerIsFrozen(t *testing.T) {
 		"INSERT INTO op.landmarks (version, id, list_order, ward_id, name_en, name_lg, lat, lon, zone_col, zone_row) VALUES ('it-1', 'w01_new', 99, 'w01', 'N', 'N', 0.38, 32.56, 902, 84)",
 		"INSERT INTO op.ward_zones (version, ward_id, zone_col, zone_row) VALUES ('it-1', 'w01', 1, 1)",
 		"INSERT INTO op.wards (version, id, menu_order, name_en, name_lg, centre_col, centre_row) VALUES ('it-1', 'w09', 9, 'W', 'W', 1, 1)",
+		"INSERT INTO op.stages (version, id, list_order, ward_id, name_en, name_lg, lat, lon, zone_col, zone_row) VALUES ('it-1', 'w01_new', 99, 'w01', 'S', 'S', 0.38, 32.56, 902, 84)",
+		"INSERT INTO op.facilities (version, id, list_order, name_en, name_lg, lat, lon, zone_col, zone_row) VALUES ('it-1', 'hc_new', 99, 'F', 'F', 0.38, 32.56, 902, 84)",
 	} {
 		if _, err := owner.Exec(context.Background(), q); err == nil || !strings.Contains(err.Error(), "frozen") {
 			t.Errorf("%s: err = %v, want frozen", q, err)
