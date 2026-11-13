@@ -16,7 +16,7 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `responder.arrived` | **T5** (first, attested) | `role` | verification in M3 |
 | `responder.departed` | **T6** | — | |
 | `responder.at_facility` | **T7** | `facility` | |
-| `incident.flagged` | — | `flag` | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
+| `incident.flagged` | — | `flag` (a non-empty JSON string, enforced by the database) | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
 | `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch`; deduplication: `merged_call_escalated` (an escalated call merged into a survivor that was not) |
 | `incident.merged` | — | `into` (incident UUID: existing, open, not itself) | on the later call, at T2 (ADR-0022); a merged call then accepts only its own caller's answers and its unmerge |
 | `incident.merge_absorbed` | T1 (earliest) | exactly `from` (incident UUID), `t1` (RFC 3339, ≤ µs) | on the survivor, after the call's own `incident.merged` into it; `t1` must equal the call's stored T1 (the database checks the call's row); T1 = earliest of its own call and every absorbed call |

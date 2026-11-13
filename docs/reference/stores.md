@@ -18,7 +18,7 @@ There are five PostgreSQL 18 databases (`sauti_<store>`). Each has an owner role
 
 | Role | Store | Tables | Functions |
 |---|---|---|---|
-| `op_intake` | operational | SELECT `incidents`, `incident_events`, `sessions`; SELECT/INSERT `ussd_steps` | EXECUTE `open_incident`, `append_incident_event` (never a staff actor, `incident.split` or `incident.unmerged`: the function refuses them to every role but `op_console`), `dedup_candidates` (reads the merge candidates and locks them `FOR SHARE` until the dispatch decision commits; also granted to `op_ivr` ahead of M1 Part C) |
+| `op_intake` | operational | SELECT `incidents`, `incident_events`, `sessions`; SELECT `ussd_steps`, INSERT on its data columns only (not `created_at`, migration 0027) | EXECUTE `open_incident`, `append_incident_event` (never a staff actor, `incident.split` or `incident.unmerged`: the function refuses them to every role but `op_console`), `dedup_candidates` (reads the merge candidates and locks them `FOR SHARE` until the dispatch decision commits; also granted to `op_ivr` ahead of M1 Part C) |
 | `op_relay` | operational | — | EXECUTE `claim_outbox`, `mark_outbox_delivered`, `default_partition_rows`, `ensure_event_partitions` (the leader keeps partitions three months ahead) |
 | `op_readonly` | operational | SELECT `incidents`, `incident_events`, `event_keys`, `incident_transitions`, `outbox`, `config_versions`, `key_periods` (not `sessions`) | EXECUTE `default_partition_rows` |
 | `op_console` | operational | SELECT `incidents`, `incident_events` | EXECUTE `split_incident` (coordinator split, M1) |
@@ -40,6 +40,7 @@ No runtime role holds UPDATE or DELETE on events, audit entries or consent rows.
   - 10-digit reference with a `CHECK` and `UNIQUE`.
   - A logic version must be `<code>+sha256:<12–64 hex>` (the same rule as the ledger); a merge target must exist, differ from the incident and be open.
   - Strict `screen.answered` payloads (codes only) and sealed identifiers (M1, ADR-0021).
+  - An `incident.flagged` event's `flag` is a JSON string (`CHECK incident_events_flag_is_string`, migration 0027). The rule is the table's, so it holds whatever version of the write path runs and on every partition, and every stored history folds.
   - Lifecycle table.
   - Idempotency and per-incident sequence uniqueness in `op.event_keys`.
   - Monthly partitions with a monitored DEFAULT partition.
