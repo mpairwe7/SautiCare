@@ -3,12 +3,17 @@ package opstore
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/pg/opstore/opdb"
 )
+
+// verifyTimeout bounds a whole verification run: an operator task that reads
+// every incident's events and projection in one snapshot.
+var verifyTimeout = 30 * time.Minute
 
 // verifyHook is a test seam: called between reading events and projection.
 var verifyHook func()
@@ -20,6 +25,10 @@ var verifyHook func()
 // (review finding M3). It returns how many incidents were checked and one
 // line per drift.
 func VerifyProjections(ctx context.Context, s *Store) (int, []string, error) {
+	// The whole run has a deadline: every snapshot statement inherits it,
+	// even when the caller's context has none (cancel runs after rollback).
+	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	defer cancel()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return 0, nil, fmt.Errorf("opstore: verify snapshot: %w", err)
