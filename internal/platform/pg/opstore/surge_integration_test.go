@@ -39,7 +39,12 @@ func TestSurgeQueuesBySeverityThenT2(t *testing.T) {
 	for i, d := range due {
 		pos[d.IncidentID.String()] = i
 	}
-	if _, ok := pos[r.incident.String()]; !ok || pos[r.incident.String()] != 0 || pos[older.String()] > pos[newer.String()] {
+	// Every call is claimed (CodeRabbit PR #12: a missing one would read as
+	// position 0 and pass the order check).
+	red, okRed := pos[r.incident.String()]
+	o, okOlder := pos[older.String()]
+	n, okNewer := pos[newer.String()]
+	if !okRed || !okOlder || !okNewer || red != 0 || o > n {
 		t.Fatalf("claim order %v: want the red call first, then the yellow calls by T2", due)
 	}
 
