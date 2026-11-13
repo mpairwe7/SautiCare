@@ -20,7 +20,10 @@ import (
 
 func TestOwnerRewriteWithRecomputedChainIsCaughtByWitness(t *testing.T) {
 	c, e := newEnv(t)
-	ctx := context.Background()
+	// Bounded: the superuser Exec below bypasses the store adapters' own
+	// deadlines (CodeRabbit PR #4).
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
 	phone, _ := pii.ParsePhone("0772123456")
 	o, err := e.svc.StartSession(ctx, incident.StartSession{Channel: incident.ChannelUSSDAT,
 		ProviderSessionID: "ATUid_tamper", Phone: phone, IdemKey: "start"})
