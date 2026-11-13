@@ -44,6 +44,7 @@ No runtime role holds UPDATE or DELETE on events, audit entries or consent rows.
   - first acceptance per role wins: a partial unique index on `assignments (incident_id, role) WHERE released_at IS NULL`; a responder holds at most one open assignment (`op.accept_alert` locks the incident, then the responder, before its checks);
   - `op.claim_due_dispatch` returns the claimed batch most urgent first (severity, then wake time);
   - each delivery attempt is claimed once (`UNIQUE (alert_id, purpose, channel)`) before the provider call;
+  - a forwarded facility's SMS or call is claimed only while its forward is open (not acknowledged or timed out) and its incident is not closed or merged; the claim share-locks the incident, so a claim racing a closure waits for it and then sees it (`op.begin_forward_attempt`, migration 0022; CodeRabbit PR #11);
   - an incident cannot close or merge while an alert is pending; closure and merge wake dispatch so stand-downs are delivered;
   - while dispatch is suspended no alert is issued, no forward recorded and no alert attempt claimed (each share-locks the control row a suspension locks exclusively); an alert attempt is claimed only for a pending alert;
   - every dispatch fact and its event are written together by one function; the generic append refuses dispatch event types; the dispatch logic version is on alerts, acceptances, declines, lapses, stand-downs, forwards and dispatch escalations, not on acknowledgements, forward timeouts or caller notices;
