@@ -17,6 +17,7 @@ import (
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/ari"
 	"sautihealth.com/sauti/internal/platform/ivr"
+	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/sim"
 )
 
@@ -167,7 +168,13 @@ func TestScenario11RuleErrorRingsTheCoordinator(t *testing.T) {
 		t.Fatalf("coordinator call %v", q)
 	}
 	o.answerAndPress(t, 0, "1")
-	if n, _ := o.calls.Coordinator.RunOnce(ctx); n != 0 {
-		t.Fatal("rang again after acknowledgement")
+	var calls int
+	var acked bool
+	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(ctx, `SELECT calls, acknowledged_at IS NOT NULL FROM op.coordinator_calls
+		WHERE incident_id = $1`, id).Scan(&calls, &acked); err != nil || calls != 0 || !acked {
+		t.Fatalf("acknowledgement not recorded: calls %d acknowledged %v %v", calls, acked, err)
+	}
+	if left, _ := r.ivr.ClaimCoordinatorCalls(ctx, 0, 10); len(left) != 0 {
+		t.Fatalf("still due after acknowledgement: %+v", left)
 	}
 }

@@ -95,13 +95,16 @@ func TestForwardCalls(t *testing.T) {
 }
 
 type coordStore struct {
-	calls []dispatch.CoordinatorCall
-	acked map[uuid.UUID]int64
+	calls  []dispatch.CoordinatorCall
+	acked  map[uuid.UUID]int64
+	limits []int
 }
 
-func (s *coordStore) ClaimCoordinatorCalls(context.Context, time.Duration, int) ([]dispatch.CoordinatorCall, error) {
-	out := s.calls
-	s.calls = nil
+func (s *coordStore) ClaimCoordinatorCalls(_ context.Context, _ time.Duration, limit int) ([]dispatch.CoordinatorCall, error) {
+	s.limits = append(s.limits, limit)
+	n := min(limit, len(s.calls))
+	out := s.calls[:n]
+	s.calls = s.calls[n:]
 	return out, nil
 }
 func (s *coordStore) AcknowledgeCoordinatorCall(_ context.Context, id uuid.UUID, seq int64) error {
@@ -155,5 +158,55 @@ func TestOutboundRoutesByKind(t *testing.T) {
 	o.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "y", Args: []string{"nonsense"}})
 	if len(a.answered) != 1 || !slices.Contains(a.hungUp, "y") {
 		t.Fatalf("answered %v hung up %v", a.answered, a.hungUp)
+	}
+}
+
+// Review I5: the coordinator line is never rung twice at once. With one line,
+// a second escalation waits while a call rings (until it is answered and ends,
+// or the ring time passes unanswered); with two lines, two ring together.
+func TestCoordinatorLineIsRungOneCallAtATime(t *testing.T) {
+	a := &alertARI{}
+	call := func(n byte) dispatch.CoordinatorCall {
+		return dispatch.CoordinatorCall{IncidentID: uuid.NewV7(), Seq: int64(n), Reason: "dispatch_stalled", Reference: "1234567894", Calls: 1}
+	}
+	st := &coordStore{calls: []dispatch.CoordinatorCall{call(1), call(2), call(3)}, acked: map[uuid.UUID]int64{}}
+	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Ring: 30 * time.Second,
+		Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if n, _ := cc.RunOnce(ctx); n != 1 || len(a.originated) != 1 {
+		t.Fatalf("first ring %d %v", n, a.originated)
+	}
+	if n, _ := cc.RunOnce(ctx); n != 0 || len(st.limits) != 1 {
+		t.Fatalf("rang again while the line rings: %d (claims %v)", n, st.limits)
+	}
+	// Answered: the line stays busy until the call ends, however long it lasts.
+	ch := "out-1"
+	cc.Handle(ctx, Event{Type: EventStasisStart, ChannelID: ch, Args: a.args[0]})
+	now = now.Add(5 * time.Minute)
+	if n, _ := cc.RunOnce(ctx); n != 0 {
+		t.Fatal("rang during an answered call")
+	}
+	cc.Handle(ctx, Event{Type: EventStasisEnd, ChannelID: ch})
+	if n, _ := cc.RunOnce(ctx); n != 1 {
+		t.Fatal("line not freed when the call ended")
+	}
+	// Unanswered: free again once the ring time (and a margin) has passed.
+	now = now.Add(20 * time.Second)
+	if n, _ := cc.RunOnce(ctx); n != 0 {
+		t.Fatal("rang again while the first call may still ring")
+	}
+	now = now.Add(time.Minute)
+	if n, _ := cc.RunOnce(ctx); n != 1 || len(a.originated) != 3 {
+		t.Fatalf("line not freed after an unanswered ring: %d %v", n, a.originated)
+	}
+
+	st2 := &coordStore{calls: []dispatch.CoordinatorCall{call(1), call(2), call(3)}, acked: map[uuid.UUID]int64{}}
+	cc2, _ := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: &alertARI{}, Store: st2, Endpoint: "PJSIP/coordinators", Lines: 2})
+	if n, _ := cc2.RunOnce(ctx); n != 2 || st2.limits[0] != 2 {
+		t.Fatalf("two lines: %d %v", n, st2.limits)
 	}
 }

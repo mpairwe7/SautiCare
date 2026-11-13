@@ -16,6 +16,7 @@
 //	SAUTI_ARI_DIAL        endpoint template for alert calls, with {number} (e.g. PJSIP/{number}@sauti-trunk); unset: no voice alerts
 //	SAUTI_ARI_CALLER_ID   the number responders see on an alert call (placeholder until P0)
 //	SAUTI_COORDINATOR_DIAL the coordinator line rung about every escalation (endpoint; placeholder until P0); unset: no escalation calls
+//	SAUTI_COORDINATOR_LINES calls the coordinator line takes at once (default 1): never rung twice at once
 //	SAUTI_ADMIN_ADDR      health and metrics (default 127.0.0.1:9101)
 //	SAUTI_DEVKEYS_DIR     development key directory (refused in production)
 //	SAUTI_CONFIG_DIR      configuration directory (config/)
@@ -26,10 +27,12 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -176,8 +179,14 @@ func run(log *slog.Logger) error {
 		// (rule 3.14); without a line configured, coordinators work from the
 		// console list only.
 		if line := os.Getenv("SAUTI_COORDINATOR_DIAL"); line != "" {
+			lines := 1
+			if v := os.Getenv("SAUTI_COORDINATOR_LINES"); v != "" {
+				if lines, err = strconv.Atoi(v); err != nil || lines < 1 || lines > 50 {
+					return fmt.Errorf("SAUTI_COORDINATOR_LINES must be 1-50, got %q", v)
+				}
+			}
 			if out.Coordinator, err = ivr.NewCoordinatorCalls(ivr.CoordinatorCallsConfig{ARI: alertClient, Store: store, Endpoint: line,
-				CallerID: callerID, Log: log}); err != nil {
+				CallerID: callerID, Lines: lines, Log: log}); err != nil {
 				return err
 			}
 		} else {

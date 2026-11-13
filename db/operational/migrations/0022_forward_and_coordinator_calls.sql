@@ -73,10 +73,12 @@ CREATE TABLE op.coordinator_calls (
 
 CREATE INDEX incident_events_escalated ON op.incident_events (recorded_at) WHERE type = 'incident.escalated';
 
--- Claim the coordinator calls due now: for each incident, its latest
+-- Claim the coordinator calls due now: for each open incident, its latest
 -- escalation not yet acknowledged, rung when never rung since the last
--- acknowledgement or not for p_retry. Escalations of the last day (older
--- ones are on the console's list).
+-- acknowledgement or not for p_retry; the most severe first, then the
+-- oldest; at most p_limit (ivr-controller passes the free lines, so one line
+-- is never rung twice at once). Escalations of the last day (older ones are
+-- on the console's list); a closed or merged incident is not rung about.
 CREATE FUNCTION op.claim_coordinator_calls(p_retry interval, p_limit int)
 RETURNS TABLE (incident_id uuid, seq bigint, reason text, reference text, calls int)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER
@@ -89,7 +91,7 @@ DECLARE
 BEGIN
     FOR r IN
         SELECT l.incident_id AS inc, l.seq AS s, l.reason AS why, i.reference AS ref
-          FROM (SELECT DISTINCT ON (e.incident_id) e.incident_id, e.seq, e.payload ->> 'reason' AS reason
+          FROM (SELECT DISTINCT ON (e.incident_id) e.incident_id, e.seq, e.payload ->> 'reason' AS reason, e.recorded_at
                   FROM op.incident_events e
                   LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
                  WHERE e.type = 'incident.escalated' AND e.recorded_at > clock_timestamp() - interval '1 day'
@@ -97,8 +99,9 @@ BEGIN
                  ORDER BY e.incident_id, e.seq DESC) l
           JOIN op.incidents i ON i.id = l.incident_id
           LEFT JOIN op.coordinator_calls c ON c.incident_id = l.incident_id
-         WHERE c.last_call_at IS NULL OR c.last_call_at < clock_timestamp() - p_retry
-         ORDER BY l.seq
+         WHERE (c.last_call_at IS NULL OR c.last_call_at < clock_timestamp() - p_retry)
+           AND i.state NOT IN ('closed', 'merged')
+         ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, l.recorded_at
          LIMIT p_limit
     LOOP
         INSERT INTO op.coordinator_calls AS cc (incident_id, calls, last_call_at) VALUES (r.inc, 1, clock_timestamp())

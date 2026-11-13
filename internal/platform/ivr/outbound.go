@@ -285,10 +285,16 @@ type CoordinatorCallsConfig struct {
 	CallerID  string
 	Retry     time.Duration // ring again until acknowledged (default 2 min)
 	Ring      time.Duration
+	Lines     int              // calls the coordinator line takes at once (SAUTI_COORDINATOR_LINES; default 1)
+	Now       func() time.Time // the clock (default time.Now)
 	Language  string
 	Log       *slog.Logger
 	OpTimeout time.Duration
 }
+
+// ringMargin is how long after the ring time an unanswered call still holds
+// its line (the far end may answer at the last moment).
+const ringMargin = 10 * time.Second
 
 type coordinatorCall struct {
 	incident  uuid.UUID
@@ -307,6 +313,9 @@ type CoordinatorCalls struct {
 	c     CoordinatorCallsConfig
 	mu    sync.Mutex
 	calls map[string]*coordinatorCall
+	// busy holds a line per call placed: until the ring time has passed
+	// unanswered, or while it is answered (zero time) until it ends.
+	busy map[string]time.Time
 }
 
 // NewCoordinatorCalls validates the wiring.
@@ -317,13 +326,33 @@ func NewCoordinatorCalls(c CoordinatorCallsConfig) (*CoordinatorCalls, error) {
 	if c.Retry <= 0 {
 		c.Retry = 2 * time.Minute
 	}
+	if c.Lines <= 0 {
+		c.Lines = 1
+	}
+	if c.Now == nil {
+		c.Now = time.Now
+	}
 	c.Ring, c.Language, c.Log, c.OpTimeout = defaults(c.Ring, c.Language, c.Log, c.OpTimeout)
-	return &CoordinatorCalls{c: c, calls: map[string]*coordinatorCall{}}, nil
+	return &CoordinatorCalls{c: c, calls: map[string]*coordinatorCall{}, busy: map[string]time.Time{}}, nil
 }
 
 // RunOnce rings the coordinator line about each escalation due now.
+// Only as many escalations are claimed as the line has free: a line is
+// never rung twice at once, and the most severe escalation goes first.
 func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
-	due, err := k.c.Store.ClaimCoordinatorCalls(ctx, k.c.Retry, 20)
+	now := k.c.Now()
+	k.mu.Lock()
+	for ch, until := range k.busy {
+		if !until.IsZero() && now.After(until) {
+			delete(k.busy, ch)
+		}
+	}
+	free := k.c.Lines - len(k.busy)
+	k.mu.Unlock()
+	if free <= 0 {
+		return 0, nil
+	}
+	due, err := k.c.Store.ClaimCoordinatorCalls(ctx, k.c.Retry, free)
 	if err != nil {
 		return 0, err
 	}
@@ -332,11 +361,16 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 		if !reasonCode.MatchString(reason) {
 			reason = "other"
 		}
-		if _, err := k.c.ARI.Originate(ctx, k.c.Endpoint, k.c.CallerID,
-			[]string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reason, string(d.Reference)}, k.c.Ring); err != nil {
+		ch, err := k.c.ARI.Originate(ctx, k.c.Endpoint, k.c.CallerID,
+			[]string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reason, string(d.Reference)}, k.c.Ring)
+		if err != nil {
 			// The claim stands: the line is rung again after the retry interval.
 			k.c.Log.Error("coordinator call not placed", "incident", d.IncidentID, "calls", d.Calls, "err", err)
+			continue
 		}
+		k.mu.Lock()
+		k.busy[ch] = now.Add(k.c.Ring + ringMargin)
+		k.mu.Unlock()
 	}
 	return len(due), nil
 }
@@ -352,6 +386,11 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 	defer cancel()
 	switch e.Type {
 	case EventStasisStart:
+		k.mu.Lock()
+		if _, ok := k.busy[e.ChannelID]; ok {
+			k.busy[e.ChannelID] = time.Time{} // answered: busy until it ends
+		}
+		k.mu.Unlock()
 		if len(e.Args) != 5 {
 			k.hangup(op, e.ChannelID)
 			return
@@ -407,6 +446,7 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 	case EventStasisEnd, EventHangupRequest:
 		k.mu.Lock()
 		delete(k.calls, e.ChannelID)
+		delete(k.busy, e.ChannelID)
 		k.mu.Unlock()
 	}
 }

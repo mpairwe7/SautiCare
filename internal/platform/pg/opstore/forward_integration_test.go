@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 	"time"
+	"uuid"
 
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
@@ -86,5 +87,34 @@ func TestCoordinatorCalls(t *testing.T) {
 	}
 	if later, _ := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10); len(later) != 1 || later[0].Reason != dispatch.ReasonExhausted {
 		t.Fatalf("a later escalation did not ring: %+v", later)
+	}
+}
+
+// Review I5: the line is rung about the most severe escalation first, then
+// the oldest; the claim takes only as many as there are free lines; an
+// incident that has closed is not rung about.
+func TestCoordinatorCallsBySeverityAndOpenOnly(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	if _, err := r.c.Owner(t, pg.StoreOperational).Exec(ctx, "DELETE FROM op.incident_events WHERE type = 'incident.escalated'"); err != nil {
+		t.Fatal(err)
+	}
+	yellow := dispatchedAs(t, r.intake, incident.SevYellow).IncidentID
+	red := dispatchedAs(t, r.intake, incident.SevRed).IncidentID
+	green := dispatchedAs(t, r.intake, incident.SevGreen).IncidentID
+	closed := dispatchedAs(t, r.intake, incident.SevRed).IncidentID
+	for _, id := range []uuid.UUID{yellow, red, green, closed} {
+		appendEv(t, r.intake, id, incident.EvEscalated, `{"reason":"dispatch_stalled"}`, "")
+	}
+	if _, err := r.c.Owner(t, pg.StoreOperational).Exec(ctx, "UPDATE op.incidents SET state = 'closed' WHERE id = $1", closed); err != nil {
+		t.Fatal(err)
+	}
+	first, err := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 1)
+	if err != nil || len(first) != 1 || first[0].IncidentID != red {
+		t.Fatalf("one free line: %+v %v", first, err)
+	}
+	rest, _ := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10)
+	if len(rest) != 2 || rest[0].IncidentID != yellow || rest[1].IncidentID != green {
+		t.Fatalf("the rest, by severity and without the closed incident: %+v", rest)
 	}
 }

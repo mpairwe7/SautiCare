@@ -3,6 +3,7 @@ package ivr
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -40,7 +41,7 @@ func (a *alertARI) Originate(_ context.Context, endpoint, _ string, args []strin
 	defer a.mu.Unlock()
 	a.originated = append(a.originated, endpoint)
 	a.args = append(a.args, args)
-	return "out-" + args[1][:8], nil
+	return fmt.Sprintf("out-%d", len(a.originated)), nil
 }
 func (a *alertARI) Answer(_ context.Context, ch string) error {
 	a.answered = append(a.answered, ch)
@@ -163,7 +164,7 @@ func answer(t *testing.T, c *AlertCalls, a *alertARI, st *alertStore) string {
 	if _, err := c.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	ch := "out-" + a.args[0][1][:8]
+	ch := "out-1"
 	c.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: ch, Args: a.args[0]})
 	return ch
 }
