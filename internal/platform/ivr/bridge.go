@@ -14,6 +14,7 @@ import (
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/pii"
+	"sautihealth.com/sauti/internal/platform/ari"
 	"sautihealth.com/sauti/internal/responder"
 )
 
@@ -46,6 +47,8 @@ type BridgeStore interface {
 // mixing bridge (ari.Client).
 type BridgeARI interface {
 	AlertARI
+	Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error
+	SetCallerID(ctx context.Context, channelID, number string) error
 	CreateBridge(ctx context.Context, bridgeID string) error
 	AddToBridge(ctx context.Context, bridgeID, channelID string) error
 	DestroyBridge(ctx context.Context, bridgeID string) error
@@ -72,8 +75,12 @@ type BridgeConfig struct {
 	OpTimeout     time.Duration
 }
 
-// lastFourTries is how many times a responder may key the last 4 digits.
-const lastFourTries = 3
+// choiceTries is how many times a choice (the last 4 digits, a role, a
+// party) may be keyed before a coordinator takes the call.
+const choiceTries = 3
+
+// EventChannelDestroyed: a channel ended, including a leg never answered.
+const EventChannelDestroyed = ari.EventChannelDestroyed
 
 type bridgeCall struct {
 	inbound  string // the channel that called the bridge number
@@ -82,7 +89,9 @@ type bridgeCall struct {
 	bridgeID string
 	by       string // initiated_by
 	targets  []dispatch.BridgeTarget
-	choosing string // "last4" or "role" while a choice is awaited
+	asResp   []dispatch.BridgeTarget // a responder's own assignments
+	asCaller []dispatch.BridgeTarget // the responders coming to this number's incidents
+	choosing string                  // "last4", "role" or "side" while a choice is awaited
 	digits   string
 	tries    int
 	answered bool
@@ -142,6 +151,22 @@ func (b *Bridge) Handle(ctx context.Context, e Event) {
 				b.hangup(ctx, e.ChannelID)
 			}
 		}
+	case EventChannelDestroyed:
+		// The other party's leg ended before any answer (a phone off or
+		// unreachable): no answer, at once rather than at the ring timeout.
+		if st := b.calls[e.ChannelID]; st != nil && e.ChannelID == st.leg && !st.answered && !st.done {
+			delete(b.calls, e.ChannelID)
+			st.done = true
+			if st.timer != nil {
+				st.timer.Stop()
+			}
+			b.teardown(ctx, st, dispatch.BridgeNoAnswer)
+			b.closing(ctx, st, "bridge-no-answer")
+			return
+		}
+		if st := b.calls[e.ChannelID]; st != nil {
+			b.ended(ctx, st, e.ChannelID)
+		}
 	case EventStasisEnd, EventHangupRequest:
 		if st := b.calls[e.ChannelID]; st != nil {
 			b.ended(ctx, st, e.ChannelID)
@@ -153,7 +178,9 @@ func (b *Bridge) op(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, b.c.OpTimeout)
 }
 
-// start recognises who is calling and what they may be connected to.
+// start recognises who is calling and what they may be connected to. A
+// failure to look them up hands the call to a coordinator (rule 14); only a
+// definite "nothing open" is answered as such.
 func (b *Bridge) start(ctx context.Context, e Event) {
 	st := &bridgeCall{inbound: e.ChannelID}
 	b.calls[e.ChannelID] = st
@@ -161,19 +188,39 @@ func (b *Bridge) start(ctx context.Context, e Event) {
 	defer cancel()
 	if err := b.c.ARI.Answer(octx, e.ChannelID); err != nil {
 		b.c.Log.Error("bridge call not answered", "err", err)
+		b.toCoordinator(ctx, st)
 		return
 	}
-	targets, by, err := b.recognise(octx, e.CallerNumber)
+	asResp, asCaller, err := b.recognise(octx, e.CallerNumber)
 	if err != nil {
 		b.c.Log.Error("bridge caller not recognised", "err", err)
+		b.toCoordinator(ctx, st)
+		return
 	}
-	st.targets, st.by = targets, by
+	st.asResp, st.asCaller = asResp, asCaller
 	switch {
-	case len(targets) == 0:
+	case len(asResp) == 0 && len(asCaller) == 0:
 		// The same answer for an unknown number and one with nothing open:
 		// the bridge never tells who is registered.
 		b.finishWith(ctx, st, "bridge-no-assignment")
+	case len(asResp) > 0 && len(asCaller) > 0:
+		// A responder who also reported an emergency: which party?
+		st.choosing = "side"
+		b.play(ctx, st, "bridge-choose-side")
+	case len(asResp) > 0:
+		b.proceed(ctx, st, asResp, roleBy(asResp[0].Role))
+	default:
+		b.proceed(ctx, st, asCaller, dispatch.BridgeByCaller)
+	}
+}
+
+// proceed connects at once, or asks which incident (a responder: the last 4
+// digits) or which helper (a caller with both roles assigned).
+func (b *Bridge) proceed(ctx context.Context, st *bridgeCall, targets []dispatch.BridgeTarget, by string) {
+	st.targets, st.by, st.tries = targets, by, 0
+	switch {
 	case len(targets) == 1:
+		st.choosing = ""
 		b.connect(ctx, st, targets[0])
 	case by == dispatch.BridgeByCaller:
 		st.choosing = "role"
@@ -184,30 +231,49 @@ func (b *Bridge) start(ctx context.Context, e Event) {
 	}
 }
 
-// recognise finds the caller's open assignments (a responder) or the
-// responders assigned to their open incidents (a caller).
-func (b *Bridge) recognise(ctx context.Context, from string) ([]dispatch.BridgeTarget, string, error) {
+// recognise finds what this number may reach: as a responder, the callers of
+// the incidents they hold an open assignment on; as a caller, the responders
+// assigned to the open incidents it reported. Nobody reaches themselves: an
+// incident the responder reported is not one of their callers, and they are
+// not one of their own helpers.
+func (b *Bridge) recognise(ctx context.Context, from string) (asResp, asCaller []dispatch.BridgeTarget, err error) {
 	p, perr := pii.ParsePhone(from)
 	if perr != nil {
 		// A withheld or malformed number is simply not recognised: the
 		// caller hears the same "nothing to connect" as an unknown number.
-		return nil, "", nil //nolint:nilerr // not recognising a caller is not a failure
+		return nil, nil, nil //nolint:nilerr // not recognising a caller is not a failure
 	}
 	macs, err := b.c.Keys.PhoneLookupMACs(ctx, p)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	if id, ok, err := b.c.Store.ResponderByPhone(ctx, macs); err != nil {
-		return nil, "", err
-	} else if ok {
-		targets, err := b.c.Store.BridgeTargetsForResponder(ctx, id)
-		if err != nil || len(targets) == 0 {
-			return nil, "", err
+	self, isResponder, err := b.c.Store.ResponderByPhone(ctx, macs)
+	if err != nil {
+		return nil, nil, err
+	}
+	reportedAll, err := b.c.Store.BridgeTargetsForCaller(ctx, macs)
+	if err != nil {
+		return nil, nil, err
+	}
+	reported := map[uuid.UUID]bool{}
+	for _, t := range reportedAll {
+		reported[t.IncidentID] = true
+		if !isResponder || t.ResponderID != self {
+			asCaller = append(asCaller, t)
 		}
-		return targets, roleBy(targets[0].Role), nil
 	}
-	targets, err := b.c.Store.BridgeTargetsForCaller(ctx, macs)
-	return targets, dispatch.BridgeByCaller, err
+	if isResponder {
+		mine, err := b.c.Store.BridgeTargetsForResponder(ctx, self)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, t := range mine {
+			if !reported[t.IncidentID] {
+				asResp = append(asResp, t)
+			}
+		}
+	}
+	return asResp, asCaller, nil
 }
 
 func roleBy(r responder.Role) string {
@@ -220,7 +286,25 @@ func roleBy(r responder.Role) string {
 // key takes the last 4 digits (a responder with several assignments) or the
 // role (a caller with both roles assigned).
 func (b *Bridge) key(ctx context.Context, st *bridgeCall, digit string) {
-	if st.choosing == "role" {
+	again := func(sound string) {
+		if st.tries++; st.tries >= choiceTries {
+			b.toCoordinator(ctx, st)
+			return
+		}
+		b.play(ctx, st, sound)
+	}
+	switch st.choosing {
+	case "side":
+		switch digit {
+		case "1":
+			b.proceed(ctx, st, st.asResp, roleBy(st.asResp[0].Role))
+		case "2":
+			b.proceed(ctx, st, st.asCaller, dispatch.BridgeByCaller)
+		default:
+			again("bridge-choose-side")
+		}
+		return
+	case "role":
 		want := map[string]responder.Role{"1": responder.RoleVHT, "2": responder.RoleTransporter}[digit]
 		for _, t := range st.targets {
 			if want != "" && t.Role == want {
@@ -229,7 +313,7 @@ func (b *Bridge) key(ctx context.Context, st *bridgeCall, digit string) {
 				return
 			}
 		}
-		b.play(ctx, st, "bridge-choose-role")
+		again("bridge-choose-role")
 		return
 	}
 	if len(digit) != 1 || digit[0] < '0' || digit[0] > '9' {
@@ -252,11 +336,7 @@ func (b *Bridge) key(ctx context.Context, st *bridgeCall, digit string) {
 		b.connect(ctx, st, match[0])
 		return
 	}
-	if st.tries++; st.tries >= lastFourTries {
-		b.finishWith(ctx, st, "bridge-no-assignment")
-		return
-	}
-	b.play(ctx, st, "bridge-last-four-again")
+	again("bridge-last-four-again")
 }
 
 // connect logs the bridge call, puts the caller in a mixing bridge with a
@@ -267,7 +347,7 @@ func (b *Bridge) connect(ctx context.Context, st *bridgeCall, t dispatch.BridgeT
 	id, err := b.c.Store.BeginBridgeCall(octx, t.IncidentID, st.by)
 	if err != nil {
 		b.c.Log.Error("bridge call not begun", "incident", t.IncidentID, "err", err)
-		b.finishWith(ctx, st, "bridge-failed")
+		b.toCoordinator(ctx, st)
 		return
 	}
 	st.id, st.bridgeID = id, "bridge-"+id.String()
@@ -277,13 +357,21 @@ func (b *Bridge) connect(ctx context.Context, st *bridgeCall, t dispatch.BridgeT
 		err = b.c.ARI.CreateBridge(octx, st.bridgeID)
 	}
 	if err == nil {
+		// Rule 5: the calling party presents Sauti's number from here on, so
+		// joining the bridge never sends the other party theirs as a
+		// connected-line update.
+		err = b.c.ARI.SetCallerID(octx, st.inbound, b.c.CallerID)
+	}
+	if err == nil {
 		err = b.c.ARI.AddToBridge(octx, st.bridgeID, st.inbound)
 	}
 	if err != nil {
 		b.fail(ctx, st, err)
 		return
 	}
-	b.play(ctx, st, "bridge-connecting")
+	// The connecting prompt, then ringback until the other party answers
+	// (never dead air, which a basic-phone user takes for a dropped call).
+	b.playAll(ctx, st, b.sound("bridge-connecting"), ari.RingbackTone)
 	octx2, cancel2 := context.WithTimeout(ctx, originateTimeout)
 	defer cancel2()
 	leg, err := b.c.ARI.Originate(octx2, endpoint, b.c.CallerID, []string{"bridge-leg", id.String()}, b.c.Ring)
@@ -384,12 +472,31 @@ func (b *Bridge) noAnswer(ctx context.Context, st *bridgeCall) {
 	b.closing(ctx, st, "bridge-no-answer")
 }
 
-// fail ends a bridge call that could not be placed.
+// fail ends a bridge call that could not be placed: a coordinator takes the
+// caller (rule 14), and an answered other party is not left in silence.
 func (b *Bridge) fail(ctx context.Context, st *bridgeCall, err error) {
 	b.c.Log.Error("bridge call failed", "bridge_call", st.id, "err", err)
-	st.done = true
+	if st.timer != nil {
+		st.timer.Stop()
+	}
 	b.teardown(ctx, st, dispatch.BridgeFailed)
-	b.closing(ctx, st, "bridge-failed")
+	if st.leg != "" {
+		b.hangup(ctx, st.leg)
+	}
+	b.toCoordinator(ctx, st)
+}
+
+// toCoordinator hands the caller to the dialplan's fallback, which rings a
+// coordinator; if even that fails, the call ends.
+func (b *Bridge) toCoordinator(ctx context.Context, st *bridgeCall) {
+	st.done = true
+	octx, cancel := b.op(context.WithoutCancel(ctx))
+	defer cancel()
+	b.cut(octx, st)
+	if err := b.c.ARI.Continue(octx, st.inbound, FallbackContext, "s", 1); err != nil {
+		b.c.Log.Error("bridge hand-over to a coordinator failed; hanging up", "err", err)
+		b.hangup(ctx, st.inbound)
+	}
 }
 
 // teardown logs the result and destroys the bridge.
@@ -401,6 +508,9 @@ func (b *Bridge) teardown(ctx context.Context, st *bridgeCall, result string) {
 			b.c.Log.Error("bridge call end not logged", "bridge_call", st.id, "err", err)
 		}
 		delete(b.byID, st.id)
+	}
+	if st.leg != "" {
+		delete(b.calls, st.leg)
 	}
 	if st.bridgeID != "" {
 		_ = b.c.ARI.DestroyBridge(octx, st.bridgeID)
@@ -432,6 +542,16 @@ func (b *Bridge) play(ctx context.Context, st *bridgeCall, sound string) {
 	}
 }
 
+func (b *Bridge) playAll(ctx context.Context, st *bridgeCall, media ...string) {
+	octx, cancel := b.op(ctx)
+	defer cancel()
+	st.plays++
+	pb := fmt.Sprintf("%s-b%d", st.inbound, st.plays)
+	if b.c.ARI.Play(octx, st.inbound, pb, media) == nil {
+		st.current = pb
+	}
+}
+
 func (b *Bridge) cut(ctx context.Context, st *bridgeCall) { cut(ctx, b.c.ARI, &st.current) }
 
 func (b *Bridge) hangup(ctx context.Context, ch string) {
@@ -447,7 +567,7 @@ func BridgeSounds(langs []string) []string {
 	var out []string
 	for _, lang := range langs {
 		for _, s := range []string{"bridge-connecting", "bridge-no-assignment", "bridge-last-four", "bridge-last-four-again",
-			"bridge-choose-role", "bridge-no-answer", "bridge-failed"} {
+			"bridge-choose-role", "bridge-choose-side", "bridge-no-answer"} {
 			out = append(out, "sauti/"+lang+"/"+s)
 		}
 	}

@@ -207,3 +207,30 @@ func TestClientMixingBridge(t *testing.T) {
 		t.Fatal("a bridge ID with a path separator was sent")
 	}
 }
+
+// Part C review I2, I3: before a leg joins the bridge its caller ID becomes
+// Sauti's number (the other party is never sent the real one as a
+// connected-line update); a ringback tone plays while the other phone rings;
+// only sound and the ring tone are ever played.
+func TestClientCallerIDAndRingback(t *testing.T) {
+	f, c := newPair(t)
+	ctx := context.Background()
+	if err := c.SetCallerID(ctx, "chan-1", "+256800100100"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.CallerID("chan-1"); got != "+256800100100" {
+		t.Fatalf("caller ID %q", got)
+	}
+	if err := c.SetCallerID(ctx, "chan-1", "x\\n"); err == nil {
+		t.Fatal("a caller ID that is not a number was sent")
+	}
+	if err := c.Play(ctx, "chan-1", "pb-1", []string{"sauti/en/bridge-connecting", RingbackTone}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Play(ctx, "chan-1", "pb-2", []string{"recording:x"}); err == nil {
+		t.Fatal("a non-sound media was played")
+	}
+	if EventChannelDestroyed != "ChannelDestroyed" {
+		t.Fatal("ChannelDestroyed")
+	}
+}

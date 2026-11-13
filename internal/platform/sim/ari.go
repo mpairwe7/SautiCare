@@ -45,13 +45,14 @@ type FakeARI struct {
 	bridges    map[string][]string // bridge → channels added
 	bridgeQ    map[string]url.Values
 	destroyed  map[string]bool
+	callerIDs  map[string]string
 }
 
 // NewFakeARI starts the fake.
 func NewFakeARI(user, pass string) *FakeARI {
 	f := &FakeARI{user: user, pass: pass, plays: map[string][][]string{}, hungUp: map[string]bool{}, continued: map[string]string{},
 		connected: make(chan struct{}, 16), active: map[string]string{}, queued: map[string][]string{}, playbackCh: map[string]string{},
-		bridges: map[string][]string{}, bridgeQ: map[string]url.Values{}, destroyed: map[string]bool{}}
+		bridges: map[string][]string{}, bridgeQ: map[string]url.Values{}, destroyed: map[string]bool{}, callerIDs: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	return f
 }
@@ -202,6 +203,13 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 		f.emitAll(evs)
+	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "channels" && parts[3] == "variable":
+		if r.URL.Query().Get("variable") == "CALLERID(all)" {
+			f.mu.Lock()
+			f.callerIDs[parts[2]] = r.URL.Query().Get("value")
+			f.mu.Unlock()
+		}
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[1] == "bridges":
 		f.mu.Lock()
 		f.bridges[parts[2]] = []string{}
@@ -309,6 +317,13 @@ func (f *FakeARI) Playing(channelID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.active[channelID]
+}
+
+// CallerID returns the caller ID Sauti set on a channel ("" if none).
+func (f *FakeARI) CallerID(channelID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.callerIDs[channelID]
 }
 
 // Bridged returns the channels added to a bridge, in order.

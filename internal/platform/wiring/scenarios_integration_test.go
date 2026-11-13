@@ -173,6 +173,9 @@ func TestScenario1RedTraumaThroughTheChannels(t *testing.T) {
 	if got := fake.Bridged(bridgeID); !slices.Equal(got, []string{"in-1", "out-1"}) {
 		t.Fatalf("bridged %v", got)
 	}
+	if got := fake.CallerID("in-1"); got != sauti {
+		t.Fatalf("the VHT's leg presents %q, want Sauti's number before it joins the bridge", got)
+	}
 	fake.Emit(map[string]any{"type": "StasisEnd", "channel": map[string]any{"id": "in-1"}})
 	for !fake.HungUp("out-1") && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -185,7 +188,7 @@ func TestScenario1RedTraumaThroughTheChannels(t *testing.T) {
 		Scan(&by, &result); err != nil || by != dispatch.BridgeByVHT || result != dispatch.BridgeConnected {
 		t.Fatalf("bridge call logged as %q %q %v", by, result, err)
 	}
-	for _, n := range []string{caller.E164(), winner.E164(), "0772000777"} {
+	for _, n := range []string{caller.E164(), winner.E164(), "0772000777", "772000777", strings.Replace(caller.E164(), "+", "%2B", 1)} {
 		if strings.Contains(logs.String(), n) {
 			t.Fatalf("a number reached the bridge's logs: %s", logs.String())
 		}

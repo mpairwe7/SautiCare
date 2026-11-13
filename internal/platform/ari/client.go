@@ -34,7 +34,14 @@ const (
 	EventPlaybackFinished = "PlaybackFinished"
 	EventStasisEnd        = "StasisEnd"
 	EventHangupRequest    = "ChannelHangupRequest"
+	// EventChannelDestroyed: a channel ended, including a call Sauti placed
+	// that was never answered (it never entered the application).
+	EventChannelDestroyed = "ChannelDestroyed"
 )
+
+// RingbackTone is the ringing tone a caller hears while the other party's
+// phone rings (the masked bridge). Play accepts it besides recordings.
+const RingbackTone = "tone:ring"
 
 // Event is one decoded ARI event. CallerNumber is the raw caller ID (an
 // identifier: never log it).
@@ -169,7 +176,14 @@ func (c *Client) Play(ctx context.Context, channelID, playbackID string, sounds 
 	}
 	media := make([]string, len(sounds))
 	for i, s := range sounds {
-		media[i] = "sound:" + s
+		switch {
+		case s == RingbackTone:
+			media[i] = s
+		case strings.Contains(s, ":"):
+			return fmt.Errorf("ari: only recordings and the ring tone are played, not %q", s)
+		default:
+			media[i] = "sound:" + s
+		}
 	}
 	return c.do(ctx, http.MethodPost, "/ari/channels/"+channelID+"/play/"+playbackID, url.Values{"media": {strings.Join(media, ",")}})
 }
@@ -198,6 +212,22 @@ func (c *Client) Continue(ctx context.Context, channelID, dialContext, extension
 	return c.do(ctx, http.MethodPost, "/ari/channels/"+channelID+"/continue",
 		url.Values{"context": {dialContext}, "extension": {extension}, "priority": {strconv.Itoa(priority)}})
 }
+
+// SetCallerID sets the caller ID a channel presents. The masked bridge sets
+// the calling party's to Sauti's number before it joins the bridge, so the
+// other party is never sent the real number as a connected-line update
+// (rule 5).
+func (c *Client) SetCallerID(ctx context.Context, channelID, number string) error {
+	if err := ids(channelID); err != nil {
+		return err
+	}
+	if !callerIDNumber.MatchString(number) {
+		return errors.New("ari: a caller ID is a phone number")
+	}
+	return c.do(ctx, http.MethodPost, "/ari/channels/"+channelID+"/variable", url.Values{"variable": {"CALLERID(all)"}, "value": {number}})
+}
+
+var callerIDNumber = regexp.MustCompile(`^\+?[0-9]{3,15}$`)
 
 // CreateBridge creates a mixing bridge for the masked bridge (Build Prompt
 // §10.5, ADR-0028): the two legs hear each other, and nothing is recorded —

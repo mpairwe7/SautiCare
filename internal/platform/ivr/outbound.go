@@ -61,9 +61,19 @@ func (o Outbound) Handle(ctx context.Context, e Event) {
 				return
 			}
 		}
-		if o.ARI != nil { // not a call Sauti placed: end it
-			_ = o.ARI.Hangup(ctx, e.ChannelID)
+		if o.ARI == nil {
+			return
 		}
+		// The bridge number with no bridge in this process (no caller ID or
+		// dial template configured): a coordinator answers (rule 14).
+		if c, ok := o.ARI.(interface {
+			Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error
+		}); ok && len(e.Args) > 0 && e.Args[0] == "bridge" {
+			if err := c.Continue(ctx, e.ChannelID, FallbackContext, "s", 1); err == nil {
+				return
+			}
+		}
+		_ = o.ARI.Hangup(ctx, e.ChannelID) // not a call Sauti placed: end it
 		return
 	}
 	// Every other event goes to each kind once (the bridge serves two kinds).

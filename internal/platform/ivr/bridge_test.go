@@ -3,6 +3,7 @@ package ivr
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/pii"
+	"sautihealth.com/sauti/internal/platform/ari"
 	"sautihealth.com/sauti/internal/responder"
 )
 
@@ -32,10 +34,27 @@ type bridgeARI struct {
 	bridged   map[string][]string
 	destroyed []string
 	failDial  bool
+	ops       []string          // bridge and caller-ID operations, in order
+	callerID  map[string]string // channel → caller ID Sauti set
+	continued []string
+}
+
+func (a *bridgeARI) Continue(_ context.Context, ch, dialContext, _ string, _ int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.continued = append(a.continued, ch+"→"+dialContext)
+	return nil
+}
+func (a *bridgeARI) SetCallerID(_ context.Context, ch, number string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.callerID[ch] = number
+	a.ops = append(a.ops, "callerid:"+ch)
+	return nil
 }
 
 func newBridgeARI() *bridgeARI {
-	return &bridgeARI{plays: map[string][][]string{}, pbs: map[string][]string{}, bridged: map[string][]string{}}
+	return &bridgeARI{plays: map[string][][]string{}, pbs: map[string][]string{}, bridged: map[string][]string{}, callerID: map[string]string{}}
 }
 
 func (a *bridgeARI) Originate(_ context.Context, endpoint, callerID string, args []string, _ time.Duration) (string, error) {
@@ -77,6 +96,7 @@ func (a *bridgeARI) AddToBridge(_ context.Context, id, ch string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.bridged[id] = append(a.bridged[id], ch)
+	a.ops = append(a.ops, "bridge:"+ch)
 	return nil
 }
 func (a *bridgeARI) DestroyBridge(_ context.Context, id string) error {
@@ -122,6 +142,7 @@ func (bridgeKeys) PhoneLookupMACs(_ context.Context, p pii.Phone) ([]crypto.MAC,
 
 type bridgeStore struct {
 	mu         sync.Mutex
+	failLookup bool
 	responders map[string]uuid.UUID // MAC sum → responder
 	byResp     map[uuid.UUID][]dispatch.BridgeTarget
 	byCaller   map[string][]dispatch.BridgeTarget // MAC sum → targets
@@ -131,6 +152,9 @@ type bridgeStore struct {
 }
 
 func (s *bridgeStore) ResponderByPhone(_ context.Context, macs []crypto.MAC) (uuid.UUID, bool, error) {
+	if s.failLookup {
+		return uuid.UUID{}, false, errors.New("database failing over")
+	}
 	id, ok := s.responders[string(macs[0].Sum)]
 	return id, ok, nil
 }
@@ -225,7 +249,8 @@ func TestBridgeResponderToCaller(t *testing.T) {
 		a.args[0][0] != "bridge-leg" || slices.ContainsFunc(a.args[0], func(s string) bool { return strings.Contains(s, "772") }) {
 		t.Fatalf("dialled %v as %v with %v", a.endpoints, a.callerIDs, a.args)
 	}
-	if !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-connecting") || !slices.Equal(st.begun, []string{dispatch.BridgeByVHT}) {
+	if !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-connecting") || !slices.Contains(a.lastSounds("in-1"), ari.RingbackTone) ||
+		!slices.Equal(st.begun, []string{dispatch.BridgeByVHT}) {
 		t.Fatalf("connecting %v begun %v", a.plays, st.begun)
 	}
 	b.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "leg-1", Args: a.args[0]})
@@ -237,6 +262,11 @@ func TestBridgeResponderToCaller(t *testing.T) {
 	}
 	if bridge == "" || st.answered != 1 {
 		t.Fatalf("bridged %v answered %d", a.bridged, st.answered)
+	}
+	// Review I2: the VHT's own caller ID became Sauti's number before they
+	// joined the bridge, so the caller is never sent it as a connected line.
+	if a.callerID["in-1"] != sautiNum || slices.Index(a.ops, "callerid:in-1") > slices.Index(a.ops, "bridge:in-1") {
+		t.Fatalf("caller ID %q, operations %v", a.callerID["in-1"], a.ops)
 	}
 	b.Handle(context.Background(), Event{Type: EventStasisEnd, ChannelID: "in-1"})
 	if !a.wasHungUp("leg-1") || !slices.Contains(a.destroyed, bridge) || !slices.Equal(st.results(), []string{dispatch.BridgeConnected}) {
@@ -330,9 +360,69 @@ func TestBridgeNoAnswerAndFailure(t *testing.T) {
 	b2, a2, _ := bridgeRig(t, st2, 30*time.Second)
 	a2.failDial = true
 	dialIn(b2, "in-2", responderNum)
-	if !slices.Equal(st2.results(), []string{dispatch.BridgeFailed}) || !slices.Contains(a2.lastSounds("in-2"), "sauti/en/bridge-failed") {
-		t.Fatalf("refused trunk: results %v plays %v", st2.results(), a2.plays)
+	// Review I1: a call that cannot be placed goes to a coordinator.
+	if !slices.Equal(st2.results(), []string{dispatch.BridgeFailed}) || !slices.Equal(a2.continued, []string{"in-2→" + FallbackContext}) {
+		t.Fatalf("refused trunk: results %v continued %v", st2.results(), a2.continued)
 	}
+}
+
+// Review I3: the other phone is off or unreachable — its leg is destroyed
+// before any answer — and the call ends at once as no answer.
+func TestBridgeEndsWhenTheOtherPhoneIsUnreachable(t *testing.T) {
+	resp := uuid.NewV7()
+	st := &bridgeStore{responders: map[string]uuid.UUID{responderNum: resp},
+		byResp: map[uuid.UUID][]dispatch.BridgeTarget{resp: {target("1234567894", responder.RoleVHT)}}}
+	b, a, _ := bridgeRig(t, st, 30*time.Second)
+	dialIn(b, "in-1", responderNum)
+	b.Handle(context.Background(), Event{Type: EventChannelDestroyed, ChannelID: "leg-1"})
+	if !slices.Equal(st.results(), []string{dispatch.BridgeNoAnswer}) || !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-no-answer") {
+		t.Fatalf("unreachable phone: results %v plays %v", st.results(), a.plays)
+	}
+	if len(b.calls) != 1 || len(b.byID) != 0 { // only the inbound channel, until its prompt ends
+		t.Fatalf("state left behind: calls %v byID %v", b.calls, b.byID)
+	}
+}
+
+// Review I1 (rule 14): a database that fails during recognition, or a
+// bridge not wired in this process, hands the call to a coordinator — it
+// never plays "nothing to connect" or hangs up.
+func TestBridgeFailuresGoToACoordinator(t *testing.T) {
+	st := &bridgeStore{failLookup: true}
+	b, a, _ := bridgeRig(t, st, 30*time.Second)
+	dialIn(b, "in-1", responderNum)
+	if !slices.Equal(a.continued, []string{"in-1→" + FallbackContext}) || slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-no-assignment") {
+		t.Fatalf("database failure: continued %v plays %v", a.continued, a.plays)
+	}
+	unwired := newBridgeARI()
+	Outbound{ARI: unwired}.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "in-2", Args: []string{"bridge"}})
+	if !slices.Equal(unwired.continued, []string{"in-2→" + FallbackContext}) || slices.Contains(unwired.hungUp, "in-2") {
+		t.Fatalf("unwired bridge: continued %v hung up %v", unwired.continued, unwired.hungUp)
+	}
+}
+
+// Review I4: a responder who is also a caller (they reported an emergency
+// from their own phone) is asked which party to reach, and never reaches
+// themselves.
+func TestBridgeResponderWhoIsAlsoACaller(t *testing.T) {
+	self := uuid.NewV7()
+	helping := target("1234567894", responder.RoleVHT)
+	helping.ResponderID = self
+	reported := target("5555555555", responder.RoleTransporter) // the transporter coming to them
+	ownVHT := target("5555555555", responder.RoleVHT)           // they also hold the VHT role on their own report
+	ownVHT.ResponderID = self
+	st := &bridgeStore{responders: map[string]uuid.UUID{responderNum: self},
+		byResp:   map[uuid.UUID][]dispatch.BridgeTarget{self: {helping, ownVHT}},
+		byCaller: map[string][]dispatch.BridgeTarget{responderNum: {reported, ownVHT}}}
+	b, a, logs := bridgeRig(t, st, 30*time.Second)
+	dialIn(b, "in-1", responderNum)
+	if len(a.endpoints) != 0 || !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-choose-side") {
+		t.Fatalf("expected the choice of party: %v %v", a.endpoints, a.plays)
+	}
+	b.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "in-1", Digit: "2"})
+	if len(a.endpoints) != 1 || a.endpoints[0] != "PJSIP/"+responderNum+"@sauti-trunk" || !slices.Equal(st.begun, []string{dispatch.BridgeByCaller}) {
+		t.Fatalf("their own helper: dialled %v begun %v", a.endpoints, st.begun)
+	}
+	noNumbers(t, logs)
 }
 
 // The outbound router hands each event to each call kind once: the bridge,
