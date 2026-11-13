@@ -23,6 +23,8 @@ No dispatch has started: no location was given, or (rarely) the request that wou
 3. `last_screen = 8` with `t2` empty means Tool 1 finished but T2 was not recorded: the ward and landmark are on the incident; dispatch from them.
 
 ## Mitigation
+**Deployment restriction until M5.** Calling back needs the caller's number, which only the console's audited reveal (M5) may show. No interim tool opens a sealed identifier, and none may be improvised: that would bypass the identifier access controls. Sauti therefore must not take live calls before M5. Production already refuses to start while clinical copy is PENDING and the key provider (P0) is absent. In development and test, record the escalation and the incident reference, then follow the steps below once M5 is in place.
+
 1. Call back through the audited reveal (M5). Never copy a number into chat or a messaging app (rule 3.6).
 2. Get the location by voice and record it on the incident through the console (M5), so dispatch starts.
 3. If the caller is unreachable, record the attempts; the incident stays flagged.

@@ -32,6 +32,7 @@ Because the projection is the session state, partial failures are repaired from 
 - What the answers imply but the log lacks (a classification, T2) is recorded by a projection-driven catch-up after every applied answer and whenever a session starts or resumes, with incident-scoped idempotency keys, so a retried callback or a redial on either channel converges.
 - The closing screen is never shown without T2 (`intake.ErrNotDispatched`); a finished Tool 1 without T2 stays resumable and is swept as idle.
 - An answered field never changes (CodeRabbit PR #6): a stale session cannot rewrite what the incident was classified on. `incident.Apply` and a trigger on `op.incident_events` refuse a different value and accept the same one. The trigger holds whatever later migrations make of the write path.
+- **The one exception is the call-back answer (screen 8).** It may be given again, and the latest stands. A caller who redials can give a newer number, and nothing is classified on it. Its consumer, the caller's SMS contact (`op.caller_contact`, M2), reads the latest answer. Neither the fold nor the trigger compares call-back answers. `internal/incident/tool1_test.go::TestCallbackMayBeAnsweredAgain` pins this.
 - The abandonment sweep writes an incident's flags and escalation as one batch. An abandoned incident is listed again while it owes its escalation (resumed, then danger yes or red, dropped before T2), so a resumed call is not lost behind its old `abandoned` flag.
 
 ## Consequences

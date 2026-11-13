@@ -192,3 +192,18 @@ func TestDiffReportsTool1Fields(t *testing.T) {
 		t.Fatalf("equal projections differ: %s", d)
 	}
 }
+
+// The one exception to "an answered field never changes" (ADR-0018): the
+// call-back answer may be given again, and the latest stands. A caller who
+// redials can give a newer number, and the consumer of the call-back
+// (op.caller_contact, M2) reads the latest answer.
+func TestCallbackMayBeAnsweredAgain(t *testing.T) {
+	p, err := Fold([]Event{started(), answered(2, 8, FieldCallback, "same_number")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := ev(3, EvScreenAnswered, `{"screen":8,"field":"callback","value":"provided","identifier_id":"01a1d3b2-d1f0-754c-b9aa-fbd3eabd7e77"}`)
+	if _, err := Apply(p, again); err != nil {
+		t.Fatalf("a later call-back answer refused: %v", err)
+	}
+}
