@@ -3,11 +3,16 @@
 package opstore_test
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
+	"uuid"
 
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/pg"
+	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/pg/pgtest"
 )
 
@@ -53,5 +58,89 @@ func TestFlagEventNeedsAJSONStringFlag(t *testing.T) {
 	}
 	if _, err := owner.Exec(ctx, direct, o.IncidentID, 1002, "incident.escalated", `{"reason":"test","flag":123}`, "direct-other"); err != nil {
 		t.Errorf("owner insert of another event type with a non-string flag key: %v", err)
+	}
+}
+
+// Finding 10: every call the adapter makes has its own deadline, pool wait
+// included. The server stops a statement after 5 s and an idle transaction
+// after 30 s, but nothing bounded the wait for a pool connection when the
+// caller's context had no deadline. A transaction is bounded only while it
+// begins: an outbox batch holds it until Complete or Abort.
+func TestOpstoreCallsHaveTheirOwnDeadline(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := pgtest.Context(t)
+	pool, err := pg.Connect(ctx, c.DSN(pg.StoreOperational, "op_intake"), "test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	held, err := pool.Acquire(ctx) // the only connection: the pool is exhausted
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	defer opstore.SetOpTimeout(200 * time.Millisecond)()
+	s := opstore.New(pool)
+	params, id := openParams(t), uuid.NewV7()
+	for _, tc := range []struct {
+		name string
+		call func(context.Context) error
+	}{
+		{"OpenIncident", func(ctx context.Context) error { _, err := s.OpenIncident(ctx, params); return err }},
+		{"Append", func(ctx context.Context) error {
+			_, err := s.Append(ctx, incident.AppendParams{IncidentID: id, Type: incident.EvFlagged,
+				Payload: json.RawMessage(`{"flag":"test_call"}`), ActorKind: incident.ActorSystem, IdemKey: "k"})
+			return err
+		}},
+		{"Events", func(ctx context.Context) error { _, err := s.Events(ctx, id); return err }},
+		{"Projection", func(ctx context.Context) error { _, err := s.Projection(ctx, id); return err }},
+		{"ListIncidentIDs", func(ctx context.Context) error { _, err := s.ListIncidentIDs(ctx); return err }},
+		{"DefaultPartitionRows", func(ctx context.Context) error { _, err := s.DefaultPartitionRows(ctx); return err }},
+		{"Claim", func(ctx context.Context) error {
+			b, err := s.Claim(ctx, "audit", 1)
+			if err == nil {
+				b.Abort(ctx)
+			}
+			return err
+		}},
+		{"VerifyProjections", func(ctx context.Context) error { _, _, err := opstore.VerifyProjections(ctx, s); return err }},
+	} {
+		done := make(chan error, 1)
+		// Deliberately a caller without a deadline: the store must add one.
+		go func() { done <- tc.call(context.Background()) }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("%s on an exhausted pool: err = %v, want context.DeadlineExceeded", tc.name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s waited on an exhausted pool with no deadline", tc.name)
+		}
+	}
+}
+
+// The bound covers Claim's Begin only: the batch's transaction outlives it.
+func TestClaimedBatchOutlivesThePerCallDeadline(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := pgtest.Context(t)
+	defer opstore.SetOpTimeout(200 * time.Millisecond)()
+	if _, err := storeAs(t, c, "op_intake").OpenIncident(ctx, openParams(t)); err != nil {
+		t.Fatal(err)
+	}
+	b, err := storeAs(t, c, "op_relay").Claim(ctx, "audit", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Abort(ctx)
+	time.Sleep(500 * time.Millisecond) // well past the per-call bound
+	ids := make([]uuid.UUID, 0, len(b.Rows()))
+	for _, r := range b.Rows() {
+		ids = append(ids, r.ID)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("claimed %d rows, want 1", len(ids))
+	}
+	if err := b.Complete(ctx, ids); err != nil {
+		t.Fatalf("completing a batch held past the per-call bound: %v", err)
 	}
 }
