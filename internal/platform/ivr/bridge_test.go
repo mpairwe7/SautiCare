@@ -126,9 +126,10 @@ func (a *bridgeARI) wasHungUp(ch string) bool {
 }
 
 const (
-	callerNum    = "+256772000111" // the person who reported the emergency
-	responderNum = "+256772000222" // the responder
-	sautiNum     = "+256800100100" // Sauti's bridge number (placeholder)
+	callerNum      = "+256772000111" // the person who reported the emergency
+	responderNum   = "+256772000222" // the responder
+	transporterNum = "+256772000333" // another responder
+	sautiNum       = "+256800100100" // Sauti's bridge number (placeholder)
 )
 
 // macOf is a stand-in keyed hash: one MAC per number.
@@ -146,6 +147,7 @@ type bridgeStore struct {
 	responders map[string]uuid.UUID // MAC sum → responder
 	byResp     map[uuid.UUID][]dispatch.BridgeTarget
 	byCaller   map[string][]dispatch.BridgeTarget // MAC sum → targets
+	phones     map[uuid.UUID]string               // responder → number (default responderNum)
 	begun      []string                           // initiated_by
 	answered   int
 	finished   map[uuid.UUID]string
@@ -167,8 +169,12 @@ func (s *bridgeStore) BridgeTargetsForCaller(_ context.Context, macs []crypto.MA
 func (s *bridgeStore) CallerContact(context.Context, uuid.UUID) (incident.SealedContact, bool, error) {
 	return incident.SealedContact{Sealed: crypto.Sealed{Ciphertext: []byte(callerNum)}}, true, nil
 }
-func (s *bridgeStore) ResponderPhone(context.Context, uuid.UUID) (incident.SealedContact, error) {
-	return incident.SealedContact{Sealed: crypto.Sealed{Ciphertext: []byte(responderNum)}}, nil
+func (s *bridgeStore) ResponderPhone(_ context.Context, id uuid.UUID) (incident.SealedContact, error) {
+	n, ok := s.phones[id]
+	if !ok {
+		n = responderNum
+	}
+	return incident.SealedContact{Sealed: crypto.Sealed{Ciphertext: []byte(n)}}, nil
 }
 func (s *bridgeStore) BeginBridgeCall(_ context.Context, _ uuid.UUID, by string) (uuid.UUID, error) {
 	s.mu.Lock()
@@ -226,7 +232,7 @@ func dialIn(b *Bridge, ch, from string) {
 // noNumbers fails if a phone number reached the logs, in any common form.
 func noNumbers(t *testing.T, logs *bytes.Buffer) {
 	t.Helper()
-	for _, n := range []string{callerNum, responderNum, "0772000111", "0772000222", "772000111", "772000222"} {
+	for _, n := range []string{callerNum, responderNum, transporterNum, "0772000111", "0772000222", "0772000333", "772000111", "772000222", "772000333"} {
 		if strings.Contains(logs.String(), n) {
 			t.Fatalf("a phone number reached the logs: %s", logs.String())
 		}
@@ -412,14 +418,18 @@ func TestBridgeResponderWhoIsAlsoACaller(t *testing.T) {
 	ownVHT.ResponderID = self
 	st := &bridgeStore{responders: map[string]uuid.UUID{responderNum: self},
 		byResp:   map[uuid.UUID][]dispatch.BridgeTarget{self: {helping, ownVHT}},
-		byCaller: map[string][]dispatch.BridgeTarget{responderNum: {reported, ownVHT}}}
+		byCaller: map[string][]dispatch.BridgeTarget{responderNum: {reported, ownVHT}},
+		phones:   map[uuid.UUID]string{self: responderNum, reported.ResponderID: transporterNum}}
 	b, a, logs := bridgeRig(t, st, 30*time.Second)
 	dialIn(b, "in-1", responderNum)
 	if len(a.endpoints) != 0 || !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-choose-side") {
 		t.Fatalf("expected the choice of party: %v %v", a.endpoints, a.plays)
 	}
 	b.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "in-1", Digit: "2"})
-	if len(a.endpoints) != 1 || a.endpoints[0] != "PJSIP/"+responderNum+"@sauti-trunk" || !slices.Equal(st.begun, []string{dispatch.BridgeByCaller}) {
+	// CodeRabbit PR #12: each responder has their own number, so dialling
+	// the transporter is told apart from dialling the caller themselves.
+	if len(a.endpoints) != 1 || a.endpoints[0] != "PJSIP/"+transporterNum+"@sauti-trunk" || strings.Contains(a.endpoints[0], responderNum) ||
+		!slices.Equal(st.begun, []string{dispatch.BridgeByCaller}) {
 		t.Fatalf("their own helper: dialled %v begun %v", a.endpoints, st.begun)
 	}
 	noNumbers(t, logs)
