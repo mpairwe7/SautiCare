@@ -153,6 +153,13 @@ func (s *Store) SaveCheckpoint(ctx context.Context, c audit.Checkpoint) error {
 	if c.Signature == nil {
 		return errors.New("auditstore: refusing to store an unsigned checkpoint")
 	}
+	// timestamptz keeps microseconds, and Checkpoints rebuilds the body from
+	// the stored signed_at: a finer timestamp would no longer match what was
+	// signed. Truncating here would break the signature, so refuse instead
+	// (the checkpointer truncates before it signs).
+	if c.SignedAt.Nanosecond()%int(time.Microsecond) != 0 {
+		return errors.New("auditstore: checkpoint signed_at is finer than a microsecond; its signed body could not be rebuilt")
+	}
 	_, err := s.q.SaveCheckpoint(ctx, auditdb.SaveCheckpointParams{
 		Origin:    c.Origin,
 		Seq:       c.Seq,

@@ -277,7 +277,7 @@ func TestCheckpointsAreStoredAndAppendOnly(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := appenderStore(t, c, 1)
 	ctx := pgtest.Context(t)
-	cp := audit.Checkpoint{Origin: "sauti-test", Seq: 0, SignedAt: time.Now().UTC(), KeyID: "k1", Signature: []byte{1, 2, 3}}
+	cp := audit.Checkpoint{Origin: "sauti-test", Seq: 0, SignedAt: time.Now().UTC().Truncate(time.Microsecond), KeyID: "k1", Signature: []byte{1, 2, 3}}
 	if err := s.SaveCheckpoint(ctx, cp); err != nil {
 		t.Fatal(err)
 	}
@@ -288,5 +288,32 @@ func TestCheckpointsAreStoredAndAppendOnly(t *testing.T) {
 	owner := c.Owner(t, pg.StoreAudit)
 	if _, err := owner.Exec(ctx, "DELETE FROM audit.checkpoints"); pgCode(err) != "SA403" {
 		t.Fatalf("checkpoint delete: %v", err)
+	}
+}
+
+// CodeRabbit PR #3: timestamptz keeps microseconds, and Checkpoints rebuilds
+// a checkpoint's body from the stored signed_at. A checkpoint signed over a
+// finer SignedAt would be stored, but its rebuilt body would differ from the
+// signed one and fail verification. SaveCheckpoint refuses it rather than
+// truncate a checkpoint that is already signed.
+func TestSaveCheckpointRefusesSubMicrosecondSignedAt(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s, r := appenderStore(t, c, 1), readerStore(t, c)
+	ctx := pgtest.Context(t)
+	at := time.Date(2026, 11, 13, 9, 0, 0, 123456789, time.UTC)
+	cp := audit.Checkpoint{Origin: "sauti-test", SignedAt: at, KeyID: "k1", Signature: []byte{1}}
+	if err := s.SaveCheckpoint(ctx, cp); err == nil {
+		t.Error("stored a checkpoint whose signed body PostgreSQL cannot keep")
+	}
+	if got, err := r.Checkpoints(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("after the refusal Checkpoints = %d stored, %v; want none", len(got), err)
+	}
+	cp.SignedAt = at.Truncate(time.Microsecond)
+	if err := s.SaveCheckpoint(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Checkpoints(ctx)
+	if err != nil || len(got) != 1 || string(got[0].Body()) != string(cp.Body()) {
+		t.Fatalf("stored checkpoint does not rebuild the signed body (%d stored, %v)", len(got), err)
 	}
 }
