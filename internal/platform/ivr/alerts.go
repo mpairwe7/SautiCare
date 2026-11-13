@@ -265,7 +265,9 @@ func (a *AlertCalls) key(ctx context.Context, ch string, st *alertCall, digit st
 		}
 		sounds := []string{a.sound(name)}
 		if out.Result == dispatch.Accepted {
-			sounds = append(sounds, a.whereToGo(st.alert.Facts)...)
+			// Where to go, then how to reach the caller: the bridge
+			// (Build Prompt §10.4, §10.5).
+			sounds = append(append(sounds, a.whereToGo(st.alert.Facts)...), a.sound("alert-bridge-instructions"))
 		}
 		a.finish(ctx, ch, st, sounds...)
 	case "2":
@@ -350,7 +352,7 @@ func AlertSounds(tool1 config.Tool1, copy config.Responder) []string {
 	var out []string
 	for _, lang := range copy.Languages {
 		b := "sauti/" + lang + "/"
-		out = append(out, b+"alert-intro", b+"alert-options", b+"alert-accepted", b+"alert-already-taken",
+		out = append(out, b+"alert-intro", b+"alert-options", b+"alert-accepted", b+"alert-bridge-instructions", b+"alert-already-taken",
 			b+"alert-already-assigned", b+"alert-no-longer-needed", b+"alert-declined")
 		for _, sev := range []string{"red", "yellow", "green"} {
 			out = append(out, b+"alert-colour-"+sev)

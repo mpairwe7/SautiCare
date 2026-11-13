@@ -24,6 +24,7 @@ sounds:
     - sauti/en/alert-accepted
     - sauti/en/alert-already-assigned
     - sauti/en/alert-already-taken
+    - sauti/en/alert-bridge-instructions
     - sauti/en/alert-category-acute_medical
     - sauti/en/alert-category-obstetric
     - sauti/en/alert-category-other
@@ -142,6 +143,7 @@ sounds:
     - sauti/lg/alert-accepted
     - sauti/lg/alert-already-assigned
     - sauti/lg/alert-already-taken
+    - sauti/lg/alert-bridge-instructions
     - sauti/lg/alert-category-acute_medical
     - sauti/lg/alert-category-obstetric
     - sauti/lg/alert-category-other
