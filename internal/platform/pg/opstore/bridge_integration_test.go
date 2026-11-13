@@ -5,9 +5,11 @@ package opstore_test
 import (
 	"context"
 	"testing"
+	"uuid"
 
 	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/dispatch"
+	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/responder"
 )
@@ -78,5 +80,42 @@ func TestBridgeTargetsAndLog(t *testing.T) {
 	}
 	if got, _ := r.ivr.BridgeTargetsForResponder(ctx, vht); len(got) != 0 {
 		t.Fatalf("released assignment still bridged: %+v", got)
+	}
+}
+
+// CodeRabbit PR #12: a second caller's report merged into a survivor keeps
+// its session on the member, yet the responders come to the survivor. That
+// caller reaches the survivor's responders; once a coordinator splits the
+// merge, they no longer do.
+func TestBridgeCallerOfAMergedReport(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	vht := r.responder(t, responder.RoleVHT)
+	a := r.issue(t, r.incident, vht, responder.RoleVHT)
+	if _, err := r.intake.AcceptAlert(ctx, a.AlertID, vht); err != nil {
+		t.Fatal(err)
+	}
+	neighbour := crypto.MAC{KeyID: "dev:k:2", Sum: append(make([]byte, 31), 7)}
+	p := openParams(t)
+	p.PhoneMAC = neighbour
+	member, err := r.intake.OpenIncident(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEv(t, r.intake, member.IncidentID, incident.EvClassified, `{"severity":"red"}`, "tool1-test+sha256:000000000000")
+	appendEv(t, r.intake, member.IncidentID, incident.EvDispatchReady, `{"zone":{"col":902,"row":84},"location_quality":"landmark"}`, "")
+	if got, err := r.ivr.BridgeTargetsForCaller(ctx, []crypto.MAC{neighbour}); err != nil || len(got) != 0 {
+		t.Fatalf("before the merge, their own report has nobody assigned: %+v %v", got, err)
+	}
+	absorb(t, r.intake, incident.Opened{IncidentID: r.incident}, member)
+	got, err := r.ivr.BridgeTargetsForCaller(ctx, []crypto.MAC{neighbour})
+	if err != nil || len(got) != 1 || got[0].IncidentID != r.incident || got[0].ResponderID != vht {
+		t.Fatalf("the merged report's caller reaches the survivor's responder: %+v %v", got, err)
+	}
+	if err := r.console.SplitIncident(ctx, r.incident, member.IncidentID, uuid.NewV7()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.ivr.BridgeTargetsForCaller(ctx, []crypto.MAC{neighbour}); err != nil || len(got) != 0 {
+		t.Fatalf("split off, their report has nobody assigned again: %+v %v", got, err)
 	}
 }

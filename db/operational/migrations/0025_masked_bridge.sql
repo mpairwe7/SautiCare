@@ -35,7 +35,11 @@ AS $$
 $$;
 
 -- The responders assigned to the open incidents a caller's number reported
--- (by the MAC of the number of any of the incident's sessions).
+-- (by the MAC of the number of any of the incident's sessions). A report
+-- merged into a survivor keeps its sessions while the responders come to the
+-- survivor, so its caller reaches the survivor's responders. A survivor never
+-- merges again (only a call at its own T2 merges, and a survivor is past
+-- it), so one step of merged_into suffices; a split clears it.
 CREATE FUNCTION op.bridge_targets_for_caller(p_macs bytea[])
 RETURNS TABLE (incident_id uuid, reference text, role text, responder_id uuid)
 LANGUAGE sql STABLE SECURITY DEFINER
@@ -44,7 +48,8 @@ AS $$
     SELECT s.incident_id, i.reference, s.role, s.responder_id
       FROM op.assignments s JOIN op.incidents i ON i.id = s.incident_id
      WHERE s.released_at IS NULL AND i.state NOT IN ('closed', 'merged')
-       AND EXISTS (SELECT 1 FROM op.sessions x WHERE x.incident_id = i.id AND x.phone_mac = ANY (p_macs))
+       AND EXISTS (SELECT 1 FROM op.sessions x JOIN op.incidents m ON m.id = x.incident_id
+                    WHERE x.phone_mac = ANY (p_macs) AND (m.id = i.id OR m.merged_into = i.id))
      ORDER BY s.accepted_at DESC
 $$;
 
