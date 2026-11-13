@@ -261,7 +261,7 @@ func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error)
 			return Screen{}, err
 		}
 		incidentID = prev.IncidentID
-		if pr, err = s.answer(ctx, incidentID, &sess, prev.Kind, input); err != nil {
+		if pr, err = s.answer(ctx, incidentID, &sess, prev.Kind, input, false); err != nil {
 			return Screen{}, err
 		}
 	}
@@ -293,7 +293,7 @@ func (s *Service) newInput(ctx context.Context, r USSDRequest, prev Step) (strin
 // answer applies input given to the prompt shown and returns what to show
 // next. Every answer is persisted at once (Guide §4); idempotency keys make a
 // retried or concurrent duplicate callback harmless.
-func (s *Service) answer(ctx context.Context, id uuid.UUID, sess *session, shown Kind, input string) (Prompt, error) {
+func (s *Service) answer(ctx context.Context, id uuid.UUID, sess *session, shown Kind, input string, voice bool) (Prompt, error) {
 	p, err := s.d.Reader.Projection(ctx, id)
 	if err != nil {
 		return Prompt{}, err
@@ -308,6 +308,8 @@ func (s *Service) answer(ctx context.Context, id uuid.UUID, sess *session, shown
 	switch {
 	case out.Invalid:
 		return s.d.Machine.Reprompt(p, shown, sess.hasPhone), nil
+	case out.Next != nil && voice && out.Next.Kind == KindLandmarkText:
+		out = s.d.Machine.AnotherLandmark() // no free text on the keypad
 	case out.Next != nil:
 		return *out.Next, nil
 	}

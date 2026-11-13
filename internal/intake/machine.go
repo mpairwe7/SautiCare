@@ -58,6 +58,9 @@ type Prompt struct {
 	// danger-question key on screen 5, the ward on screen 7, the category on
 	// the completion screen.
 	Key string
+	// Reference is the spoken incident reference on the completion screen
+	// (read digit by digit on the voice line).
+	Reference string
 }
 
 // Outcome is the result of one answer.
@@ -202,7 +205,7 @@ func (m *Machine) prompt(p incident.Projection, k Kind, hasPhone bool) Prompt {
 	case KindOutOfArea:
 		pr.Screen, pr.End, pr.Text = 6, true, pick(m.cat.Messages.OutOfArea, lang)
 	case KindComplete:
-		pr.Screen, pr.End, pr.Key = 8, true, p.Category
+		pr.Screen, pr.End, pr.Key, pr.Reference = 8, true, p.Category, p.Reference.Spoken()
 		pr.Text = strings.NewReplacer("{ref}", p.Reference.Spoken(),
 			"{first_aid}", pick(m.cat.Messages.FirstAid[p.Category], lang)).Replace(pick(m.cat.Messages.HelpComing, lang))
 	}
@@ -338,6 +341,14 @@ func (m *Machine) Answer(p incident.Projection, shown Kind, input string, hasPho
 	out.DispatchReady = a.Screen == m.trigger
 	out.Complete = a.Screen == 8
 	return out, nil
+}
+
+// AnotherLandmark is the voice channel's option 6 at screen 7: "another
+// landmark", recorded as other without free text, so the incident is located
+// at ward level and flagged for a location call-back (Build Prompt §10.2).
+func (m *Machine) AnotherLandmark() Outcome {
+	return Outcome{Answer: &incident.ScreenAnswer{Screen: 7, Field: incident.FieldLandmark, Value: incident.LandmarkOther},
+		DispatchReady: m.trigger == 7}
 }
 
 // AllPrompts enumerates every screen at its worst case, in every language:

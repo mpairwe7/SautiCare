@@ -1,0 +1,409 @@
+// Package ivr is the voice channel adapter (Build Prompt §10.2): it turns
+// Asterisk ARI events into intake.Service calls and plays recorded prompts.
+// Answers come from the keypad only; nothing is recorded; a caller's number
+// is never logged.
+package ivr
+
+import (
+	"context"
+	"log/slog"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"sautihealth.com/sauti/internal/intake"
+	"sautihealth.com/sauti/internal/pii"
+	"sautihealth.com/sauti/internal/platform/ari"
+)
+
+// Event types re-exported from the ARI client.
+type Event = ari.Event
+
+const (
+	EventStasisStart      = ari.EventStasisStart
+	EventDTMF             = ari.EventDTMF
+	EventPlaybackStarted  = ari.EventPlaybackStarted
+	EventPlaybackFinished = ari.EventPlaybackFinished
+	EventStasisEnd        = ari.EventStasisEnd
+	EventHangupRequest    = ari.EventHangupRequest
+)
+
+// ARI is the subset of the Asterisk client the controller uses.
+type ARI interface {
+	Answer(ctx context.Context, channelID string) error
+	Play(ctx context.Context, channelID, playbackID string, sounds []string) error
+	StopPlayback(ctx context.Context, playbackID string) error
+	Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error
+	Hangup(ctx context.Context, channelID string) error
+}
+
+// Intake is the voice side of intake.Service.
+type Intake interface {
+	StartIVR(ctx context.Context, callID string, phone pii.Phone) (intake.IVRTurn, error)
+	AnswerIVR(ctx context.Context, call intake.IVRCall, input string) (intake.IVRTurn, error)
+}
+
+// FallbackContext is the dialplan context that takes a call Sauti cannot
+// serve: a recorded message, then the on-call coordinators
+// (telephony/asterisk/extensions.conf; hard constraint 14).
+const FallbackContext = "sauti-ivr-fallback"
+
+// Options tune the call behaviour.
+type Options struct {
+	// NoInput is how long silence lasts, counted from the end of a prompt,
+	// before the prompt is played again; after MaxReprompts the call ends
+	// (resume brings the caller back).
+	NoInput      time.Duration
+	MaxReprompts int
+	// OpTimeout bounds each intake or ARI operation of a call (default
+	// 3 s). A call whose operation runs out of time is handed to a
+	// coordinator; other calls are not affected.
+	OpTimeout time.Duration
+}
+
+// maxCallbackDigits bounds a typed callback number (E.164 is at most 15).
+const maxCallbackDigits = 16
+
+// evNoInput is the controller's own event: a call's no-input timer fired.
+const evNoInput = "SautiNoInput"
+
+// item is one event queued for a call's worker; gen identifies the timer
+// that queued a no-input event, so a stale one is ignored.
+type item struct {
+	ev  Event
+	gen int
+}
+
+// call is one voice call's state, owned by its worker goroutine.
+type call struct {
+	ch        string
+	turn      intake.IVRTurn
+	digits    string
+	seq       int
+	current   string // playback ID of the prompt last requested
+	started   bool   // current has started: keys answer it from now on
+	playing   bool   // current is playing: a key stops it (barge-in)
+	hangupOn  string // playback after which to hang up
+	reprompts int
+	timer     *time.Timer
+	timerGen  int
+	begun     bool
+	ended     bool
+}
+
+// worker runs one call: its events in order, one at a time, on its own
+// goroutine, so a slow call never holds up another.
+type worker struct {
+	mu    sync.Mutex
+	queue []item
+	wake  chan struct{}
+	call  *call
+}
+
+func (w *worker) push(it item) {
+	w.mu.Lock()
+	w.queue = append(w.queue, it)
+	w.mu.Unlock()
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (w *worker) pop(ctx context.Context) (item, bool) {
+	for {
+		w.mu.Lock()
+		if len(w.queue) > 0 {
+			it := w.queue[0]
+			w.queue = w.queue[1:]
+			w.mu.Unlock()
+			return it, true
+		}
+		w.mu.Unlock()
+		select {
+		case <-w.wake:
+		case <-ctx.Done():
+			return item{}, false
+		}
+	}
+}
+
+// Controller runs voice calls.
+type Controller struct {
+	ari     ARI
+	in      Intake
+	log     *slog.Logger
+	opt     Options
+	mu      sync.Mutex // guards workers only: no call's work runs under it
+	workers map[string]*worker
+	pending atomic.Int64 // events queued and not yet handled
+}
+
+// New builds a controller.
+func New(a ARI, in Intake, log *slog.Logger, opt Options) *Controller {
+	if opt.NoInput <= 0 {
+		opt.NoInput = 15 * time.Second
+	}
+	if opt.MaxReprompts < 0 {
+		opt.MaxReprompts = 0
+	}
+	if opt.OpTimeout <= 0 {
+		opt.OpTimeout = 3 * time.Second
+	}
+	return &Controller{ari: a, in: in, log: log, opt: opt, workers: map[string]*worker{}}
+}
+
+// Run streams ARI events into the controller until ctx ends.
+func (c *Controller) Run(ctx context.Context, client *ari.Client) error {
+	return client.Events(ctx, func(e ari.Event) { c.Handle(ctx, e) })
+}
+
+// Handle queues one event for its call and returns at once. Events of one
+// call are handled in order by that call's worker; a StasisStart starts the
+// worker, and events of an unknown call are dropped.
+func (c *Controller) Handle(ctx context.Context, e Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w := c.workers[e.ChannelID]
+	if w == nil {
+		if e.Type != EventStasisStart {
+			return
+		}
+		w = &worker{wake: make(chan struct{}, 1), call: &call{ch: e.ChannelID}}
+		c.workers[e.ChannelID] = w
+		go c.run(ctx, w)
+	}
+	c.pending.Add(1)
+	w.push(item{ev: e})
+}
+
+// enqueue queues a no-input event for a call still running.
+func (c *Controller) enqueue(ch string, it item) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if w := c.workers[ch]; w != nil {
+		c.pending.Add(1)
+		w.push(it)
+	}
+}
+
+func (c *Controller) run(ctx context.Context, w *worker) {
+	st := w.call
+	for !st.ended {
+		it, ok := w.pop(ctx)
+		if !ok {
+			break
+		}
+		c.step(ctx, st, it)
+		c.pending.Add(-1)
+	}
+	c.stopTimer(st)
+	c.mu.Lock()
+	if c.workers[st.ch] == w {
+		delete(c.workers, st.ch)
+	}
+	w.mu.Lock()
+	c.pending.Add(-int64(len(w.queue)))
+	w.queue = nil
+	w.mu.Unlock()
+	c.mu.Unlock()
+}
+
+// op is the context of one intake or ARI operation: its own deadline, and
+// not cancelled with the event stream, so an operation under way finishes
+// or fails cleanly.
+func (c *Controller) op(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), c.opt.OpTimeout)
+}
+
+func (c *Controller) step(ctx context.Context, st *call, it item) {
+	e := it.ev
+	switch e.Type {
+	case EventStasisStart:
+		if !st.begun { // a repeated StasisStart never opens a second session
+			st.begun = true
+			c.start(ctx, st, e)
+		}
+	case EventDTMF:
+		c.dtmf(ctx, st, e.Digit)
+	case EventPlaybackStarted:
+		if e.PlaybackID == st.current {
+			st.started, st.playing = true, true
+		}
+	case EventPlaybackFinished:
+		if e.PlaybackID != st.current {
+			return // a prompt stopped or replaced earlier
+		}
+		st.started, st.playing = true, false
+		switch {
+		case st.hangupOn == e.PlaybackID:
+			c.hangup(ctx, st)
+		case !st.turn.Prompt.End:
+			c.startTimer(st) // silence is counted from the end of the prompt
+		}
+	case evNoInput:
+		if it.gen == st.timerGen && !st.turn.Prompt.End {
+			c.noInput(ctx, st)
+		}
+	case EventStasisEnd, EventHangupRequest:
+		st.ended = true
+	}
+}
+
+func (c *Controller) start(ctx context.Context, st *call, e Event) {
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	if err := c.ari.Answer(octx, st.ch); err != nil {
+		c.log.Error("ivr answer failed", "channel", st.ch, "err", err)
+		c.handOver(ctx, st)
+		return
+	}
+	// A withheld or unparseable number is unknown: the caller is asked for a
+	// callback number and dispatch proceeds on location (Build Prompt §10.2).
+	phone, err := pii.ParsePhone(e.CallerNumber)
+	if err != nil {
+		phone = pii.Phone{}
+	}
+	turn, err := c.in.StartIVR(octx, st.ch, phone)
+	if err != nil {
+		c.log.Error("ivr intake failed", "channel", st.ch, "err", err)
+		c.handOver(ctx, st)
+		return
+	}
+	st.turn = turn
+	c.play(ctx, st, Sounds(turn.Prompt), turn.Prompt.End)
+}
+
+func (c *Controller) dtmf(ctx context.Context, st *call, digit string) {
+	if st.turn.Prompt.End || !st.started {
+		// Before the current prompt has begun, a key belongs to the one
+		// before it (still being stopped, or queued ahead): ARI plays
+		// prompts in order, so taking it would answer a question the
+		// caller has not heard.
+		return
+	}
+	if st.playing {
+		c.stopPlayback(ctx, st) // barge-in: the first key ends the prompt
+	}
+	c.stopTimer(st)
+	if st.turn.Call.Shown == intake.KindCallback {
+		switch {
+		case digit == "#":
+			input := st.digits
+			st.digits = ""
+			c.answer(ctx, st, input)
+		case st.digits == "" && digit == "1" && st.turn.Call.HasPhone:
+			c.answer(ctx, st, "1")
+		case len(st.digits) < maxCallbackDigits:
+			st.digits += digit
+			if !st.playing {
+				c.startTimer(st)
+			}
+		}
+		return
+	}
+	c.answer(ctx, st, digit)
+}
+
+func (c *Controller) stopPlayback(ctx context.Context, st *call) {
+	st.playing = false
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	if err := c.ari.StopPlayback(octx, st.current); err != nil {
+		c.log.Warn("ivr stop playback failed", "channel", st.ch, "err", err)
+	}
+}
+
+func (c *Controller) answer(ctx context.Context, st *call, input string) {
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	turn, err := c.in.AnswerIVR(octx, st.turn.Call, input)
+	if err != nil {
+		c.log.Error("ivr intake failed", "channel", st.ch, "err", err)
+		c.handOver(ctx, st)
+		return
+	}
+	st.turn, st.reprompts, st.digits = turn, 0, ""
+	c.play(ctx, st, Sounds(turn.Prompt), turn.Prompt.End)
+}
+
+func (c *Controller) noInput(ctx context.Context, st *call) {
+	if st.reprompts >= c.opt.MaxReprompts {
+		c.hangup(ctx, st)
+		return
+	}
+	st.reprompts++
+	st.digits = ""
+	c.play(ctx, st, Sounds(st.turn.Prompt), false)
+}
+
+// play requests a prompt. Keys are taken once it has started; the no-input
+// timer starts when it finishes. A closing prompt that cannot be played is
+// followed by an immediate hang-up (its PlaybackFinished would never come);
+// a question that cannot be played hands the caller to a coordinator.
+func (c *Controller) play(ctx context.Context, st *call, sounds []string, end bool) {
+	st.seq++
+	pb := st.ch + "-" + strconv.Itoa(st.seq)
+	st.current, st.started, st.playing = pb, false, false
+	c.stopTimer(st)
+	if end {
+		st.hangupOn = pb
+	}
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	if err := c.ari.Play(octx, st.ch, pb, sounds); err != nil {
+		c.log.Error("ivr play failed", "channel", st.ch, "err", err)
+		if end {
+			c.hangup(ctx, st)
+			return
+		}
+		c.handOver(ctx, st)
+	}
+}
+
+// handOver passes a call Sauti cannot serve to the dialplan's fallback (a
+// recorded message, then the on-call coordinators; hard constraint 14). The
+// incident and every answer given so far are already persisted, and a
+// redial resumes them. If even that fails, the call is hung up rather than
+// left in silence.
+func (c *Controller) handOver(ctx context.Context, st *call) {
+	c.stopTimer(st)
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	if err := c.ari.Continue(octx, st.ch, FallbackContext, "s", 1); err != nil {
+		c.log.Error("ivr hand-over to the fallback failed; hanging up", "channel", st.ch, "err", err)
+		c.hangup(ctx, st)
+		return
+	}
+	c.log.Warn("ivr call handed to the coordinator fallback", "channel", st.ch)
+	st.ended = true
+}
+
+func (c *Controller) hangup(ctx context.Context, st *call) {
+	c.stopTimer(st)
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	if err := c.ari.Hangup(octx, st.ch); err != nil {
+		c.log.Error("ivr hangup failed", "channel", st.ch, "err", err)
+	}
+	st.ended = true
+}
+
+func (c *Controller) stopTimer(st *call) {
+	if st.timer != nil {
+		st.timer.Stop()
+		st.timer = nil
+	}
+	st.timerGen++
+}
+
+// startTimer arms the no-input timer; when it fires it queues an event to
+// the call's own worker, never touching the call from the timer goroutine.
+func (c *Controller) startTimer(st *call) {
+	c.stopTimer(st)
+	gen, ch := st.timerGen, st.ch
+	st.timer = time.AfterFunc(c.opt.NoInput, func() {
+		c.enqueue(ch, item{ev: Event{Type: evNoInput, ChannelID: ch}, gen: gen})
+	})
+}

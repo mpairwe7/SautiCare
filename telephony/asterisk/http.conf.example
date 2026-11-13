@@ -1,0 +1,7 @@
+; Asterisk's HTTP server carries ARI. It listens on loopback only: the
+; ivr-controller runs on the same host, and nothing reaches ARI from outside
+; (Build Prompt rule 3.13; nftables default-deny in P0).
+[general]
+enabled = yes
+bindaddr = 127.0.0.1
+bindport = 8088

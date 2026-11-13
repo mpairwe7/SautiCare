@@ -36,7 +36,7 @@ Container(intake, "intake-gw", "Go", "USSD callbacks, sessions, (M1) Tool 1 + tr
 Container(relay, "outbox-relay", "Go", "Outbox to audit ledger; signed checkpoints")
 Container(ctl, "sautictl", "Go CLI", "migrate, verify-ledger, verify-projections, demo")
 Container(dispatch, "dispatch-worker", "Go + DBOS", "Rings, alert ladder, forwarding (M2)")
-Container(ivr, "ivr-controller", "Go + Asterisk ARI", "IVR, alert calls, masked bridge (M1-M2)")
+Container(ivr, "ivr-controller", "Go + Asterisk ARI", "Tool 1 on the voice line (M1); alert calls, masked bridge (M2)")
 Container(console, "console-api + console", "Go Connect / React", "Live board (M5)")
 ContainerDb(op, "operational", "PostgreSQL 18", "Incidents, events, outbox")
 ContainerDb(audit, "audit", "PostgreSQL 18", "Hash-chained ledger")
@@ -97,7 +97,7 @@ Three properties follow from this design:
 | Idempotency at every boundary | `op.event_keys`, `op.ussd_steps`, `audit.entries.entry_id` |
 | Optimistic concurrency | `expected_version` in `op.append_incident_event` |
 | Single active relay with automatic failover | `internal/platform/pg/leader.go` |
-| Fail safe to a human | intake always answers with the voice line; escalation port (M2) |
+| Fail safe to a human | USSD always answers with the voice line; a voice call Sauti cannot serve goes to the on-call coordinators (dialplan fallback); escalation port (M2) |
 | Dispatch-only readiness | `internal/platform/health/health.go` |
 | Defence in depth for PII | `internal/pii/pii.go` masking types, `internal/platform/logging/redact.go`, typed audit columns |
 | Egress allowlist | `internal/platform/egress/egress.go` |
@@ -105,4 +105,4 @@ Three properties follow from this design:
 
 ## What is not built yet
 
-M1 Part A (Tool 1 on USSD, triage, location, resume, abandonment) is built; deduplication (Part B) and the IVR (Part C) complete M1. Dispatch arrives in M2, field reporting in M3, payments in M4, the console in M5, the research data path in M6, and resilience drills in M7. Infrastructure-as-code is P0, and the flagged enhancements are P2. See `docs/superpowers/plans/2026-11-12-phased-roadmap.md`.
+M1 is built: Tool 1 on USSD and the voice line, signed triage, location, resume across channels, abandonment, and deduplication with the coordinator split. Dispatch arrives in M2, field reporting in M3, payments in M4, the console in M5, the research data path in M6, and resilience drills in M7. Infrastructure-as-code is P0, and the flagged enhancements are P2. See `docs/superpowers/plans/2026-11-12-phased-roadmap.md`.

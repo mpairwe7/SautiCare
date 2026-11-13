@@ -28,3 +28,4 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0020](ADR-0020-location-grid-and-gazetteer.md) | UTM 36N grid in Go and a frozen gazetteer with pg_trgm matching | Accepted | 2026-11-12 |
 | [ADR-0021](ADR-0021-sealed-answers-and-keyed-step-keys.md) | Screen-answer identifiers sealed; USSD step keys keyed hashes | Accepted | 2026-11-12 |
 | [ADR-0022](ADR-0022-deduplication-merge-and-split.md) | Deduplication at T2 into the incident already dispatching; coordinator split | Accepted | 2026-11-12 |
+| [ADR-0023](ADR-0023-ivr-through-in-house-ari-client.md) | The voice line runs Tool 1 through an in-house ARI client | Accepted | 2026-11-12 |
