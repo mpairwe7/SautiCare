@@ -53,7 +53,7 @@ type Options struct {
 	ConfigDir    string    // path to config/
 	RulesRoot    string    // directory holding triage-rules/ (default: the parent of ConfigDir)
 	Out          io.Writer // step-by-step narration
-	Keep         bool      // keep the demo databases afterwards
+	Keep         bool      // keep the demo databases, keys and witness afterwards
 }
 
 // Report is what the M0 demo proved.
@@ -120,6 +120,21 @@ func (r *runner) pool(ctx context.Context, s pg.Store, role string) (*pgxpool.Po
 		r.pools = append(r.pools, p)
 	}
 	return p, err
+}
+
+// workDir creates the run's directory for the generated keys and the
+// checkpoint witness. The returned func removes it, unless Keep: then it
+// stays with the databases — their ciphertext needs those keys and their
+// ledger that witness — and the func prints its path (CodeRabbit PR #4).
+func (r *runner) workDir() (string, func(), error) {
+	work, err := os.MkdirTemp("", "sauti-demo-")
+	if err != nil {
+		return "", nil, err
+	}
+	if r.o.Keep {
+		return work, func() { r.say("kept: development keys and checkpoint witness in %s", work) }, nil
+	}
+	return work, func() { _ = os.RemoveAll(work) }, nil
 }
 
 // RunM0 executes the M0 demo and returns its report. Any unmet expectation
@@ -202,11 +217,11 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	}
 	r.say("✓ setup: five stores bootstrapped and migrated (%s)", r.dbs[pg.StoreOperational])
 
-	work, err := os.MkdirTemp("", "sauti-demo-")
+	work, doneWork, err := r.workDir()
 	if err != nil {
 		return rep, err
 	}
-	defer func() { _ = os.RemoveAll(work) }()
+	defer doneWork()
 	if err := devkeys.Generate(filepath.Join(work, "keys"), rand.Reader); err != nil {
 		return rep, err
 	}
