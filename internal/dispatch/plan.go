@@ -210,11 +210,14 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 		}
 	}
 
-	// Suspended (O6): no responder is alerted, nothing is forwarded; the
-	// coordinator has the incident. Lapses are still recorded.
+	// Suspended (O6): no responder is alerted, nothing new is forwarded; the
+	// coordinator has the incident. Lapses are still recorded, and forwards
+	// already made are kept up (a timeout, the caller told of an
+	// acknowledgement).
 	if s.Suspended {
 		escalate(ReasonSuspended, "")
-		return acts, wake
+		settled, _ := settleForwards(s, p, now, soon)
+		return append(acts, settled...), wake
 	}
 
 	elapsed := now.Sub(s.DispatchedAt)
@@ -286,7 +289,10 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 		}
 	}
 	if len(open) == 0 {
-		return acts, wake
+		// Both roles taken: no new forward, but one already made still times
+		// out or, acknowledged, is still told to the caller.
+		settled, _ := settleForwards(s, p, now, soon)
+		return append(acts, settled...), wake
 	}
 	// The next ring step: wider ring, a new red wave, or someone switched on.
 	soon(s.DispatchedAt.Add(time.Duration(step+1) * p.RingInterval))
@@ -318,14 +324,19 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 	return acts, wake
 }
 
-// forward plans the facility ladder once forwarding has started.
-func forward(s State, facilities []location.Facility, p Params, now time.Time, soon func(time.Time)) []Action {
+// settleForwards keeps up the forwards already made, and never starts one:
+// the caller is told which centre acknowledged, and an unacknowledged
+// forward times out after ForwardAckTimeout. held reports that the ladder
+// must not move on (a centre acknowledged, or the last forward awaits its
+// acknowledgement). It runs on every exit that stops the search, so a
+// forward is never left open (CodeRabbit PR #10).
+func settleForwards(s State, p Params, now time.Time, soon func(time.Time)) (acts []Action, held bool) {
 	for _, f := range s.Forwards {
 		if f.Acked {
 			if !slices.Contains(s.CallerNotified, CallerForwarded) {
-				return []Action{{Kind: ActCallerSMS, Message: CallerForwarded, FacilityID: f.FacilityID}}
+				return []Action{{Kind: ActCallerSMS, Message: CallerForwarded, FacilityID: f.FacilityID}}, true
 			}
-			return nil
+			return nil, true
 		}
 	}
 	if n := len(s.Forwards); n > 0 && !s.Forwards[n-1].TimedOut {
@@ -333,9 +344,17 @@ func forward(s State, facilities []location.Facility, p Params, now time.Time, s
 		due := last.SentAt.Add(p.ForwardAckTimeout)
 		if now.Before(due) {
 			soon(due)
-			return nil
+			return nil, true
 		}
-		return []Action{{Kind: ActForwardTimeout, FacilityID: last.FacilityID}}
+		return []Action{{Kind: ActForwardTimeout, FacilityID: last.FacilityID}}, true
+	}
+	return nil, false
+}
+
+// forward plans the facility ladder once forwarding has started.
+func forward(s State, facilities []location.Facility, p Params, now time.Time, soon func(time.Time)) []Action {
+	if acts, held := settleForwards(s, p, now, soon); held {
+		return acts
 	}
 	tried := map[string]bool{}
 	for _, f := range s.Forwards {

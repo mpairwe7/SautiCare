@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -534,5 +535,46 @@ func TestRaisedToRedSendsAFullWave(t *testing.T) {
 	m.run(m.now)
 	if n := len(m.alerts(responder.RoleVHT)); n != 4 {
 		t.Fatalf("VHT alerts after the raise = %d, want the yellow one plus 3 red", n)
+	}
+}
+
+// CodeRabbit PR #10 (4557205968): forwards already made are kept up when
+// both roles are taken or dispatch is suspended — an unacknowledged one
+// times out on schedule, an acknowledgement still tells the caller which
+// centre expects them — but no new forward starts. (A closed or merged
+// incident accepts no fact, so its forwards stay as they were.)
+func TestForwardsSettleWhenDispatchStopsSearching(t *testing.T) {
+	for _, stop := range []string{"both roles taken", "suspended"} {
+		for _, acked := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/acked=%v", stop, acked), func(t *testing.T) {
+				m := newSim(t, incident.SevYellow, makePool(map[int]int{}), amended)
+				m.run(t0.Add(5 * time.Minute)) // 2.5 km at 5 min: forwarded to the nearest
+				if got := m.forwarded(); !slices.Equal(got, []string{"hc_near"}) {
+					t.Fatalf("forwards %v", got)
+				}
+				if stop == "suspended" {
+					m.s.Suspended = true
+				} else {
+					m.s.Assigned[responder.RoleVHT], m.s.Assigned[responder.RoleTransporter] = uuid.NewV7(), uuid.NewV7()
+				}
+				if acked {
+					m.ack("hc_near")
+				}
+				m.run(t0.Add(15 * time.Minute))
+				if got := m.forwarded(); !slices.Equal(got, []string{"hc_near"}) {
+					t.Fatalf("a new forward started: %v", got)
+				}
+				f := m.s.Forwards[0]
+				if acked {
+					if f.TimedOut || !slices.Contains(m.s.CallerNotified, CallerForwarded) {
+						t.Fatalf("acknowledged: %+v, caller %v", f, m.s.CallerNotified)
+					}
+					return
+				}
+				if !f.TimedOut || m.now.Before(t0.Add(6*time.Minute)) || slices.Contains(m.s.CallerNotified, CallerForwarded) {
+					t.Fatalf("unacknowledged forward not timed out at 6 min: %+v at %v, caller %v", f, m.now, m.s.CallerNotified)
+				}
+			})
+		}
 	}
 }
