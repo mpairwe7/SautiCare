@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -75,19 +76,33 @@ func ParseWitnessNote(note []byte) (Checkpoint, error) {
 func LatestWitnessed(notes [][]byte, pub []byte) (*Checkpoint, error) {
 	var best *Checkpoint
 	for i, n := range notes {
-		cp, err := ParseWitnessNote(n)
+		cp, err := verifiedNote(n, pub)
 		if err != nil {
 			return nil, fmt.Errorf("witness note %d: %w", i, err)
 		}
-		if err := crypto.VerifyMLDSA65(pub, cp.Body(), cp.Signature); err != nil {
-			return nil, fmt.Errorf("witness note %d (seq %d): %w", i, cp.Seq, err)
-		}
-		if best == nil || cp.Seq > best.Seq || (cp.Seq == best.Seq && cp.SignedAt.After(best.SignedAt)) {
-			c := cp
-			best = &c
+		if newer(cp, best) {
+			best = &cp
 		}
 	}
 	return best, nil
+}
+
+// verifiedNote parses a witness note and checks its signature against pub.
+func verifiedNote(note, pub []byte) (Checkpoint, error) {
+	cp, err := ParseWitnessNote(note)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	if err := crypto.VerifyMLDSA65(pub, cp.Body(), cp.Signature); err != nil {
+		return Checkpoint{}, fmt.Errorf("seq %d: %w", cp.Seq, err)
+	}
+	return cp, nil
+}
+
+// newer reports whether cp is later than best (nil is earliest): a higher
+// sequence, or the same sequence signed later.
+func newer(cp Checkpoint, best *Checkpoint) bool {
+	return best == nil || cp.Seq > best.Seq || (cp.Seq == best.Seq && cp.SignedAt.After(best.SignedAt))
 }
 
 // WitnessStore is a witness that can also read back every note it holds.
@@ -101,10 +116,11 @@ type WitnessStore interface {
 // holds none), together with that anchor. A note that does not parse or
 // verify is an error (fail closed, as LatestWitnessed).
 //
-// Build one immediately before signing — per leadership term, per CLI run —
-// never once per process: another instance may have witnessed newer history
-// meanwhile, and an older anchor would let a rewrite made after it be
-// signed (CodeRabbit PR #4).
+// The relay builds one per leadership term and the CLI one per run, so a
+// corrupt witness stops them before they lead or sign. Each Checkpoint then
+// reads the witness again: notes present now are not chain-checked one by
+// one (the latest is, at every Checkpoint), while every note written later,
+// by any writer, is checked when Checkpoint first sees it (CodeRabbit PR #4).
 func NewAnchoredCheckpointer(l Ledger, s crypto.Signer, w WitnessStore, origin string, now func() time.Time) (*Checkpointer, *Checkpoint, error) {
 	notes, err := w.ReadAll()
 	if err != nil {
@@ -115,6 +131,9 @@ func NewAnchoredCheckpointer(l Ledger, s crypto.Signer, w WitnessStore, origin s
 		return nil, nil, err
 	}
 	cp := NewCheckpointer(l, s, w, origin, now)
+	for _, n := range notes {
+		cp.seen[sha256.Sum256(n)] = struct{}{}
+	}
 	if anchor != nil {
 		cp.WithAnchor(*anchor)
 	}
