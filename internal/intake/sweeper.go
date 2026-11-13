@@ -9,6 +9,7 @@ import (
 	"uuid"
 
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/location"
 )
 
 // Flags written by the sweeper (Build Prompt §10.3).
@@ -122,7 +123,7 @@ func (s *Sweeper) RunOnce(ctx context.Context) (int, error) {
 // choice, R-9).
 func escalation(in Idle) string {
 	switch {
-	case in.Dispatched:
+	case in.Dispatched, in.Ward == location.WardElsewhere: // out of area: escalated when answered, if at all
 		return ""
 	case in.Danger == "yes":
 		return incident.ReasonAbandonedDangerYes

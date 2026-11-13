@@ -493,3 +493,58 @@ func TestSecondBystanderMergedAtT2(t *testing.T) {
 		t.Fatalf("survivor %+v, want T1 of the first call %v", pb, pa.OwnT1)
 	}
 }
+
+// F-07, flag on (out_of_area_escalate_after_danger; PENDING the PI and the
+// amendment gate): "Somewhere else" after a danger yes or a red
+// classification still shows 999 and 112, but flags and escalates the
+// incident and leaves it open, because a closed incident is never rung. A
+// redial within the window gives no second escalation.
+func TestOutOfAreaAfterDangerEscalatesWhenFlagged(t *testing.T) {
+	r := newRig(t, nil, nil)
+	r.svc.d.OutOfAreaEscalateAfterDanger = true
+	c := r.dial(t, "S1", "0772123456")
+	c.send("")
+	for _, in := range []string{"1", "1", "1", "3", "1"} {
+		c.send(in)
+	}
+	end := c.send("5") // 4 wards, then Somewhere else
+	p := c.projection()
+	if !end.End || !strings.Contains(end.Text, "999") || !strings.Contains(end.Text, "112") || p.State.Terminal() ||
+		!slices.Contains(p.Flags, "out_of_area") || !p.Escalated || p.T[2] != nil {
+		t.Fatalf("screen %+v, projection %+v", end, p)
+	}
+	again := r.dial(t, "S2", "0772123456")
+	if s := again.send(""); !s.End || !strings.Contains(s.Text, "999") {
+		t.Fatalf("redial: %+v", s)
+	}
+	var escalations, closed int
+	for _, e := range r.inc.allEvents() {
+		switch e.Type {
+		case incident.EvEscalated:
+			if reason, _, _ := incident.ParseEscalated(e.Payload); reason != incident.ReasonOutOfAreaAfterDanger {
+				t.Fatalf("escalated for %s", reason)
+			}
+			escalations++
+		case incident.EvClosed:
+			closed++
+		}
+	}
+	if escalations != 1 || closed != 0 {
+		t.Fatalf("escalations %d closed %d", escalations, closed)
+	}
+}
+
+// With the flag off (its committed value), the protocol is today's: the
+// out-of-area answer closes the incident, after a danger yes too.
+func TestOutOfAreaFlagOffClosesAsToday(t *testing.T) {
+	r := newRig(t, nil, nil)
+	c := r.dial(t, "S1", "0772123456")
+	c.send("")
+	for _, in := range []string{"1", "1", "1", "3", "1"} {
+		c.send(in)
+	}
+	c.send("5")
+	if p := c.projection(); p.State != incident.StateClosed || p.Escalated {
+		t.Fatalf("projection %+v", p)
+	}
+}

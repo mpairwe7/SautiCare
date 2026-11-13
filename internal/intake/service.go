@@ -141,6 +141,9 @@ type Deps struct {
 	Dedup      DedupRule
 	// Suspension reports whether dispatch is suspended (O6).
 	Suspension Suspension
+	// OutOfAreaEscalateAfterDanger is the gated flag of that name (F-07):
+	// off, "Somewhere else" closes the incident, as the protocol says.
+	OutOfAreaEscalateAfterDanger bool
 }
 
 // Suspension reports whether dispatch is suspended (the operational store).
@@ -435,11 +438,17 @@ func (s *Service) apply(ctx context.Context, p incident.Projection, sess session
 		if err != nil {
 			return err
 		}
-		closed, err := newEvent(id, incident.EvClosed, incident.ActorSystem, map[string]string{"reason": FlagOutOfArea}, incidentKey(id, "close"), "")
+		// Flag on, after a danger yes or a red classification: escalate and
+		// stay open, as a closed incident is never rung (ADR-0034).
+		end, err := newEvent(id, incident.EvClosed, incident.ActorSystem, map[string]string{"reason": FlagOutOfArea}, incidentKey(id, "close"), "")
+		if s.d.OutOfAreaEscalateAfterDanger && (p.Danger == "yes" || p.Severity == incident.SevRed) {
+			end, err = newEvent(id, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": incident.ReasonOutOfAreaAfterDanger},
+				incident.EscalationKey(incident.ReasonOutOfAreaAfterDanger, ""), "")
+		}
 		if err != nil {
 			return err
 		}
-		batch = append(batch, flag, closed)
+		batch = append(batch, flag, end)
 	}
 	_, err = s.d.Incidents.AppendBatch(ctx, batch)
 	return err

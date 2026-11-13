@@ -44,6 +44,7 @@ func TestLoadRepoConfigDefaults(t *testing.T) {
 		{"protocol mode until amendment", b.Dispatch.Mode == "protocol"},
 		{"decision 4 default order", strings.Join(b.Dispatch.RankingOrder, ",") == "zone_distance,response_history,least_recently_dispatched"},
 		{"all section 11 flags off", !b.Flags.AndroidApp && !b.Flags.CallerLink && !b.Flags.SpeechAssist && !b.Flags.AppAPI},
+		{"protocol flags off (out-of-area escalation PENDING the PI)", !b.Flags.OutOfAreaEscalateAfterDanger},
 		{"study window inactive", !b.Study.WindowActive},
 		{"protocol pending", b.ProtocolStatus == "pending"},
 		{"checkpoint interval 5m", b.Platform.CheckpointInterval.Duration == 5*time.Minute},

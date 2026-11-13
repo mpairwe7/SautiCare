@@ -255,3 +255,18 @@ func TestOneFailingIncidentDoesNotStopTheSweep(t *testing.T) {
 		t.Fatalf("n=%d err=%v events %v", n, err, log.calls)
 	}
 }
+
+// "Somewhere else" is not a ward Sauti serves: an out-of-area incident left
+// open (out_of_area_escalate_after_danger on) is never "dispatch not
+// started"; it was escalated when the caller answered.
+func TestSweeperDoesNotTakeSomewhereElseForAWard(t *testing.T) {
+	id := uuid.NewV7()
+	r := &idleReader{idle: []Idle{{ID: id, Danger: "yes", Category: "trauma", Ward: "elsewhere"}}}
+	log := &appendLog{}
+	if _, err := NewSweeper(r, log, noCatchUp{}, time.Minute).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := escalations(log, id); len(got) != 0 {
+		t.Fatalf("escalations %v", got)
+	}
+}
