@@ -211,10 +211,13 @@ threats:
     mitigations:
       - Transactional outbox; the relay retries without blocking writers
       - Readiness checks only dispatch-path dependencies
+      - Every operational and audit store call has its own deadline, pool wait included, so a stalled store cannot hang the relay
     verified_by:
       - internal/audit/relay_test.go::TestRelayCatchesUpAfterLedgerOutage
       - internal/platform/health/health_test.go::TestReadyFailsWhenACheckFails
       - internal/platform/pg/relay_integration_test.go::TestSingleActiveRelayLeader
+      - internal/platform/pg/auditstore/auditstore_integration_test.go::TestEveryLedgerCallHasItsOwnDeadline
+      - internal/platform/pg/opstore/review3cr_integration_test.go::TestOpstoreCallsHaveTheirOwnDeadline
 
   - id: T-015
     title: Forged USSD callbacks inject fake incidents

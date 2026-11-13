@@ -16,7 +16,7 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `responder.arrived` | **T5** (first, attested) | `role` | verification in M3 |
 | `responder.departed` | **T6** | — | |
 | `responder.at_facility` | **T7** | `facility` | |
-| `incident.flagged` | — | `flag` | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
+| `incident.flagged` | — | `flag` (a non-empty JSON string, enforced by the database) | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
 | `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch` |
 | `incident.merged` | — | `into` (incident UUID) | duplicates (M1) |
 | `incident.closed` | — | `reason` | terminal |

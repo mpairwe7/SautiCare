@@ -19,7 +19,7 @@ Audit outbox rows are not reaching the ledger quickly. The outbox keeps every ro
   `SELECT coalesce(extract(epoch FROM clock_timestamp() - min(created_at)), 0) AS oldest_pending_seconds FROM op.outbox WHERE topic = 'audit' AND delivered_at IS NULL;`
 * **Leader present** (role `op_readonly`). The active relay holds the session advisory lock `7347002` (`leaderKey` in `cmd/outbox-relay/main.go`) on the operational database. Alert when this returns 0 for 1 min:
   `SELECT count(*) AS leaders FROM pg_locks WHERE locktype = 'advisory' AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) AND classid = 0 AND objid = 7347002 AND objsubid = 1 AND granted;`
-* outbox-relay logs `audit relay retrying` with backoff.
+* outbox-relay logs `audit relay retrying` with backoff. An error ending in `context deadline exceeded` means a call to the operational or audit store waited more than 10 s for a pool connection and its statement (ADR-0004): look for an exhausted pool or a stalled database.
 
 ## Impact
 
@@ -38,7 +38,7 @@ Audit outbox rows are not reaching the ledger quickly. The outbox keeps every ro
 ## Mitigation
 
 1. Restore audit database availability (Patroni failover is automatic inside Site A).
-2. Leadership heals itself. If the lock connection is lost (switchover, restart, network blip), the relay campaigns again and resumes without exiting. Judge leadership by the lock query in Diagnosis step 1, never by a recent log line: a healthy leader logs `outbox-relay is the active leader` only when it takes the lock, possibly days ago. Restart a unit (`systemctl restart outbox-relay`) only if:
+2. Leadership heals itself. If the lock connection is lost (switchover, restart, network blip), the relay campaigns again and resumes without exiting. A relay that stops with an error of its own (a poison row, a witness that fails verification) exits instead of campaigning again: follow the runbook its log line names. Judge leadership by the lock query in Diagnosis step 1, never by a recent log line: a healthy leader logs `outbox-relay is the active leader` only when it takes the lock, possibly days ago. Restart a unit (`systemctl restart outbox-relay`) only if:
    - the query returns no row for a minute while relay processes are running; or
    - it returns a leader while the pending-row age keeps rising, the audit database is healthy and that leader logs no `audit relay retrying`. Restart the unit on that leader's host, so a standby takes the lock.
 3. Do not delete or edit outbox rows.
