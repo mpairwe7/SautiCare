@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/intake"
@@ -39,7 +40,9 @@ func phoneOf(t *testing.T, n int) pii.Phone {
 
 func dialMenu(t *testing.T, s *respond.Service, phone pii.Phone, text string) intake.Screen {
 	t.Helper()
-	sc, err := s.HandleUSSD(context.Background(), intake.USSDRequest{Provider: "at", SessionID: "R", ServiceCode: "*384*2#", Phone: phone, Text: text})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sc, err := s.HandleUSSD(ctx, intake.USSDRequest{Provider: "at", SessionID: "R", ServiceCode: "*384*2#", Phone: phone, Text: text})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +67,9 @@ func TestScenario10DeclineThroughTheMenu(t *testing.T) {
 		t.Fatalf("decline %q", sc.Text)
 	}
 	var reason string
-	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(context.Background(), `SELECT a.decline_reason FROM op.alerts a
+	qctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(qctx, `SELECT a.decline_reason FROM op.alerts a
 		WHERE a.incident_id = $1 AND a.outcome = 'declined'`, id).Scan(&reason); err != nil || reason != "bike_or_fuel" {
 		t.Fatalf("stored reason %q %v", reason, err)
 	}
@@ -98,7 +103,9 @@ func TestConcurrentAcceptsThroughTheMenu(t *testing.T) {
 			taken++
 		}
 	}
-	snap, _ := r.store.DispatchSnapshot(context.Background(), id)
+	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	snap, _ := r.store.DispatchSnapshot(sctx, id)
 	if _, ok := snap.Assigned[responder.RoleTransporter]; taken != 1 || !ok {
 		t.Fatalf("screens %+v assigned %v", screens, snap.Assigned)
 	}

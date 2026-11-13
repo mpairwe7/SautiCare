@@ -32,9 +32,15 @@ func TestScenario10DeclineReasonStoredAndShown(t *testing.T) {
 		WHERE incident_id = $1 AND type = 'alert.declined'`, r.incident).Scan(&reason); err != nil || reason != "bike_or_fuel" {
 		t.Fatalf("event reason %q %v", reason, err)
 	}
-	if _, err := r.intake.DeclineAlert(ctx, r.issue(t, r.incident, r.responder(t, responder.RoleTransporter), responder.RoleTransporter).AlertID,
-		tr, "My bike broke"); err == nil {
-		t.Fatal("free text accepted as a reason (or another responder's alert)")
+	// Free text is refused from the alert's own responder (only codes are
+	// stored), and another responder cannot decline the alert at all.
+	owner := r.responder(t, responder.RoleTransporter)
+	second := r.issue(t, r.incident, owner, responder.RoleTransporter)
+	if _, err := r.intake.DeclineAlert(ctx, second.AlertID, owner, "My bike broke"); err == nil {
+		t.Fatal("free text accepted as a reason")
+	}
+	if _, err := r.intake.DeclineAlert(ctx, second.AlertID, tr, "bike_or_fuel"); err == nil {
+		t.Fatal("a responder declined another responder's alert")
 	}
 }
 

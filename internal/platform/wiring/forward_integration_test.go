@@ -51,7 +51,11 @@ func newOutbound(t *testing.T, r *engineRig) *outbound {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = client.Events(ctx, func(e ari.Event) { o.calls.Handle(ctx, e) }) }()
-	<-fake.Connected()
+	select {
+	case <-fake.Connected():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fake Asterisk never saw the event stream connect")
+	}
 	return o
 }
 

@@ -58,7 +58,11 @@ func TestScenario9VoiceAt20Seconds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = client.Events(ctx, func(e ari.Event) { calls.Handle(ctx, e) }) }()
-	<-fake.Connected()
+	select {
+	case <-fake.Connected():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fake Asterisk never saw the event stream connect")
+	}
 
 	if n, err := calls.RunOnce(ctx); err != nil || n != 0 {
 		t.Fatalf("voice before 20 s: %d %v", n, err)
