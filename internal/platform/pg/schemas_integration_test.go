@@ -36,11 +36,12 @@ func code(err error) string {
 func TestAllStoresMigrateFromZero(t *testing.T) {
 	c := pgtest.Cluster(t)
 	want := map[pg.Store][]string{
-		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants", "0004_default_privileges", "0005_salted_payload_hash"},
-		pg.StoreAudit:       {"0000_schema", "0001_ledger", "0002_default_privileges", "0003_hash_at"},
-		pg.StoreAnalytic:    {"0000_schema", "0001_meds", "0002_default_privileges"},
-		pg.StoreLinkage:     {"0000_schema", "0001_vault", "0002_default_privileges"},
-		pg.StoreMedia:       {"0000_schema", "0001_media", "0002_default_privileges"},
+		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants", "0004_default_privileges", "0005_salted_payload_hash",
+			"0027_review_pr3_coderabbit"},
+		pg.StoreAudit:    {"0000_schema", "0001_ledger", "0002_default_privileges", "0003_hash_at"},
+		pg.StoreAnalytic: {"0000_schema", "0001_meds", "0002_default_privileges"},
+		pg.StoreLinkage:  {"0000_schema", "0001_vault", "0002_default_privileges"},
+		pg.StoreMedia:    {"0000_schema", "0001_media", "0002_default_privileges"},
 	}
 	ctx := pgtest.Context(t)
 	for s, versions := range want {
@@ -469,5 +470,44 @@ func TestEveryStoreFunctionHasExplicitACL(t *testing.T) {
 		if len(open) > 0 {
 			t.Errorf("%s: functions executable by PUBLIC: %v", s, open)
 		}
+	}
+}
+
+// CodeRabbit PR #3 (review of ead62cf), finding 2: op.ussd_steps.created_at
+// is set by the database (clock_timestamp()). op_intake may insert only the
+// data columns, so it cannot backdate or future-date a cached reply.
+//
+// The data columns differ along the migration history (0008 rekeys steps by
+// a keyed MAC), so they are read from the catalogue. A zero-row INSERT …
+// SELECT checks the privileges without needing a valid row.
+func TestIntakeCannotSupplyUSSDStepTimestamp(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := pgtest.Context(t)
+	owner := c.Owner(t, pg.StoreOperational)
+	rows, err := owner.Query(ctx, `
+		SELECT quote_ident(attname) FROM pg_attribute
+		WHERE attrelid = 'op.ussd_steps'::regclass AND attnum > 0 AND NOT attisdropped AND attname <> 'created_at'
+		ORDER BY attnum`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cols, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(cols) == 0 {
+		t.Fatalf("op.ussd_steps data columns = %v, %v", cols, err)
+	}
+	var tableWide bool
+	if err := owner.QueryRow(ctx, "SELECT has_table_privilege('op_intake', 'op.ussd_steps', 'INSERT')").Scan(&tableWide); err != nil {
+		t.Fatal(err)
+	}
+	if tableWide {
+		t.Error("op_intake holds table-wide INSERT on op.ussd_steps, which covers created_at")
+	}
+	intake := as(t, c, pg.StoreOperational, "op_intake")
+	data := strings.Join(cols, ", ")
+	if _, err := intake.Exec(ctx, "INSERT INTO op.ussd_steps ("+data+") SELECT "+data+" FROM op.ussd_steps WHERE false"); err != nil {
+		t.Errorf("op_intake insert of the data columns: %v", err)
+	}
+	if _, err := intake.Exec(ctx, "INSERT INTO op.ussd_steps ("+data+", created_at) SELECT "+data+", created_at FROM op.ussd_steps WHERE false"); code(err) != "42501" {
+		t.Errorf("op_intake insert supplying created_at: err = %v, want 42501", err)
 	}
 }

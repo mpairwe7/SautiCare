@@ -87,6 +87,9 @@ func mapErr(err error) error {
 		return fmt.Errorf("%w: %s", incident.ErrSeverityLowered, pe.Message)
 	case pe.Code == "SA422":
 		return fmt.Errorf("%w: %s", incident.ErrIllegalTransition, pe.Message)
+	case pe.Code == "23514" && pe.ConstraintName == "incident_events_flag_is_string":
+		// 0027: a flag event whose flag is not a JSON string.
+		return fmt.Errorf("%w: flag event needs a string flag", incident.ErrIllegalTransition)
 	case pe.Code == "23505" && pe.ConstraintName == "incidents_reference_key":
 		return incident.ErrReferenceTaken
 	}
