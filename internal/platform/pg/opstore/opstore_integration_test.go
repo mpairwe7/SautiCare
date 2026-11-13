@@ -654,10 +654,14 @@ func TestClaimOutboxSkipsLockedAndCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Release each batch's connection on every exit path, before the pool's
+	// Close (a t.Cleanup) waits for it; Abort after Complete is a no-op.
+	defer b1.Abort(ctx)
 	b2, err := relay.Claim(ctx, "audit", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer b2.Abort(ctx)
 	if len(b1.Rows()) != 2 || len(b2.Rows()) != 1 {
 		t.Fatalf("claims got %d and %d rows, want 2 and 1 (SKIP LOCKED)", len(b1.Rows()), len(b2.Rows()))
 	}
