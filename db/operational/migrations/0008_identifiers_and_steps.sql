@@ -57,6 +57,15 @@ ALTER TABLE op.ussd_steps
     -- The prompt the step showed (intake.Kind): the next callback's input
     -- answers it.
     ADD COLUMN prompt_kind  text  NOT NULL DEFAULT '' CHECK (prompt_kind ~ '^[a-z_]{0,32}$'),
+    -- The gazetteer landmark the session's typed landmark matched (a code,
+    -- never the text), carried to a screen-8 dispatch trigger.
+    ADD COLUMN matched_landmark text NOT NULL DEFAULT '' CHECK (matched_landmark ~ '^([a-z][a-z0-9_.-]{0,63})?$'),
     ADD PRIMARY KEY (provider, provider_session_id, input_mac);
+
+-- op_intake inserts steps (SaveUSSDStep). 0027 revokes its table-wide INSERT
+-- and grants the columns it sees; a store that recorded 0027 before this
+-- file runs (main's history, then this one: the migrator applies every
+-- unrecorded file in order) needs the new columns granted here.
+GRANT INSERT (input_mac, mac_key_id, consumed_len, prompt_kind, matched_landmark) ON op.ussd_steps TO op_intake;
 
 CREATE INDEX ussd_steps_latest ON op.ussd_steps (provider, provider_session_id, consumed_len DESC);

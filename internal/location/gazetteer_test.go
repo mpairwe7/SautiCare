@@ -77,7 +77,14 @@ func TestParseFileRejectsInvalidGazetteers(t *testing.T) {
 	for i := 1; i <= 6; i++ {
 		sixMenu += "  - {id: l" + string(rune('0'+i)) + ", ward: w01, name: {en: L, lg: L}, point: {lat: 0.38, lon: 32.56}, menu: " + string(rune('0'+i)) + "}\n"
 	}
+	// Wards 1-8 and "Somewhere else" fill the single-digit ward menu.
+	nineWards := "version: v\nstatus: placeholder\nwards:\n"
+	for i := 1; i <= 9; i++ {
+		nineWards += "  - {id: w0" + string(rune('0'+i)) + ", name: {en: W, lg: W}, centre: {lat: 0.38, lon: 32.56}}\n"
+	}
+	nineWards += "landmarks: []\n"
 	cases := map[string]string{
+		"nine wards":          nineWards,
 		"six menu landmarks":  sixMenu,
 		"unknown key":         strings.Replace(sample, "status: placeholder", "status: placeholder\ncolour: red", 1),
 		"no version":          strings.Replace(sample, `version: "test-1"`, `version: ""`, 1),

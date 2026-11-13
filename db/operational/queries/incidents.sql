@@ -47,22 +47,23 @@ SELECT op.default_partition_rows()::bigint AS n;
 SELECT op.ensure_event_partitions(sqlc.arg(months_ahead)::int)::int AS created;
 
 -- name: LookupUSSDStep :many
-SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
 WHERE provider = sqlc.arg(provider)::text AND provider_session_id = sqlc.arg(provider_session_id)::text
   AND input_mac = ANY (sqlc.arg(input_macs)::bytea[]);
 
 -- name: LatestUSSDStep :many
-SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
 WHERE provider = sqlc.arg(provider)::text AND provider_session_id = sqlc.arg(provider_session_id)::text
 ORDER BY consumed_len DESC, created_at DESC
 LIMIT 1;
 
 -- name: SaveUSSDStep :exec
 INSERT INTO op.ussd_steps (provider, provider_session_id, input_mac, mac_key_id, consumed_len, response, end_session,
-                           incident_id, prompt_kind)
+                           incident_id, prompt_kind, matched_landmark)
 VALUES (sqlc.arg(provider)::text, sqlc.arg(provider_session_id)::text, sqlc.arg(input_mac)::bytea,
         sqlc.arg(mac_key_id)::text, sqlc.arg(consumed_len)::int, sqlc.arg(response)::text,
-        sqlc.arg(end_session)::boolean, sqlc.narg(incident_id)::uuid, sqlc.arg(prompt_kind)::text)
+        sqlc.arg(end_session)::boolean, sqlc.narg(incident_id)::uuid, sqlc.arg(prompt_kind)::text,
+        sqlc.arg(matched_landmark)::text)
 ON CONFLICT DO NOTHING;
 
 -- name: StoreIdentifier :one
@@ -88,9 +89,15 @@ ORDER BY i.updated_at DESC
 LIMIT 1;
 
 -- name: ListIdle :many
+-- An idle incident is listed until the sweeper flags it abandoned, and again
+-- while an abandonment owes its escalation: a caller who resumed an
+-- abandoned incident, answered danger yes (or was classified red) and
+-- dropped again before T2. The flag is never cleared, and escalated is
+-- sticky. The second condition is intake.escalation's rule.
 SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
 WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - sqlc.arg(idle_seconds)::int * interval '1 second'
-  AND NOT ('abandoned' = ANY (flags))
+  AND (NOT ('abandoned' = ANY (flags))
+       OR (NOT escalated AND t2 IS NULL AND (danger = 'yes' OR severity = 'red')))
 ORDER BY updated_at
 LIMIT 500;

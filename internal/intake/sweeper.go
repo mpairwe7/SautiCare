@@ -19,7 +19,8 @@ const (
 )
 
 // Idle is an open incident whose Tool 1 is unfinished (or finished without
-// T2), with no event for the idle time and no abandoned flag yet.
+// T2), with no event for the idle time and no abandoned flag yet, or flagged
+// abandoned but owing the escalation of a resumed and abandoned again call.
 type Idle struct {
 	ID         uuid.UUID
 	Danger     string
@@ -33,9 +34,10 @@ type IdleReader interface {
 	ListIdle(ctx context.Context, idleFor time.Duration) ([]Idle, error)
 }
 
-// Appender appends incident events (incident.Service).
+// Appender appends incident events atomically: all or none
+// (incident.Service).
 type Appender interface {
-	Append(ctx context.Context, p incident.AppendParams) (incident.Appended, error)
+	AppendBatch(ctx context.Context, ps []incident.AppendParams) ([]incident.Appended, error)
 }
 
 // Sweeper flags abandoned Tool 1 sessions. Every abandoned session is kept
@@ -59,16 +61,15 @@ func NewSweeper(r IdleReader, a Appender, idleFor time.Duration) *Sweeper {
 	return &Sweeper{r: r, a: a, idleFor: idleFor}
 }
 
-func (s *Sweeper) system(ctx context.Context, id uuid.UUID, typ incident.EventType, payload map[string]string, idem string) error {
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	_, err = s.a.Append(ctx, incident.AppendParams{IncidentID: id, Type: typ, Payload: b, ActorKind: incident.ActorSystem, IdemKey: idem})
-	return err
+func system(id uuid.UUID, typ incident.EventType, payload map[string]string, idem string) incident.AppendParams {
+	b, _ := json.Marshal(payload) // a map of strings always encodes
+	return incident.AppendParams{IncidentID: id, Type: typ, Payload: b, ActorKind: incident.ActorSystem, IdemKey: idem}
 }
 
-// RunOnce sweeps once and returns how many incidents it flagged.
+// RunOnce sweeps once and returns how many incidents it flagged. Each
+// incident's flags and escalation are one batch: were the flag stored
+// without the escalation, the incident would leave the idle list with the
+// coordinator never alerted.
 func (s *Sweeper) RunOnce(ctx context.Context) (int, error) {
 	idle, err := s.r.ListIdle(ctx, s.idleFor)
 	if err != nil {
@@ -76,19 +77,16 @@ func (s *Sweeper) RunOnce(ctx context.Context) (int, error) {
 	}
 	for _, in := range idle {
 		key := "sweep:" + in.ID.String() + ":"
-		if err := s.system(ctx, in.ID, incident.EvFlagged, map[string]string{"flag": FlagAbandoned}, key+FlagAbandoned); err != nil {
-			return 0, err
-		}
+		batch := []incident.AppendParams{system(in.ID, incident.EvFlagged, map[string]string{"flag": FlagAbandoned}, key+FlagAbandoned)}
 		if in.Category == "" {
-			if err := s.system(ctx, in.ID, incident.EvFlagged, map[string]string{"flag": FlagAbandonedBeforeCategory},
-				key+FlagAbandonedBeforeCategory); err != nil {
-				return 0, err
-			}
+			batch = append(batch, system(in.ID, incident.EvFlagged, map[string]string{"flag": FlagAbandonedBeforeCategory},
+				key+FlagAbandonedBeforeCategory))
 		}
 		if reason := escalation(in); reason != "" {
-			if err := s.system(ctx, in.ID, incident.EvEscalated, map[string]string{"reason": reason}, key+"escalate"); err != nil {
-				return 0, err
-			}
+			batch = append(batch, system(in.ID, incident.EvEscalated, map[string]string{"reason": reason}, key+"escalate"))
+		}
+		if _, err := s.a.AppendBatch(ctx, batch); err != nil {
+			return 0, err
 		}
 	}
 	return len(idle), nil
