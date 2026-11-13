@@ -36,6 +36,7 @@ type ARI interface {
 	StopPlayback(ctx context.Context, playbackID string) error
 	Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error
 	Hangup(ctx context.Context, channelID string) error
+	ListChannels(ctx context.Context) ([]ari.Channel, error)
 }
 
 // Intake is the voice side of intake.Service.
@@ -60,6 +61,13 @@ type Options struct {
 	// 3 s). A call whose operation runs out of time is handed to a
 	// coordinator; other calls are not affected.
 	OpTimeout time.Duration
+	// PromptMax is the longest a prompt plays (default 30 s): a prompt
+	// whose end is never reported is re-played PromptMax + NoInput after it
+	// was requested.
+	PromptMax time.Duration
+	// App is the Stasis application the controller serves (default
+	// sauti-ivr): Adopt hands over the calls parked in it.
+	App string
 }
 
 // maxCallbackDigits bounds a typed callback number (E.164 is at most 15).
@@ -135,9 +143,11 @@ type Controller struct {
 	in      Intake
 	log     *slog.Logger
 	opt     Options
-	mu      sync.Mutex // guards workers only: no call's work runs under it
+	mu      sync.Mutex // guards workers and adopted only: no call's work runs under it
 	workers map[string]*worker
-	pending atomic.Int64 // events queued and not yet handled
+	adopted map[string]bool // channels the last Adopt handed over
+	pending atomic.Int64    // events queued and not yet handled
+	running sync.WaitGroup  // workers, so Run returns after their hand-overs
 }
 
 // New builds a controller.
@@ -151,12 +161,65 @@ func New(a ARI, in Intake, log *slog.Logger, opt Options) *Controller {
 	if opt.OpTimeout <= 0 {
 		opt.OpTimeout = 3 * time.Second
 	}
-	return &Controller{ari: a, in: in, log: log, opt: opt, workers: map[string]*worker{}}
+	if opt.PromptMax <= 0 {
+		opt.PromptMax = 30 * time.Second
+	}
+	if opt.App == "" {
+		opt.App = "sauti-ivr"
+	}
+	return &Controller{ari: a, in: in, log: log, opt: opt, workers: map[string]*worker{}, adopted: map[string]bool{}}
 }
 
-// Run streams ARI events into the controller until ctx ends.
+// adoptGrace is how long after a (re)connect Adopt runs: a call whose
+// StasisStart is already on the new stream gets its worker first and is
+// served, not handed over.
+const adoptGrace = time.Second
+
+// Run streams ARI events into the controller until ctx ends. After every
+// (re)connect it adopts the calls it lost; when ctx ends it waits for the
+// live calls to be handed over.
 func (c *Controller) Run(ctx context.Context, client *ari.Client) error {
-	return client.Events(ctx, func(e ari.Event) { c.Handle(ctx, e) })
+	defer c.running.Wait()
+	return client.Stream(ctx, func() {
+		c.running.Go(func() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(adoptGrace):
+			}
+			if err := c.Adopt(ctx); err != nil {
+				c.log.Error("ivr adopt after (re)connect failed", "err", err)
+			}
+		})
+	}, func(e ari.Event) { c.Handle(ctx, e) })
+}
+
+// Adopt hands every call parked in the controller's application with no
+// worker to the fallback. Such a call lost its worker in a restart, or its
+// events while the stream was down, and would otherwise hear silence
+// (hard constraint 14).
+func (c *Controller) Adopt(ctx context.Context) error {
+	octx, cancel := c.op(ctx)
+	chans, err := c.ari.ListChannels(octx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.adopted = map[string]bool{}
+	var orphans []string
+	for _, ch := range chans {
+		if ch.App == c.opt.App && c.workers[ch.ID] == nil {
+			c.adopted[ch.ID] = true // its StasisStart may still be in flight
+			orphans = append(orphans, ch.ID)
+		}
+	}
+	c.mu.Unlock()
+	for _, ch := range orphans {
+		c.log.Warn("ivr call found without a worker; handing over", "channel", ch)
+		c.handOver(ctx, &call{ch: ch})
+	}
+	return nil
 }
 
 // Handle queues one event for its call and returns at once. Events of one
@@ -167,11 +230,12 @@ func (c *Controller) Handle(ctx context.Context, e Event) {
 	defer c.mu.Unlock()
 	w := c.workers[e.ChannelID]
 	if w == nil {
-		if e.Type != EventStasisStart {
+		if e.Type != EventStasisStart || c.adopted[e.ChannelID] {
 			return
 		}
 		w = &worker{wake: make(chan struct{}, 1), call: &call{ch: e.ChannelID}}
 		c.workers[e.ChannelID] = w
+		c.running.Add(1)
 		go c.run(ctx, w)
 	}
 	c.pending.Add(1)
@@ -189,10 +253,15 @@ func (c *Controller) enqueue(ch string, it item) {
 }
 
 func (c *Controller) run(ctx context.Context, w *worker) {
+	defer c.running.Done()
 	st := w.call
 	for !st.ended {
 		it, ok := w.pop(ctx)
 		if !ok {
+			// Stopping with the call live: a coordinator takes it.
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			c.handOver(sctx, st)
+			cancel()
 			break
 		}
 		c.step(ctx, st, it)
@@ -240,10 +309,14 @@ func (c *Controller) step(ctx context.Context, st *call, it item) {
 		case st.hangupOn == e.PlaybackID:
 			c.hangup(ctx, st)
 		case !st.turn.Prompt.End:
-			c.startTimer(st) // silence is counted from the end of the prompt
+			c.startTimer(st, c.opt.NoInput) // silence is counted from the end of the prompt
 		}
 	case evNoInput:
-		if it.gen == st.timerGen && !st.turn.Prompt.End {
+		switch {
+		case it.gen != st.timerGen:
+		case st.turn.Prompt.End:
+			c.hangup(ctx, st) // the closing prompt's end was never reported
+		default:
 			c.noInput(ctx, st)
 		}
 	case EventStasisEnd, EventHangupRequest:
@@ -298,7 +371,7 @@ func (c *Controller) dtmf(ctx context.Context, st *call, digit string) {
 		case len(st.digits) < maxCallbackDigits:
 			st.digits += digit
 			if !st.playing {
-				c.startTimer(st)
+				c.startTimer(st, c.opt.NoInput)
 			}
 		}
 		return
@@ -359,7 +432,11 @@ func (c *Controller) play(ctx context.Context, st *call, sounds []string, end bo
 			return
 		}
 		c.handOver(ctx, st)
+		return
 	}
+	// The backstop: if the prompt's end is never reported, silence is still
+	// counted (PlaybackFinished re-arms the timer at NoInput).
+	c.startTimer(st, c.opt.PromptMax+c.opt.NoInput)
 }
 
 // handOver passes a call Sauti cannot serve to the dialplan's fallback (a
@@ -400,10 +477,10 @@ func (c *Controller) stopTimer(st *call) {
 
 // startTimer arms the no-input timer; when it fires it queues an event to
 // the call's own worker, never touching the call from the timer goroutine.
-func (c *Controller) startTimer(st *call) {
+func (c *Controller) startTimer(st *call, after time.Duration) {
 	c.stopTimer(st)
 	gen, ch := st.timerGen, st.ch
-	st.timer = time.AfterFunc(c.opt.NoInput, func() {
+	st.timer = time.AfterFunc(after, func() {
 		c.enqueue(ch, item{ev: Event{Type: evNoInput, ChannelID: ch}, gen: gen})
 	})
 }

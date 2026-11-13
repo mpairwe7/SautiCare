@@ -52,3 +52,36 @@ func TestControllerOverAsteriskQueue(t *testing.T) {
 	f.FinishPlayback(f.Playing("chan-1"))
 	waitFor(t, "the re-prompt after silence", func() bool { return len(f.Plays("chan-1")) == 3 })
 }
+
+// Over the real client: a call parked in the application while the stream
+// was down (its StasisStart lost) is handed over after the stream connects.
+func TestRunHandsOverACallParkedWhileTheStreamWasDown(t *testing.T) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	pw := hex.EncodeToString(b)
+	f := sim.NewFakeARI("sauti", pw)
+	t.Cleanup(f.Close)
+	client, err := ari.New(ari.Config{BaseURL: f.URL(), User: "sauti", Password: pw, App: "sauti-ivr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.StartCall("chan-9", "+256772123456") // no stream yet: the event is lost
+	c := New(client, &scripted{prompts: prompts()}, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = c.Run(ctx, client) }()
+	waitForLong(t, "the hand-over", func() bool { return f.Continued("chan-9") == FallbackContext+",s,1" })
+}
+
+func waitForLong(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

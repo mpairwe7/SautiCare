@@ -141,7 +141,8 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2, OpTimeout: 3 * time.Second})
+	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2, OpTimeout: 3 * time.Second,
+		PromptMax: 30 * time.Second, App: env.Default("SAUTI_ARI_APP", "sauti-ivr")})
 
 	reg := metrics.NewRegistry()
 	admin := http.NewServeMux()
@@ -157,7 +158,8 @@ func run(log *slog.Logger) error {
 
 	errc := make(chan error, 3)
 	go func() { errc <- adminSrv.ListenAndServe() }()
-	go func() { errc <- ctrl.Run(ctx, client) }()
+	ctrlDone := make(chan struct{})
+	go func() { defer close(ctrlDone); errc <- ctrl.Run(ctx, client) }()
 
 	// Outbound calls (M2 Part B; scenarios 7–9, 11): an alert still pending
 	// after voice_fallback_after rings the responder; forwarded health centres
@@ -249,6 +251,11 @@ func run(log *slog.Logger) error {
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	// Live calls are handed to a coordinator before the process exits.
+	select {
+	case <-ctrlDone:
+	case <-sctx.Done():
+	}
 	_ = adminSrv.Shutdown(sctx)
 	return nil
 }

@@ -270,3 +270,45 @@ func TestClientChannelExists(t *testing.T) {
 		t.Fatalf("a refused request read as an answer: %v %v", ok, err)
 	}
 }
+
+// ListChannels names each channel's Stasis application, so ivr-controller can
+// find the calls parked in its own application after a reconnect.
+func TestClientListsChannelsWithTheirApplication(t *testing.T) {
+	f, c := newPair(t)
+	f.StartCall("chan-9", "+256772123456")
+	got, err := c.ListChannels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []Channel{{ID: "chan-9", App: "sauti-ivr"}}) {
+		t.Fatalf("channels %+v", got)
+	}
+}
+
+// Stream calls connected on every (re)connect, before that connection's
+// first event is handled.
+func TestClientStreamReportsEachConnect(t *testing.T) {
+	f, c := newPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := make(chan string, 64)
+	go func() {
+		_ = c.Stream(ctx, func() { ch <- "connected" }, func(e Event) { ch <- e.Type })
+	}()
+	<-f.Connected()
+	f.DropStreams()
+	<-f.Connected()
+	f.StartCall("chan-2", "")
+	var seen []string
+	for len(seen) < 3 {
+		select {
+		case s := <-ch:
+			seen = append(seen, s)
+		case <-time.After(3 * time.Second):
+			t.Fatalf("seen %v", seen)
+		}
+	}
+	if !reflect.DeepEqual(seen, []string{"connected", "connected", EventStasisStart}) {
+		t.Fatalf("seen %v", seen)
+	}
+}

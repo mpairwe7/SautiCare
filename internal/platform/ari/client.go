@@ -285,6 +285,43 @@ func (c *Client) ChannelExists(ctx context.Context, channelID string) (bool, err
 	return err == nil, err
 }
 
+// Channel is a live channel and the Stasis application it is parked in (""
+// when it is not in one).
+type Channel struct {
+	ID, App string
+}
+
+// ListChannels lists the live channels (GET /ari/channels). App is read
+// from the channel's dialplan location: the first argument of Stasis().
+func (c *Client) ListChannels(ctx context.Context) ([]Channel, error) {
+	body, err := c.doBody(ctx, http.MethodGet, "/ari/channels", nil)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		ID       string `json:"id"`
+		Dialplan struct {
+			AppName string `json:"app_name"`
+			AppData string `json:"app_data"`
+		} `json:"dialplan"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("ari: list channels: %w", err)
+	}
+	out := make([]Channel, 0, len(raw))
+	for _, r := range raw {
+		if !safeID.MatchString(r.ID) {
+			continue
+		}
+		ch := Channel{ID: r.ID}
+		if strings.EqualFold(r.Dialplan.AppName, "Stasis") {
+			ch.App, _, _ = strings.Cut(r.Dialplan.AppData, ",")
+		}
+		out = append(out, ch)
+	}
+	return out, nil
+}
+
 // Hangup ends the channel.
 func (c *Client) Hangup(ctx context.Context, channelID string) error {
 	if err := ids(channelID); err != nil {
@@ -330,6 +367,13 @@ func decodeEvent(b []byte) (Event, error) {
 // Events streams events to handle until ctx ends, reconnecting with
 // exponential backoff (up to 30 s) when the stream drops.
 func (c *Client) Events(ctx context.Context, handle func(Event)) error {
+	return c.Stream(ctx, nil, handle)
+}
+
+// Stream is Events, calling connected (if not nil) on every connect and
+// reconnect before that connection's first event is handled: events missed
+// while the stream was down are never resent.
+func (c *Client) Stream(ctx context.Context, connected func(), handle func(Event)) error {
 	u := *c.base
 	u.Scheme = map[string]string{"http": "ws", "https": "wss"}[c.base.Scheme]
 	u.Path = strings.TrimRight(u.Path, "/") + "/ari/events"
@@ -345,6 +389,9 @@ func (c *Client) Events(ctx context.Context, handle func(Event)) error {
 		if err == nil {
 			wait = c.backoff
 			c.connected.Store(true)
+			if connected != nil {
+				connected()
+			}
 			for {
 				_, msg, rerr := conn.Read(ctx)
 				if rerr != nil {

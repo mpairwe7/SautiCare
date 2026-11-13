@@ -9,11 +9,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/pii"
+	"sautihealth.com/sauti/internal/platform/ari"
 	"sautihealth.com/sauti/internal/platform/logging"
 )
 
@@ -32,6 +34,13 @@ type fakeARI struct {
 	failContinue bool
 	failPlay     func(sounds []string) bool
 	ctrl         *Controller
+	channels     []ari.Channel // what ListChannels reports
+}
+
+func (f *fakeARI) ListChannels(context.Context) ([]ari.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.channels), nil
 }
 
 func (f *fakeARI) Answer(_ context.Context, ch string) error {
@@ -463,5 +472,78 @@ func TestSoundIDsAreClean(t *testing.T) {
 		if strings.Contains(s, "*") || strings.Contains(s, "//") || strings.HasSuffix(s, "/") {
 			t.Errorf("sound ID %q", s)
 		}
+	}
+}
+
+// A prompt whose PlaybackFinished is lost (an event dropped between Asterisk
+// and the controller) is still followed by a re-prompt: the backstop armed
+// when the prompt is requested fires at PromptMax + NoInput.
+func TestALostEndOfPromptStillRepromptsWithinTheBackstop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		a := &fakeARI{}
+		c := New(a, &scripted{prompts: prompts()}, slog.New(slog.DiscardHandler),
+			Options{NoInput: 15 * time.Second, MaxReprompts: 2, PromptMax: 30 * time.Second})
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		synctest.Wait()
+		pb, first := a.lastPlay()
+		c.Handle(ctx, Event{Type: EventPlaybackStarted, ChannelID: "ch1", PlaybackID: pb}) // its PlaybackFinished never comes
+		time.Sleep(45*time.Second - time.Millisecond)
+		synctest.Wait()
+		if n := a.playCount(); n != 1 {
+			t.Fatalf("plays %d before the backstop", n)
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if _, second := a.lastPlay(); a.playCount() != 2 || !slices.Equal(second, first) {
+			t.Fatalf("plays %v, want the first prompt again", a.plays)
+		}
+	})
+}
+
+// After a restart or a dropped event stream, a call parked in the IVR's
+// application with no worker (its events are gone) goes to a coordinator.
+// Its StasisStart, if still in flight, opens nothing: the call has left.
+func TestReconnectHandsOverOrphanedChannels(t *testing.T) {
+	c, a, _ := newController(t, &scripted{prompts: prompts()})
+	a.channels = []ari.Channel{{ID: "ch9", App: "sauti-ivr"}, {ID: "out-1", App: "sauti-alerts"}}
+	if err := c.Adopt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(a.continues, []string{"ch9 sauti-ivr-fallback,s,1"}) {
+		t.Fatalf("continues %v", a.continues)
+	}
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch9", CallerNumber: "+256772123456"})
+	if a.count(&a.answers) != 0 {
+		t.Fatal("served a call already handed over")
+	}
+}
+
+func TestReconnectLeavesOwnedChannelsAlone(t *testing.T) {
+	c, a, _ := newController(t, &scripted{prompts: prompts()})
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	a.channels = []ari.Channel{{ID: "ch1", App: "sauti-ivr"}}
+	if err := c.Adopt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a.count(&a.continues) != 0 || a.count(&a.hangups) != 0 {
+		t.Fatalf("continues %v hangups %v", a.continues, a.hangups)
+	}
+}
+
+// ivr-controller stopping mid-call hands the caller to a coordinator, once,
+// instead of leaving them in silence.
+func TestShutdownHandsOverLiveCalls(t *testing.T) {
+	c, a, _ := newController(t, &scripted{prompts: prompts()})
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	settle(t, c)
+	started(t, c, a, "ch1")
+	cancel()
+	waitFor(t, "the hand-over", func() bool { return a.count(&a.continues) == 1 })
+	time.Sleep(20 * time.Millisecond)
+	if !slices.Equal(a.continues, []string{"ch1 sauti-ivr-fallback,s,1"}) || a.count(&a.hangups) != 0 {
+		t.Fatalf("continues %v hangups %v", a.continues, a.hangups)
 	}
 }
