@@ -40,6 +40,7 @@ sounds:
     - sauti/en/bridge-choose-role
     - sauti/en/bridge-choose-side
     - sauti/en/bridge-connecting
+    - sauti/en/bridge-coordinator-option
     - sauti/en/bridge-last-four
     - sauti/en/bridge-last-four-again
     - sauti/en/bridge-no-answer
@@ -166,6 +167,7 @@ sounds:
     - sauti/lg/bridge-choose-role
     - sauti/lg/bridge-choose-side
     - sauti/lg/bridge-connecting
+    - sauti/lg/bridge-coordinator-option
     - sauti/lg/bridge-last-four
     - sauti/lg/bridge-last-four-again
     - sauti/lg/bridge-no-answer

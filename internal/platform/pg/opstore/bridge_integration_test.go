@@ -119,3 +119,30 @@ func TestBridgeCallerOfAMergedReport(t *testing.T) {
 		t.Fatalf("split off, their report has nobody assigned again: %+v %v", got, err)
 	}
 }
+
+// UX-1 (ADR-0029 rule 3): a caller of the bridge whose report has nobody
+// assigned is found by their number (op_ivr), and the bridge records one
+// bridge_unanswered escalation per bridge call through the single write path.
+func TestBridgeOpenIncidentForCallerAndEscalate(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	caller := []crypto.MAC{{KeyID: "dev:k:2", Sum: make([]byte, 32)}}
+	id, ok, err := r.ivr.OpenIncidentForCaller(ctx, caller)
+	if err != nil || !ok || id != r.incident {
+		t.Fatalf("open incident for the caller: %v %v %v", id, ok, err)
+	}
+	other := []crypto.MAC{{KeyID: "dev:k:2", Sum: append(make([]byte, 31), 1)}}
+	if _, ok, err := r.ivr.OpenIncidentForCaller(ctx, other); err != nil || ok {
+		t.Fatalf("another number found an incident: %v %v", ok, err)
+	}
+	for _, scope := range []string{"bridge:in-1", "bridge:in-1", "bridge:in-2"} {
+		if err := r.ivr.Escalate(ctx, r.incident, incident.ReasonBridgeUnanswered, scope); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(ctx, `SELECT count(*) FROM op.incident_events
+		WHERE incident_id = $1 AND type = 'incident.escalated' AND payload ->> 'reason' = 'bridge_unanswered'`, r.incident).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("escalations %d %v, want one per bridge call", n, err)
+	}
+}

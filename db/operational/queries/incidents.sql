@@ -88,6 +88,18 @@ WHERE s.phone_mac = ANY (sqlc.arg(macs)::bytea[])
 ORDER BY i.updated_at DESC
 LIMIT 1;
 
+-- name: OpenIncidentForCaller :many
+-- The masked bridge (op_ivr): the newest open incident reported from these
+-- numbers (its own, or the incident it was merged into), assigned or not. A
+-- caller who reaches nobody on the bridge is handed to a coordinator with it
+-- escalated (bridge_unanswered).
+SELECT i.id FROM op.incidents i
+WHERE i.state NOT IN ('closed', 'merged')
+  AND EXISTS (SELECT 1 FROM op.sessions x JOIN op.incidents m ON m.id = x.incident_id
+               WHERE x.phone_mac = ANY (sqlc.arg(macs)::bytea[]) AND (m.id = i.id OR m.merged_into = i.id))
+ORDER BY i.updated_at DESC
+LIMIT 1;
+
 -- name: ListIdle :many
 -- An idle incident is listed until the sweeper flags it abandoned, and again
 -- while an abandonment owes its escalation: a caller who resumed an

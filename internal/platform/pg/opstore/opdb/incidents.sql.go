@@ -689,6 +689,39 @@ func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) (Ope
 	return i, err
 }
 
+const openIncidentForCaller = `-- name: OpenIncidentForCaller :many
+SELECT i.id FROM op.incidents i
+WHERE i.state NOT IN ('closed', 'merged')
+  AND EXISTS (SELECT 1 FROM op.sessions x JOIN op.incidents m ON m.id = x.incident_id
+               WHERE x.phone_mac = ANY ($1::bytea[]) AND (m.id = i.id OR m.merged_into = i.id))
+ORDER BY i.updated_at DESC
+LIMIT 1
+`
+
+// The masked bridge (op_ivr): the newest open incident reported from these
+// numbers (its own, or the incident it was merged into), assigned or not. A
+// caller who reaches nobody on the bridge is handed to a coordinator with it
+// escalated (bridge_unanswered).
+func (q *Queries) OpenIncidentForCaller(ctx context.Context, macs [][]byte) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, openIncidentForCaller, macs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const registerResponder = `-- name: RegisterResponder :exec
 SELECT op.register_responder($1::uuid, $2::text, $3::bytea, $4::text,
     $5::bytea, $6::text, $7::bytea, $8::text,
