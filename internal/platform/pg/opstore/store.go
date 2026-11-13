@@ -339,20 +339,23 @@ func (s *Store) MaintainEventPartitions(ctx context.Context, monthsAhead int, ev
 
 // Claim implements audit.Outbox: it opens a transaction and locks up to
 // limit pending rows; the batch holds the transaction until Complete/Abort.
-// Only Begin is bounded (opTimeout): the held transaction is not, and the
-// server ends it if it idles (idle_in_transaction_session_timeout).
+// Each call on it — Begin, the claim, the marking and the commit — has its
+// own deadline (opTimeout); how long the batch stays open does not (the
+// server ends a transaction that idles: idle_in_transaction_session_timeout).
 func (s *Store) Claim(ctx context.Context, topic string, limit int) (audit.OutboxBatch, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	q := opdb.New(tx)
-	rows, err := q.ClaimOutbox(ctx, opdb.ClaimOutboxParams{Topic: topic, MaxRows: int32(max(1, min(limit, 10000)))}) //nolint:gosec // clamped
+	cctx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+	rows, err := q.ClaimOutbox(cctx, opdb.ClaimOutboxParams{Topic: topic, MaxRows: int32(max(1, min(limit, 10000)))}) //nolint:gosec // clamped
 	if err != nil {
 		rollback(ctx, tx)
 		return nil, err
 	}
-	b := &batch{tx: tx, q: q, rows: make([]audit.OutboxRow, len(rows))}
+	b := &batch{tx: tx, q: q, timeout: opTimeout, rows: make([]audit.OutboxRow, len(rows))}
 	for i, r := range rows {
 		b.rows[i] = audit.OutboxRow{ID: uuid.UUID(r.ID.Bytes), Payload: json.RawMessage(r.Payload)}
 	}
@@ -360,9 +363,10 @@ func (s *Store) Claim(ctx context.Context, topic string, limit int) (audit.Outbo
 }
 
 type batch struct {
-	tx   pgx.Tx
-	q    *opdb.Queries
-	rows []audit.OutboxRow
+	tx      pgx.Tx
+	q       *opdb.Queries
+	timeout time.Duration // each call on the held transaction
+	rows    []audit.OutboxRow
 }
 
 func (b *batch) Rows() []audit.OutboxRow { return b.rows }
@@ -374,12 +378,17 @@ func (b *batch) Complete(ctx context.Context, delivered []uuid.UUID) error {
 		for i, d := range delivered {
 			ids[i] = pgID(d)
 		}
-		if _, err := b.q.MarkOutboxDelivered(ctx, ids); err != nil {
+		mctx, cancel := context.WithTimeout(ctx, b.timeout)
+		_, err := b.q.MarkOutboxDelivered(mctx, ids)
+		cancel()
+		if err != nil {
 			rollback(ctx, b.tx)
 			return err
 		}
 	}
-	return b.tx.Commit(ctx)
+	cctx, cancel := context.WithTimeout(ctx, b.timeout)
+	defer cancel()
+	return b.tx.Commit(cctx)
 }
 
 // Abort releases the locks without marking anything delivered.
