@@ -34,6 +34,11 @@ func Transitions() []Transition {
 		{Any, EvFlagged, ""},
 		{Any, EvEscalated, ""},
 		{Any, EvClosed, StateClosed},
+		{Any, EvMergeAbsorbed, ""},
+		{Any, EvSplit, ""},
+		{Any, EvSeverityRaised, ""},
+		{StateMerged, EvUnmerged, StateDispatching},
+		{StateMerged, EvScreenAnswered, ""},
 		{StateIntake, EvMerged, StateMerged},
 		{StateTriaged, EvMerged, StateMerged},
 		{StateDispatching, EvMerged, StateMerged},
@@ -41,9 +46,11 @@ func Transitions() []Transition {
 }
 
 // lookup finds the transition for event in state, preferring an exact match
-// over a wildcard. Terminal states accept nothing.
+// over a wildcard. A closed incident accepts nothing; a merged one accepts
+// only its exact transitions (its unmerge, and its own caller's answers),
+// never a wildcard event.
 func lookup(state State, event EventType) (Transition, bool) {
-	if state.Terminal() {
+	if state == StateClosed {
 		return Transition{}, false
 	}
 	var wildcard *Transition
@@ -54,7 +61,7 @@ func lookup(state State, event EventType) (Transition, bool) {
 		if tr.From == state {
 			return tr, true
 		}
-		if tr.From == Any {
+		if tr.From == Any && state != StateMerged {
 			w := tr
 			wildcard = &w
 		}

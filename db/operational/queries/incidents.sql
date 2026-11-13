@@ -27,7 +27,7 @@ ORDER BY seq;
 SELECT id, reference, channel, state, version, severity, logic_version,
        t1, t2, t3, t4, t5, t6, t7, escalated, flags, merged_into,
        language, danger, category, age_band, specific_danger, ward, landmark,
-       last_screen, zone_col, zone_row, location_quality
+       last_screen, zone_col, zone_row, location_quality, created_at, absorbed
 FROM op.incidents
 WHERE id = sqlc.arg(id)::uuid;
 
@@ -101,3 +101,17 @@ WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
        OR (NOT escalated AND t2 IS NULL AND (danger = 'yes' OR severity = 'red')))
 ORDER BY updated_at
 LIMIT 500;
+
+-- name: DedupCandidates :many
+-- Read and locked FOR SHARE (op.dedup_candidates, migration 0017): the rule
+-- decides on current rows, which cannot change before the merge commits.
+SELECT c.id::uuid AS id, c.category::text AS category, c.zone_col::int AS zone_col, c.zone_row::int AS zone_row,
+       coalesce(c.location_quality, '')::text AS location_quality, coalesce(c.severity, '')::text AS severity,
+       c.escalated::boolean AS escalated, c.t1::timestamptz AS t1, c.t2::timestamptz AS t2
+FROM op.dedup_candidates(
+    sqlc.arg(category)::text, sqlc.arg(col)::int, sqlc.arg(row_index)::int, sqlc.arg(dist)::int,
+    sqlc.arg(t1)::timestamptz, sqlc.arg(window_seconds)::int, sqlc.arg(id)::uuid
+) AS c(id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2);
+
+-- name: SplitIncident :exec
+SELECT op.split_incident(sqlc.arg(survivor)::uuid, sqlc.arg(member)::uuid, sqlc.arg(staff)::uuid);

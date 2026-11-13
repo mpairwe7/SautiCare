@@ -259,6 +259,22 @@ func (s *Store) Projection(ctx context.Context, id uuid.UUID) (incident.Projecti
 	if r.ZoneCol != nil && r.ZoneRow != nil {
 		p.Zone = &incident.Zone{Col: int(*r.ZoneCol), Row: int(*r.ZoneRow)}
 	}
+	// op.open_incident sets created_at with T1: it is the incident's own call.
+	p.OwnT1 = r.CreatedAt.Time.UTC()
+	var absorbed map[string]time.Time
+	if err := json.Unmarshal(r.Absorbed, &absorbed); err != nil {
+		return incident.Projection{}, fmt.Errorf("opstore: incident %s absorbed: %w", p.ID, err)
+	}
+	for id, at := range absorbed {
+		u, err := uuid.Parse(id)
+		if err != nil {
+			return incident.Projection{}, fmt.Errorf("opstore: incident %s absorbed key: %w", p.ID, err)
+		}
+		if p.Absorbed == nil {
+			p.Absorbed = map[uuid.UUID]time.Time{}
+		}
+		p.Absorbed[u] = at.UTC()
+	}
 	for i, t := range []pgtype.Timestamptz{r.T1, r.T2, r.T3, r.T4, r.T5, r.T6, r.T7} {
 		p.T[i+1] = tsPtr(t)
 	}

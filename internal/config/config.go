@@ -69,6 +69,11 @@ type Intake struct {
 	// AbandonAfter is how long an unfinished session may be silent before it
 	// is flagged abandoned (and escalated after a danger yes, Guide §4).
 	AbandonAfter Duration `yaml:"abandon_after"`
+	// DedupWindow and DedupMaxZoneDistance merge calls about one emergency:
+	// same category, zones at most this Chebyshev distance apart, first calls
+	// within the window (Build Prompt §10.3).
+	DedupWindow          Duration `yaml:"dedup_window"`
+	DedupMaxZoneDistance int      `yaml:"dedup_max_zone_distance"`
 }
 
 // Dispatch holds Build Prompt §10.4 parameters.

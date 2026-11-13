@@ -87,7 +87,8 @@ func newRig(t *testing.T, cls Classifier, match fakeMatcher) *rig {
 	}
 	r := &rig{inc: newMemIncidents(), steps: &memSteps{}}
 	svc, err := New(Deps{Incidents: r.inc, Reader: r.inc, Steps: r.steps, Keys: fakeKeys{}, Machine: newMachine(t),
-		Triage: cls, Gazetteer: repoGazetteer(t), Matcher: match, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45})
+		Triage: cls, Gazetteer: repoGazetteer(t), Matcher: match, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45,
+		Dispatcher: r.inc, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +447,8 @@ func TestDuplicateCallbackSavedMidwayReplays(t *testing.T) {
 	first := c.send("")
 	racy := &racySteps{memSteps: r.steps}
 	svc, err := New(Deps{Incidents: r.inc, Reader: r.inc, Steps: racy, Keys: fakeKeys{}, Machine: newMachine(t),
-		Triage: repoTriage(t), Gazetteer: repoGazetteer(t), Matcher: fakeMatcher{}, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45})
+		Triage: repoTriage(t), Gazetteer: repoGazetteer(t), Matcher: fakeMatcher{}, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45,
+		Dispatcher: r.inc, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,5 +461,34 @@ func TestDuplicateCallbackSavedMidwayReplays(t *testing.T) {
 	dup, err := svc.HandleUSSD(context.Background(), c.req)
 	if err != nil || dup != second {
 		t.Fatalf("duplicate later callback: %+v, %v (want the stored screen)", dup, err)
+	}
+}
+
+// Scenario 4 at service level: a second bystander's call about the same
+// crash merges into the incident already dispatching at T2; the second
+// caller still finishes Tool 1 on their own record; the survivor's T1 is the
+// earliest call.
+func TestSecondBystanderMergedAtT2(t *testing.T) {
+	r := newRig(t, nil, nil)
+	a := r.dial(t, "S1", "0772123456") // first to dial, slower to finish
+	a.send("")
+	for _, in := range []string{"1", "1", "1", "3", "2", "1"} {
+		a.send(in)
+	}
+	r.inc.now = r.inc.now.Add(time.Minute)
+	b := r.dial(t, "S2", "0772000111")
+	b.send("")
+	for _, in := range []string{"1", "1", "1", "3", "2", "1", "2", "1"} {
+		b.send(in)
+	}
+	r.inc.now = r.inc.now.Add(time.Minute)
+	a.send("1") // screen 7: a's incident reaches T2 and merges into b's
+	done := a.send("1")
+	pa, pb := a.projection(), b.projection()
+	if pa.State != incident.StateMerged || pa.MergedInto == nil || *pa.MergedInto != pb.ID || pa.LastScreen != 8 || !done.End {
+		t.Fatalf("member %+v (closing %+v)", pa, done)
+	}
+	if pb.State != incident.StateDispatching || !pb.T[1].Equal(pa.OwnT1) || len(pb.Absorbed) != 1 {
+		t.Fatalf("survivor %+v, want T1 of the first call %v", pb, pa.OwnT1)
 	}
 }

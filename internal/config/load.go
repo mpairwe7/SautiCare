@@ -97,6 +97,9 @@ func Load(fsys fs.FS) (Bundle, error) {
 	b.ProtocolStatus = proto.ProtocolStatus
 	b.ProtocolVersion = proto.ProtocolVersion
 	b.Fingerprint = "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if b.Intake.DedupWindow.Duration <= 0 || b.Intake.DedupMaxZoneDistance < 0 {
+		return Bundle{}, errors.New("config: intake dedup_window must be positive and dedup_max_zone_distance not negative")
+	}
 	if b.Intake.AbandonAfter.Duration <= 0 {
 		return Bundle{}, errors.New("config: intake abandon_after must be positive")
 	}

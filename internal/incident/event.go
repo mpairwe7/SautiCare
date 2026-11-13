@@ -25,6 +25,10 @@ const (
 	EvFlagged        EventType = "incident.flagged"
 	EvEscalated      EventType = "incident.escalated"
 	EvMerged         EventType = "incident.merged"
+	EvMergeAbsorbed  EventType = "incident.merge_absorbed"  // on the survivor: a call joined; T1 = earliest
+	EvSplit          EventType = "incident.split"           // on the survivor: a coordinator split a wrong merge
+	EvUnmerged       EventType = "incident.unmerged"        // on the member: revived by the split
+	EvSeverityRaised EventType = "incident.severity_raised" // on the survivor: a more urgent call merged into it
 	EvClosed         EventType = "incident.closed"
 )
 
@@ -33,7 +37,7 @@ func EventTypes() []EventType {
 	return []EventType{
 		EvSessionStarted, EvSessionResumed, EvScreenAnswered, EvClassified, EvDispatchReady,
 		EvAlertIssued, EvAccepted, EvArrived, EvDeparted, EvAtFacility,
-		EvFlagged, EvEscalated, EvMerged, EvClosed,
+		EvFlagged, EvEscalated, EvMerged, EvMergeAbsorbed, EvSplit, EvUnmerged, EvSeverityRaised, EvClosed,
 	}
 }
 

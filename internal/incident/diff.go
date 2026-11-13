@@ -65,6 +65,19 @@ func Diff(a, b Projection) string {
 	if (a.Zone == nil) != (b.Zone == nil) || (a.Zone != nil && *a.Zone != *b.Zone) {
 		add("zone", a.Zone, b.Zone)
 	}
+	if !a.OwnT1.Equal(b.OwnT1) {
+		add("own_t1", fmtTime(&a.OwnT1), fmtTime(&b.OwnT1))
+	}
+	if len(a.Absorbed) != len(b.Absorbed) {
+		add("absorbed", a.Absorbed, b.Absorbed)
+	} else {
+		for id, at := range a.Absorbed {
+			if bt, ok := b.Absorbed[id]; !ok || !bt.Equal(at) {
+				add("absorbed", a.Absorbed, b.Absorbed)
+				break
+			}
+		}
+	}
 	return strings.Join(d, "; ")
 }
 

@@ -96,6 +96,78 @@ func (q *Queries) ClaimOutbox(ctx context.Context, arg ClaimOutboxParams) ([]Cla
 	return items, nil
 }
 
+const dedupCandidates = `-- name: DedupCandidates :many
+SELECT c.id::uuid AS id, c.category::text AS category, c.zone_col::int AS zone_col, c.zone_row::int AS zone_row,
+       coalesce(c.location_quality, '')::text AS location_quality, coalesce(c.severity, '')::text AS severity,
+       c.escalated::boolean AS escalated, c.t1::timestamptz AS t1, c.t2::timestamptz AS t2
+FROM op.dedup_candidates(
+    $1::text, $2::int, $3::int, $4::int,
+    $5::timestamptz, $6::int, $7::uuid
+) AS c(id, category, zone_col, zone_row, location_quality, severity, escalated, t1, t2)
+`
+
+type DedupCandidatesParams struct {
+	Category      string
+	Col           int32
+	RowIndex      int32
+	Dist          int32
+	T1            pgtype.Timestamptz
+	WindowSeconds int32
+	ID            pgtype.UUID
+}
+
+type DedupCandidatesRow struct {
+	ID              pgtype.UUID
+	Category        string
+	ZoneCol         int32
+	ZoneRow         int32
+	LocationQuality string
+	Severity        string
+	Escalated       bool
+	T1              pgtype.Timestamptz
+	T2              pgtype.Timestamptz
+}
+
+// Read and locked FOR SHARE (op.dedup_candidates, migration 0017): the rule
+// decides on current rows, which cannot change before the merge commits.
+func (q *Queries) DedupCandidates(ctx context.Context, arg DedupCandidatesParams) ([]DedupCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, dedupCandidates,
+		arg.Category,
+		arg.Col,
+		arg.RowIndex,
+		arg.Dist,
+		arg.T1,
+		arg.WindowSeconds,
+		arg.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DedupCandidatesRow
+	for rows.Next() {
+		var i DedupCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Category,
+			&i.ZoneCol,
+			&i.ZoneRow,
+			&i.LocationQuality,
+			&i.Severity,
+			&i.Escalated,
+			&i.T1,
+			&i.T2,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const defaultPartitionRows = `-- name: DefaultPartitionRows :one
 SELECT op.default_partition_rows()::bigint AS n
 `
@@ -156,7 +228,7 @@ const getIncident = `-- name: GetIncident :one
 SELECT id, reference, channel, state, version, severity, logic_version,
        t1, t2, t3, t4, t5, t6, t7, escalated, flags, merged_into,
        language, danger, category, age_band, specific_danger, ward, landmark,
-       last_screen, zone_col, zone_row, location_quality
+       last_screen, zone_col, zone_row, location_quality, created_at, absorbed
 FROM op.incidents
 WHERE id = $1::uuid
 `
@@ -190,6 +262,8 @@ type GetIncidentRow struct {
 	ZoneCol         *int32
 	ZoneRow         *int32
 	LocationQuality *string
+	CreatedAt       pgtype.Timestamptz
+	Absorbed        []byte
 }
 
 func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentRow, error) {
@@ -224,6 +298,8 @@ func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentR
 		&i.ZoneCol,
 		&i.ZoneRow,
 		&i.LocationQuality,
+		&i.CreatedAt,
+		&i.Absorbed,
 	)
 	return i, err
 }
@@ -615,6 +691,21 @@ func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) erro
 		arg.PromptKind,
 		arg.MatchedLandmark,
 	)
+	return err
+}
+
+const splitIncident = `-- name: SplitIncident :exec
+SELECT op.split_incident($1::uuid, $2::uuid, $3::uuid)
+`
+
+type SplitIncidentParams struct {
+	Survivor pgtype.UUID
+	Member   pgtype.UUID
+	Staff    pgtype.UUID
+}
+
+func (q *Queries) SplitIncident(ctx context.Context, arg SplitIncidentParams) error {
+	_, err := q.db.Exec(ctx, splitIncident, arg.Survivor, arg.Member, arg.Staff)
 	return err
 }
 

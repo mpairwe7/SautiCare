@@ -12,3 +12,8 @@ fuzzy_match_min_similarity: 0.45
 # dispatch, it is escalated for an immediate coordinator call-back (Build
 # Prompt §10.3; Guide §4). Network USSD sessions end after roughly 120-180 s.
 abandon_after: 120s
+# Duplicate calls (Build Prompt §10.3): same category, zones within one cell
+# of each other (Chebyshev), first calls within 15 minutes are merged at T2
+# into the incident already dispatching; the earliest call gives T1.
+dedup_window: 15m
+dedup_max_zone_distance: 1

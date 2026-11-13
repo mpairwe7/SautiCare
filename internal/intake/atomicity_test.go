@@ -20,8 +20,9 @@ import (
 var errInjected = errors.New("injected: request budget exceeded")
 
 // faultyIncidents fails one write, once: the failAt-th write call (counting
-// StartSession, ResumeSession, StoreIdentifier, Append and AppendBatch), or
-// the first write that carries an event of type failType. With after set,
+// StartSession, ResumeSession, StoreIdentifier, Append, AppendBatch and
+// DispatchOrMerge), or the first write that carries an event of type
+// failType. With after set,
 // the write takes effect and only its reply is lost (the budget ended during
 // the commit); otherwise nothing of it is stored.
 type faultyIncidents struct {
@@ -85,6 +86,10 @@ func (f *faultyIncidents) AppendBatch(ctx context.Context, ps []incident.AppendP
 	return faulty(f, func() ([]incident.Appended, error) { return f.memIncidents.AppendBatch(ctx, ps) }, types...)
 }
 
+func (f *faultyIncidents) DispatchOrMerge(ctx context.Context, r DispatchRequest) (DispatchOutcome, error) {
+	return faulty(f, func() (DispatchOutcome, error) { return f.memIncidents.DispatchOrMerge(ctx, r) }, incident.EvDispatchReady)
+}
+
 func newRigWith(t *testing.T, inc Incidents, mem *memIncidents, cls Classifier, match fakeMatcher, trigger int) *rig {
 	t.Helper()
 	if cls == nil {
@@ -94,9 +99,14 @@ func newRigWith(t *testing.T, inc Incidents, mem *memIncidents, cls Classifier, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	d, ok := inc.(Dispatcher)
+	if !ok {
+		d = mem
+	}
 	r := &rig{inc: mem, steps: &memSteps{}}
 	svc, err := New(Deps{Incidents: inc, Reader: mem, Steps: r.steps, Keys: fakeKeys{}, Machine: m,
-		Triage: cls, Gazetteer: repoGazetteer(t), Matcher: match, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45})
+		Triage: cls, Gazetteer: repoGazetteer(t), Matcher: match, ResumeWindow: 10 * time.Minute, MinSimilarity: 0.45,
+		Dispatcher: d, Dedup: DedupRule{Window: 15 * time.Minute, MaxZoneDistance: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,8 +189,16 @@ var (
 func finished(t *testing.T, c *caller, cls Classifier) {
 	t.Helper()
 	p := c.projection()
-	if p.Severity == "" || p.T[2] == nil || p.State != incident.StateDispatching || p.LastScreen != 8 {
+	if p.Severity == "" || p.T[2] == nil || p.LastScreen != 8 ||
+		(p.State != incident.StateDispatching && p.State != incident.StateMerged) {
 		t.Fatalf("finished incident: severity %q, T2 %v, state %s, last screen %d", p.Severity, p.T[2], p.State, p.LastScreen)
+	}
+	// A redial after a lost reply to the last answer starts a second
+	// incident, which deduplication merges into the first (dispatching).
+	if p.MergedInto != nil {
+		if s, err := c.r.inc.Projection(context.Background(), *p.MergedInto); err != nil || s.State != incident.StateDispatching {
+			t.Fatalf("merged into %s in state %s (%v)", p.MergedInto, s.State, err)
+		}
 	}
 	if _, ok := cls.(fixedTriage); ok && (!p.Escalated || !slices.Contains(p.Flags, FlagTriageRuleError)) {
 		t.Fatalf("rule error without its flag or escalation: %+v", p)

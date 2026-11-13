@@ -104,7 +104,8 @@ func BuildIntake(ctx context.Context, o IntakeOptions) (Intake, error) {
 	svc, err := intake.New(intake.Deps{
 		Incidents: incidents, Reader: o.Store, Steps: o.Store, Keys: ids, Machine: machine, Triage: engine,
 		Gazetteer: gaz, Matcher: o.Store, ResumeWindow: cfg.Intake.ResumeWindow.Duration,
-		MinSimilarity: cfg.Intake.FuzzyMatchMinSimilarity,
+		MinSimilarity: cfg.Intake.FuzzyMatchMinSimilarity, Dispatcher: o.Store,
+		Dedup: intake.DedupRule{Window: cfg.Intake.DedupWindow.Duration, MaxZoneDistance: cfg.Intake.DedupMaxZoneDistance},
 	})
 	if err != nil {
 		return Intake{}, err

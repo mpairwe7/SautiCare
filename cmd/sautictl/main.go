@@ -11,6 +11,7 @@
 //	sautictl gazetteer load --file config/gated/gazetteer.yaml --dsn <operational owner DSN>
 //	sautictl triage keygen --out <seed file> --key-id dev-<name>                  (dev/CI only)
 //	sautictl triage sign --key <seed file> --key-id <id> --rules triage-rules/tool1.yaml
+//	sautictl incident split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff subject UUID>
 package main
 
 import (
@@ -25,6 +26,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 
@@ -56,6 +58,7 @@ var commands = map[string]command{
 	"checkpoint":         {"--dsn <audit_appender DSN> --devkeys-dir D --witness-dir W [--origin O]", cmdCheckpoint},
 	"demo":               {"m0 --admin-dsn <DSN> [--config-dir config] [--keep]", cmdDemo},
 	"gazetteer":          {"load --file <gazetteer.yaml> --dsn <operational owner DSN>", cmdGazetteer},
+	"incident":           {"split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff UUID>", cmdIncident},
 	"triage":             {"keygen --out <file> --key-id dev-<name> | sign --key <file> --key-id <id> --rules <bundle>", cmdTriage},
 }
 
@@ -478,4 +481,45 @@ func cmdTriage(_ context.Context, args []string, out io.Writer) error {
 		return nil
 	}
 	return fmt.Errorf("unknown triage subcommand %q", args[0])
+}
+
+// cmdIncident holds coordinator actions until the console exists (M5).
+// "split" separates a wrongly merged call from its survivor (Build Prompt
+// §10.3), logged with the coordinator's identity-provider subject.
+func cmdIncident(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 || args[0] != "split" {
+		return errors.New("usage: sautictl incident split --dsn <op_console DSN> --survivor <id> --member <id> --staff <UUID>")
+	}
+	fs := flags("incident split")
+	dsn := fs.String("dsn", "", "operational store DSN as op_console")
+	survivorFlag := fs.String("survivor", "", "the incident the call was merged into")
+	memberFlag := fs.String("member", "", "the wrongly merged incident")
+	staffFlag := fs.String("staff", "", "the coordinator's staff identity (identity-provider subject UUID)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	ids := make([]uuid.UUID, 3)
+	for i, v := range []struct{ name, val string }{{"--survivor", *survivorFlag}, {"--member", *memberFlag}, {"--staff", *staffFlag}} {
+		id, err := uuid.Parse(v.val)
+		if err != nil {
+			return fmt.Errorf("%s must be a UUID", v.name)
+		}
+		ids[i] = id
+	}
+	if ids[0] == ids[1] {
+		return errors.New("--survivor and --member must differ")
+	}
+	if *dsn == "" {
+		return errors.New("--dsn (op_console) is required")
+	}
+	pool, err := pg.Connect(ctx, *dsn, "sautictl", 2)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := opstore.New(pool).SplitIncident(ctx, ids[0], ids[1], ids[2]); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "split %s from %s (logged with staff %s)\n", ids[1], ids[0], ids[2])
+	return nil
 }

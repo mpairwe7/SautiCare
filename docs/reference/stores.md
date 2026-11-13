@@ -18,10 +18,11 @@ There are five PostgreSQL 18 databases (`sauti_<store>`). Each has an owner role
 
 | Role | Store | Tables | Functions |
 |---|---|---|---|
-| `op_intake` | operational | SELECT `incidents`, `incident_events`, `sessions`; SELECT `ussd_steps`, INSERT on its data columns only (not `created_at`, migration 0027) | EXECUTE `open_incident`, `append_incident_event` |
+| `op_intake` | operational | SELECT `incidents`, `incident_events`, `sessions`; SELECT `ussd_steps`, INSERT on its data columns only (not `created_at`, migration 0027) | EXECUTE `open_incident`, `append_incident_event` (never a staff actor, `incident.split` or `incident.unmerged`: the function refuses them to every role but `op_console`), `dedup_candidates` (reads the merge candidates and locks them `FOR SHARE` until the dispatch decision commits; also granted to `op_ivr` ahead of M1 Part C) |
 | `op_relay` | operational | — | EXECUTE `claim_outbox`, `mark_outbox_delivered`, `default_partition_rows`, `ensure_event_partitions` (the leader keeps partitions three months ahead) |
 | `op_readonly` | operational | SELECT `incidents`, `incident_events`, `event_keys`, `incident_transitions`, `outbox`, `config_versions`, `key_periods` (not `sessions`) | EXECUTE `default_partition_rows` |
-| `op_ivr`, `op_dispatch`, `op_console`, `op_payments`, `op_pseudonymiser`, `op_retention` | operational | none yet: granted in their milestones | — |
+| `op_console` | operational | SELECT `incidents`, `incident_events` | EXECUTE `split_incident` (coordinator split, M1) |
+| `op_ivr`, `op_dispatch`, `op_payments`, `op_pseudonymiser`, `op_retention` | operational | none yet: granted in their milestones | — |
 | `audit_appender` | audit | — | EXECUTE `append`, `head`, `save_checkpoint` |
 | `audit_reader` | audit | SELECT `entries`, `checkpoints` | — |
 | `an_writer` | analytic | SELECT/DELETE `meds_records`, INSERT on its data columns only (not `exported_at`); SELECT `suppression_ledger`, INSERT on its data columns only (not `withdrawn_at`) | — |

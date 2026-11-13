@@ -136,6 +136,9 @@ type Deps struct {
 	Matcher       Matcher
 	ResumeWindow  time.Duration
 	MinSimilarity float64
+	// Dispatcher records T2 and merges a duplicate call (Build Prompt §10.3).
+	Dispatcher Dispatcher
+	Dedup      DedupRule
 }
 
 // Service runs Tool 1 over USSD (and, from Part C, IVR).
@@ -144,10 +147,10 @@ type Service struct{ d Deps }
 // New validates and wires the service.
 func New(d Deps) (*Service, error) {
 	if d.Incidents == nil || d.Reader == nil || d.Steps == nil || d.Keys == nil || d.Machine == nil ||
-		d.Triage == nil || d.Matcher == nil {
+		d.Triage == nil || d.Matcher == nil || d.Dispatcher == nil {
 		return nil, errors.New("intake: missing dependency")
 	}
-	if d.ResumeWindow <= 0 || d.MinSimilarity <= 0 || d.MinSimilarity >= 1 {
+	if d.ResumeWindow <= 0 || d.MinSimilarity <= 0 || d.MinSimilarity >= 1 || d.Dedup.Window <= 0 || d.Dedup.MaxZoneDistance < 0 {
 		return nil, fmt.Errorf("intake: resume window %v / min similarity %v out of range", d.ResumeWindow, d.MinSimilarity)
 	}
 	return &Service{d: d}, nil
@@ -509,14 +512,21 @@ func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, matc
 			return err
 		}
 	}
-	ready, err := newEvent(p.ID, incident.EvDispatchReady, incident.ActorSystem, map[string]any{
+	payload, err := json.Marshal(map[string]any{
 		"trigger_screen": s.d.Machine.TriggerScreen(), "zone": map[string]int{"col": cell.Col, "row": cell.Row},
 		"location_quality": quality, "gazetteer_version": s.d.Gazetteer.Version,
-	}, incidentKey(p.ID, "dispatch_ready"), "")
+	})
 	if err != nil {
 		return err
 	}
-	_, err = s.d.Incidents.Append(ctx, ready)
+	// T2, and the merge of a duplicate call into the incident already
+	// dispatching (same category, within dedup_max_zone_distance zones and
+	// dedup_window: s.d.Dedup), atomically.
+	// The call's severity and escalation go with it to the survivor; a call
+	// located only to its ward is never merged.
+	_, err = s.d.Dispatcher.DispatchOrMerge(ctx, DispatchRequest{IncidentID: p.ID, Payload: payload,
+		IdemKey: incidentKey(p.ID, "dispatch_ready"), Category: p.Category, Severity: p.Severity, Escalated: p.Escalated,
+		LocationQuality: quality, Zone: incident.Zone{Col: cell.Col, Row: cell.Row}, T1: *p.T[1], Rule: s.d.Dedup})
 	return err
 }
 

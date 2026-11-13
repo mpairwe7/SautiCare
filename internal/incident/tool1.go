@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"time"
 	"uuid"
 )
 
@@ -232,4 +233,74 @@ func (p *Projection) set(a ScreenAnswer) error {
 	}
 	p.LastScreen = max(p.LastScreen, a.Screen)
 	return nil
+}
+
+// t1Text is the timestamp format of merge_absorbed (RFC 3339 with at most
+// microseconds, the database's precision); SQL checks the same pattern.
+var t1Text = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?(Z|[+-][0-9]{2}:[0-9]{2})$`)
+
+func parseFrom(raw json.RawMessage) (uuid.UUID, error) {
+	m, err := strictKeys(raw, "from")
+	if err == nil {
+		if s, ok := jsonString(m["from"]); ok && uuidText.MatchString(s) {
+			if id, err := uuid.Parse(s); err == nil {
+				return id, nil
+			}
+		}
+	}
+	return uuid.UUID{}, fmt.Errorf("%w: payload needs exactly a \"from\" incident ID", ErrIllegalTransition)
+}
+
+func parseAbsorbed(raw json.RawMessage) (uuid.UUID, time.Time, error) {
+	bad := fmt.Errorf("%w: merge_absorbed needs exactly \"from\" (incident ID) and \"t1\" (timestamp)", ErrIllegalTransition)
+	m, err := strictKeys(raw, "from", "t1")
+	if err != nil {
+		return uuid.UUID{}, time.Time{}, bad
+	}
+	s, ok := jsonString(m["from"])
+	ts, okT := jsonString(m["t1"])
+	if !ok || !okT || !uuidText.MatchString(s) || !t1Text.MatchString(ts) {
+		return uuid.UUID{}, time.Time{}, bad
+	}
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.UUID{}, time.Time{}, bad
+	}
+	t1, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return uuid.UUID{}, time.Time{}, bad
+	}
+	return id, t1.UTC(), nil
+}
+
+// parseSeverityRaised validates a severity_raised payload: exactly a known
+// severity and the incident ID of the merged call that carried it.
+func parseSeverityRaised(raw json.RawMessage) (Severity, uuid.UUID, error) {
+	bad := fmt.Errorf("%w: severity_raised needs exactly \"severity\" (red, yellow or green) and \"from\" (incident ID)", ErrIllegalTransition)
+	m, err := strictKeys(raw, "severity", "from")
+	if err != nil {
+		return "", uuid.UUID{}, bad
+	}
+	s, ok := jsonString(m["severity"])
+	f, okF := jsonString(m["from"])
+	if !ok || !okF || Severity(s).Rank() == 0 || !uuidText.MatchString(f) {
+		return "", uuid.UUID{}, bad
+	}
+	from, err := uuid.Parse(f)
+	if err != nil {
+		return "", uuid.UUID{}, bad
+	}
+	return Severity(s), from, nil
+}
+
+// earliestT1 is the incident's T1: its own first call or the earliest call
+// merged into it.
+func earliestT1(own time.Time, absorbed map[uuid.UUID]time.Time) *time.Time {
+	t := own
+	for _, at := range absorbed {
+		if at.Before(t) {
+			t = at
+		}
+	}
+	return &t
 }
