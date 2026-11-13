@@ -466,9 +466,11 @@ threats:
     hard_constraints: [14]
     mitigations:
       - Every attempt is claimed once per channel before the provider call; an unknown outcome is never re-sent, and the next rung covers it
+      - An alert is delivered only while its responder is still eligible (available, gates in force); a responder who switched off is not rung
       - SMS at 0 s, voice at 20 s, the responder menu at any time; the cascade moves on regardless of channel failures
       - Every escalation rings the coordinator line, retried every 2 minutes until a coordinator presses 1
     verified_by:
+      - internal/platform/pg/opstore/voice_integration_test.go::TestNoVoiceAlertOnceTheResponderIsNoLongerEligible
       - internal/platform/pg/opstore/forward_integration_test.go::TestForwardAttempts
       - internal/platform/pg/opstore/forward_integration_test.go::TestCoordinatorCalls
       - internal/platform/ivr/alerts_test.go::TestAlertCallsDialDueAlertsOnce

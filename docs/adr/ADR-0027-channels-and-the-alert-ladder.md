@@ -55,7 +55,7 @@ Chosen option: **ports, adapters, attempts claimed once**.
 - The menu is stateless over USSD and checked against the screen limit and GSM-7 at start.
 
 **Voice** (ivr-controller, a separate Stasis application `sauti-alerts`):
-- **Alert calls:** an alert still pending 20 s after it was sent (`voice_fallback_after`) rings the responder (scenario 9). Press 1 to accept, 2 to decline (with reasons once allowed), 3 to repeat. Answers go through the same `op.accept_alert` and `op.decline_alert` as the menu.
+- **Alert calls:** an alert still pending 20 s after it was sent (`voice_fallback_after`) rings the responder (scenario 9), unless the responder has switched off or a gate has lapsed since (`op.responder_eligible_now`, checked again when the attempt is claimed). Press 1 to accept, 2 to decline (with reasons once allowed), 3 to repeat. Answers go through the same `op.accept_alert` and `op.decline_alert` as the menu.
 - **Forwarding calls:** a forwarded health centre is called (press 1 to acknowledge) and also gets its SMS (scenarios 7, 8).
 - **Coordinator calls:** every escalation rings the coordinator line (`SAUTI_COORDINATOR_DIAL`) every 2 minutes until a coordinator presses 1. One acknowledgement covers the incident's escalations so far (scenario 11). The line is never rung twice at once (`SAUTI_COORDINATOR_LINES`, default 1), the most severe escalation goes first, and a closed incident is not rung about.
 - **Results:** a call ends only once its result prompt has been heard, and a key press cuts the prompt being heard. An accept by voice speaks the incident number, ward and landmark.

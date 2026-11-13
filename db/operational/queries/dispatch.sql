@@ -191,10 +191,12 @@ SELECT id, incident_id, role, sent_at, outcome, decline_reason, responded_at FRO
 WHERE responder_id = sqlc.arg(responder_id)::uuid ORDER BY sent_at DESC LIMIT sqlc.arg(max_rows)::int;
 
 -- Alerts due a voice call (ivr-controller): pending, sent at least `after`
--- ago, no voice attempt yet, dispatch not suspended.
+-- ago, no voice attempt yet, dispatch not suspended, the responder still
+-- eligible (switched off or a gate lapsed: not rung).
 -- name: DueVoiceAlerts :many
 SELECT a.id, a.responder_id FROM op.alerts a
 WHERE a.outcome = 'pending' AND a.sent_at <= clock_timestamp() - sqlc.arg(after)::interval AND NOT op.dispatch_suspended()
+  AND op.responder_eligible_now(a.responder_id)
   AND NOT EXISTS (SELECT 1 FROM op.alert_attempts x WHERE x.alert_id = a.id AND x.channel = 'voice')
 ORDER BY a.sent_at LIMIT sqlc.arg(max_rows)::int;
 

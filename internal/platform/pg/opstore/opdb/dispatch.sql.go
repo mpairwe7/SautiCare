@@ -754,6 +754,7 @@ func (q *Queries) DueForwardCalls(ctx context.Context, maxRows int32) ([]DueForw
 const dueVoiceAlerts = `-- name: DueVoiceAlerts :many
 SELECT a.id, a.responder_id FROM op.alerts a
 WHERE a.outcome = 'pending' AND a.sent_at <= clock_timestamp() - $1::interval AND NOT op.dispatch_suspended()
+  AND op.responder_eligible_now(a.responder_id)
   AND NOT EXISTS (SELECT 1 FROM op.alert_attempts x WHERE x.alert_id = a.id AND x.channel = 'voice')
 ORDER BY a.sent_at LIMIT $2::int
 `
@@ -769,7 +770,8 @@ type DueVoiceAlertsRow struct {
 }
 
 // Alerts due a voice call (ivr-controller): pending, sent at least `after`
-// ago, no voice attempt yet, dispatch not suspended.
+// ago, no voice attempt yet, dispatch not suspended, the responder still
+// eligible (switched off or a gate lapsed: not rung).
 func (q *Queries) DueVoiceAlerts(ctx context.Context, arg DueVoiceAlertsParams) ([]DueVoiceAlertsRow, error) {
 	rows, err := q.db.Query(ctx, dueVoiceAlerts, arg.After, arg.MaxRows)
 	if err != nil {

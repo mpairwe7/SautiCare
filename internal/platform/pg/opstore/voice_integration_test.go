@@ -59,3 +59,46 @@ func TestDueVoiceAlerts(t *testing.T) {
 		t.Fatalf("finish %v %v", ok, err)
 	}
 }
+
+// Review I1 (review focus 4): a responder who switches off, or whose gate
+// lapses, after the SMS went out is not rung at 20 s — the alert is not due
+// and no attempt can be claimed for it — while a stand-down still goes out.
+func TestNoVoiceAlertOnceTheResponderIsNoLongerEligible(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	owner := r.c.Owner(t, pg.StoreOperational)
+	age := func(id uuid.UUID) {
+		t.Helper()
+		if _, err := owner.Exec(ctx, "UPDATE op.alerts SET sent_at = sent_at - interval '25 seconds' WHERE id = $1", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	off := r.responder(t, responder.RoleVHT)
+	a := r.issue(t, r.incident, off, responder.RoleVHT)
+	age(a.AlertID)
+	if _, err := r.intake.SetAvailability(ctx, off, false, "ussd"); err != nil {
+		t.Fatal(err)
+	}
+	if due, _ := r.ivr.DueVoiceAlerts(ctx, 20*time.Second, 10); len(due) != 0 {
+		t.Fatalf("due after switching off: %v", due)
+	}
+	if _, fresh, err := r.ivr.BeginAttempt(ctx, a.AlertID, dispatch.PurposeAlert, dispatch.ChannelVoice); err != nil || fresh {
+		t.Fatalf("voice attempt claimed for a responder off duty: %v %v", fresh, err)
+	}
+	if _, fresh, err := r.dispatcher.BeginAttempt(ctx, a.AlertID, dispatch.PurposeStandDown, dispatch.ChannelSMS); err != nil || !fresh {
+		t.Fatalf("stand-down refused: %v %v", fresh, err)
+	}
+
+	lapsed := r.responder(t, responder.RoleTransporter)
+	b := r.issue(t, r.incident, lapsed, responder.RoleTransporter)
+	age(b.AlertID)
+	if _, err := owner.Exec(ctx, "UPDATE op.responders SET insured_until = now() - interval '1 minute' WHERE id = $1", lapsed); err != nil {
+		t.Fatal(err)
+	}
+	if due, _ := r.ivr.DueVoiceAlerts(ctx, 20*time.Second, 10); len(due) != 0 {
+		t.Fatalf("due after the insurance lapsed: %v", due)
+	}
+	if _, fresh, err := r.ivr.BeginAttempt(ctx, b.AlertID, dispatch.PurposeAlert, dispatch.ChannelVoice); err != nil || fresh {
+		t.Fatalf("voice attempt claimed after a gate lapsed: %v %v", fresh, err)
+	}
+}
