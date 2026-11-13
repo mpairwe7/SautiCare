@@ -38,6 +38,7 @@ import (
 const (
 	setupTimeout   = 2 * time.Minute  // bootstrap and migration of one cluster
 	connectTimeout = 30 * time.Second // one connection, or one statement on it
+	testTimeout    = 2 * time.Minute  // one test's own database calls (Context)
 )
 
 var (
@@ -166,6 +167,27 @@ func connect(tb testing.TB, dsn string) *pgx.Conn {
 		_ = c.Close(ctx)
 	})
 	return c
+}
+
+// Connect opens a connection for one test. Connecting is bounded, and the
+// connection is closed at cleanup on a fresh bounded context, so neither can
+// hang the test binary.
+func Connect(tb testing.TB, dsn string) *pgx.Conn {
+	tb.Helper()
+	return connect(tb, dsn)
+}
+
+// Context returns the context for one test's own database calls —
+// connections, statements, bootstrap and migration runs. It has a deadline
+// (testTimeout), so a held advisory lock or a stalled server fails the test
+// instead of hanging it until the binary's timeout, and it ends with the
+// test. It is cancelled before cleanup functions run: cleanup needs a fresh
+// bounded context of its own.
+func Context(tb testing.TB) context.Context {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(tb.Context(), testTimeout)
+	tb.Cleanup(cancel)
+	return ctx
 }
 
 // AdminConn returns a superuser connection to the maintenance database.

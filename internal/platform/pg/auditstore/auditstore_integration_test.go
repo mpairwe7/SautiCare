@@ -13,7 +13,6 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"sautihealth.com/sauti/internal/audit"
@@ -26,7 +25,7 @@ func TestMain(m *testing.M) { pgtest.Main(m) }
 
 func appenderStore(t *testing.T, c *pgtest.TestCluster, maxConns int32) *auditstore.Store {
 	t.Helper()
-	pool, err := pg.Connect(context.Background(), c.DSN(pg.StoreAudit, "audit_appender"), "test", maxConns)
+	pool, err := pg.Connect(pgtest.Context(t), c.DSN(pg.StoreAudit, "audit_appender"), "test", maxConns)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +35,7 @@ func appenderStore(t *testing.T, c *pgtest.TestCluster, maxConns int32) *auditst
 
 func readerStore(t *testing.T, c *pgtest.TestCluster) *auditstore.Store {
 	t.Helper()
-	pool, err := pg.Connect(context.Background(), c.DSN(pg.StoreAudit, "audit_reader"), "test", 2)
+	pool, err := pg.Connect(pgtest.Context(t), c.DSN(pg.StoreAudit, "audit_reader"), "test", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +62,7 @@ func verifyChain(t *testing.T, r *auditstore.Store, wantN int64) {
 	t.Helper()
 	var prev [32]byte
 	var n int64
-	err := r.Range(context.Background(), 1, func(e audit.Entry) error {
+	err := r.Range(pgtest.Context(t), 1, func(e audit.Entry) error {
 		n++
 		if e.Seq != n {
 			return fmt.Errorf("seq %d at position %d", e.Seq, n)
@@ -90,7 +89,7 @@ func verifyChain(t *testing.T, r *auditstore.Store, wantN int64) {
 func TestSQLHashMatchesGoCanonical(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := appenderStore(t, c, 2)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	for i := range 20 {
 		if _, err := s.Append(ctx, req(i)); err != nil {
 			t.Fatal(err)
@@ -105,7 +104,7 @@ func TestSQLHashMatchesGoCanonical(t *testing.T) {
 
 func TestHeadOfEmptyLedger(t *testing.T) {
 	c := pgtest.Cluster(t)
-	seq, head, err := appenderStore(t, c, 1).Head(context.Background())
+	seq, head, err := appenderStore(t, c, 1).Head(pgtest.Context(t))
 	if err != nil || seq != 0 || head != ([32]byte{}) {
 		t.Fatalf("empty Head = %d %x %v", seq, head, err)
 	}
@@ -116,7 +115,7 @@ func TestHeadOfEmptyLedger(t *testing.T) {
 func TestAppendIdempotentOnEntryID(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := appenderStore(t, c, 1)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	r := req(1)
 	a, err := s.Append(ctx, r)
 	if err != nil {
@@ -135,7 +134,7 @@ func TestAppendIdempotentOnEntryID(t *testing.T) {
 func TestConcurrentAppendsKeepValidChain(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := appenderStore(t, c, 20)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	var wg sync.WaitGroup
 	errs := make(chan error, 500)
 	for g := range 50 {
@@ -166,15 +165,11 @@ func pgCode(err error) string {
 func TestAppenderCannotUpdateOrDelete(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := appenderStore(t, c, 1)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	if _, err := s.Append(ctx, req(1)); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := pgx.Connect(ctx, c.DSN(pg.StoreAudit, "audit_appender"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(ctx)
+	conn := pgtest.Connect(t, c.DSN(pg.StoreAudit, "audit_appender"))
 	for _, q := range []string{
 		"UPDATE audit.entries SET event_type = 'x.y.z'",
 		"DELETE FROM audit.entries",
@@ -192,7 +187,7 @@ func TestAppenderCannotUpdateOrDelete(t *testing.T) {
 func TestAppendRejectsFreeTextLogicVersion(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := appenderStore(t, c, 1)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	for _, bad := range []string{"Jane Doe +256700123456", "tr-test", "tr-test+sha256:00", "TR+sha256:0123456789ab",
 		"tr test+sha256:0123456789ab", "tr-test+sha256:0123456789AB", "tr-test+sha256:0123456789ab\n"} {
 		r := req(1)
@@ -214,7 +209,7 @@ func TestAppendRejectsFreeTextLogicVersion(t *testing.T) {
 // so a stalled audit store cannot block the relay without limit.
 func TestAppendHasItsOwnDeadline(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	pool, err := pg.Connect(ctx, c.DSN(pg.StoreAudit, "audit_appender"), "test", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +223,8 @@ func TestAppendHasItsOwnDeadline(t *testing.T) {
 	defer auditstore.SetAppendTimeout(200 * time.Millisecond)()
 	done := make(chan error, 1)
 	go func() {
-		_, err := auditstore.New(pool).Append(ctx, req(1)) // ctx has no deadline
+		// Deliberately a caller without a deadline: the store must add one.
+		_, err := auditstore.New(pool).Append(context.Background(), req(1))
 		done <- err
 	}()
 	select {
@@ -243,7 +239,7 @@ func TestAppendHasItsOwnDeadline(t *testing.T) {
 
 func TestReaderCannotAppend(t *testing.T) {
 	c := pgtest.Cluster(t)
-	if _, err := readerStore(t, c).Append(context.Background(), req(1)); pgCode(err) != "42501" {
+	if _, err := readerStore(t, c).Append(pgtest.Context(t), req(1)); pgCode(err) != "42501" {
 		t.Fatalf("audit_reader append: err = %v, want 42501", err)
 	}
 }
@@ -252,12 +248,13 @@ func TestReaderCannotAppend(t *testing.T) {
 // (a deliberate, detectable act) allows it.
 func TestOwnerUpdateBlockedByTrigger(t *testing.T) {
 	c := pgtest.Cluster(t)
-	if _, err := appenderStore(t, c, 1).Append(context.Background(), req(1)); err != nil {
+	ctx := pgtest.Context(t)
+	if _, err := appenderStore(t, c, 1).Append(ctx, req(1)); err != nil {
 		t.Fatal(err)
 	}
 	owner := c.Owner(t, pg.StoreAudit)
 	for _, q := range []string{"UPDATE audit.entries SET event_type = 'x.y.z'", "DELETE FROM audit.entries", "TRUNCATE audit.entries"} {
-		if _, err := owner.Exec(context.Background(), q); pgCode(err) != "SA403" {
+		if _, err := owner.Exec(ctx, q); pgCode(err) != "SA403" {
 			t.Errorf("%q as owner: err = %v, want SA403", q, err)
 		}
 	}
@@ -266,7 +263,7 @@ func TestOwnerUpdateBlockedByTrigger(t *testing.T) {
 func TestCheckpointsAreStoredAndAppendOnly(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := appenderStore(t, c, 1)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	cp := audit.Checkpoint{Origin: "sauti-test", Seq: 0, SignedAt: time.Now().UTC(), KeyID: "k1", Signature: []byte{1, 2, 3}}
 	if err := s.SaveCheckpoint(ctx, cp); err != nil {
 		t.Fatal(err)
