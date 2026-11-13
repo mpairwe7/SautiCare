@@ -187,9 +187,11 @@ func (b *Bridge) start(ctx context.Context, e Event) {
 // recognise finds the caller's open assignments (a responder) or the
 // responders assigned to their open incidents (a caller).
 func (b *Bridge) recognise(ctx context.Context, from string) ([]dispatch.BridgeTarget, string, error) {
-	p, err := pii.ParsePhone(from)
-	if err != nil {
-		return nil, "", nil // a withheld or malformed number: nothing to bridge
+	p, perr := pii.ParsePhone(from)
+	if perr != nil {
+		// A withheld or malformed number is simply not recognised: the
+		// caller hears the same "nothing to connect" as an unknown number.
+		return nil, "", nil //nolint:nilerr // not recognising a caller is not a failure
 	}
 	macs, err := b.c.Keys.PhoneLookupMACs(ctx, p)
 	if err != nil {
