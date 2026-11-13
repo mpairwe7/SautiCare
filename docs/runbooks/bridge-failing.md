@@ -15,7 +15,7 @@ Responders and callers reach each other through the bridge number without learni
 - As `op_readonly`: `SELECT result, initiated_by, count(*) FROM op.bridge_calls WHERE started_at > now() - interval '1 hour' GROUP BY 1, 2;`
 - Startup warnings: "SAUTI_ARI_DIAL is not set" means no bridge; "SAUTI_ARI_CALLER_ID is not set: no masked bridge" means the same.
 - `/readyz` on the outbound leader reports `outbound_events` while its event stream is down. Bridge calls then fall to the dialplan fallback, where a coordinator answers.
-- A call the bridge cannot serve goes to a coordinator, through the same fallback. That covers a database error while recognising the number, a leg that cannot be placed, three wrong choices, or no bridge in the serving process. Coordinators receiving many bridge calls is itself a sign of this runbook's fault.
+- A call the bridge cannot serve goes to a coordinator, through the same fallback. That covers a database error while recognising the number, a leg that cannot be placed, a choice prompt Asterisk cannot play (log "bridge prompt not played; to a coordinator"), three wrong or silent choices, or no bridge in the serving process. Coordinators receiving many bridge calls is itself a sign of this runbook's fault.
 
 ## Impact
 Responders cannot ask callers for directions, and callers cannot reach their responder. Dispatch, alerts and acceptances are unaffected. **Never give a responder the caller's number, or a caller the responder's, by any other means (rule 5).** Coordinators relay messages by calling each party from the console (M5).
@@ -23,8 +23,10 @@ Responders cannot ask callers for directions, and callers cannot reach their res
 ## Diagnosis
 1. `failed` results: the trunk refused the leg (`SAUTI_ARI_DIAL`, registration, credit), or a sealed number could not be opened (key provider). The log names the bridge call ID, never a number.
 2. `no_answer` results: the other party did not answer within the ring time. Normal in moderation.
-3. Nobody recognised ("nothing to connect" for everyone): as `op_readonly`, check that the responder is not retired (`op.responders.status`) and that the assignment is open (`op.assignments.released_at IS NULL`, the incident not closed). A registered number that changed must be re-registered.
+3. Nobody recognised ("nothing to connect" for everyone): as `op_readonly`, check that the responder is not retired (`op.responders.status`) and that the assignment is open (`op.assignments.released_at IS NULL`, the incident not closed). A registered number that changed must be re-registered. A caller is recognised through their own report, or through the incident it was merged into until a coordinator splits the merge.
 4. The bridge number goes straight to a coordinator: the outbound application is unreachable. Follow [voice-alerts-failing.md](voice-alerts-failing.md).
+5. Calls handed to a coordinator with "bridge prompt not played": the bridge recordings are missing on the Asterisk host, or Asterisk refuses playback. Check the prompt catalogue's files for the call's language.
+6. A "bridge not destroyed" warning: a mixing bridge may remain in Asterisk. `bridge show all` on the Asterisk console lists them; a `bridge-<bridge call ID>` bridge with no channels can be removed with `bridge destroy <id>`.
 
 ## Mitigation
 1. Tell the coordinators the bridge is down; they relay between the parties.

@@ -510,12 +510,13 @@ threats:
     asset: the masked bridge
     hard_constraints: [5]
     mitigations:
-      - The bridge connects only a number whose keyed hash matches a responder with an open assignment, or a number an open incident's session came from; anyone else hears the same "nothing to connect" message, so the bridge reveals nobody's registration
+      - The bridge connects only a number whose keyed hash matches a responder with an open assignment, or a number that a session of an open incident (or of a report merged into it, until a split) came from; anyone else hears the same "nothing to connect" message, so the bridge reveals nobody's registration
       - Neither party ever learns the other's number; a spoofed caller ID reaches only the voice of the other party, never a number or a record
     verified_by:
       - internal/platform/ivr/bridge_test.go::TestBridgeUnknownNumber
       - internal/platform/ivr/bridge_test.go::TestBridgeCallerCallsBack
       - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeTargetsAndLog
+      - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeCallerOfAMergedReport
   - id: T-031
     title: The bridge exposes the caller's number (caller ID, logs, payloads, a recording)
     stride: Information disclosure

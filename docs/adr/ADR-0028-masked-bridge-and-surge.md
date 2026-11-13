@@ -41,15 +41,17 @@ Chosen option: **the masked bridge in ivr-controller**.
 
 **The masked bridge** (`ivr.Bridge`, migration 0025):
 - **Routing.** The bridge number's dialplan context sends calls to the outbound application (`Stasis(sauti-alerts,bridge)`), served by the outbound leader. If the application is unreachable, a coordinator answers.
-- **A responder calling.** They are recognised by their number's keyed hash, then by their open assignments. With one assignment they are connected at once. With several they key the last 4 digits of the incident number (three tries).
-- **A caller calling.** They are recognised by the hash of a number any of their open incident's sessions came from. With both roles assigned they choose 1 (health worker) or 2 (transport).
+- **A responder calling.** They are recognised by their number's keyed hash, then by their open assignments. With one assignment they are connected at once. With several they key the last 4 digits of the incident number.
+- **A caller calling.** They are recognised by the hash of a number that a session of their open incident came from, or a session of a report merged into it. So a second caller about the same emergency reaches the survivor's responders, until a coordinator splits the merge. With both roles assigned they choose 1 (health worker) or 2 (transport). When the chosen role, or the only role assigned, has helpers on several of their incidents, they key the last 4 digits of the incident number (for a merged report, the survivor's).
 - **An unknown number**, or one with nothing open, hears the same "nothing to connect" message. The bridge never reveals who is registered.
 - **A responder who also reported an emergency** chooses which party to reach (the person they are helping, or their own helper). Nobody reaches themselves.
-- **The legs.** Sauti places the other party's leg showing its own number (`SAUTI_ARI_CALLER_ID`). Before the calling party joins the mixing bridge, their own caller ID is set to Sauti's number, so the other party is never sent the real one as a connected-line update. The trunk should also set `send_connected_line=no`, as defence in depth. The calling party hears the connecting prompt, then ringback until the answer. A leg destroyed before any answer (a phone off or unreachable) ends the call at once as `no_answer`. When either party hangs up, the other is hung up and the bridge destroyed.
+- **Choices.** A choice (the party, the role, the last 4 digits) takes only the keys it offers; any other key leaves the prompt playing. It waits 15 s for a key, counted from the end of its prompt or from the last key, as the toll-free line does. The wait armed when a prompt starts also covers the prompt itself (up to 30 s), so a lost end-of-prompt event cannot hold the call open. A silent wait clears any partial digits and asks again. Three wrong or silent tries hand the call to a coordinator.
+- **The legs.** Sauti places the other party's leg showing its own number (`SAUTI_ARI_CALLER_ID`). Before the calling party joins the mixing bridge, their own caller ID is set to Sauti's number, so the other party is never sent the real one as a connected-line update. The trunk should also set `send_connected_line=no`, as defence in depth. The calling party hears the connecting prompt, then ringback until the answer. A leg destroyed before any answer (a phone off or unreachable) ends the call at once as `no_answer`. When either party hangs up, the other is hung up and the bridge destroyed. Writing the log and destroying the bridge each have their own time limit, so a slow database cannot leave a bridge behind in Asterisk.
 - **Failures reach a human (rule 14).** The following all hand the call to the dialplan fallback, where a coordinator answers:
   - a database error while recognising the number;
   - a call that cannot be begun or placed;
-  - three wrong choices;
+  - a choice prompt that cannot be played (at once, whatever tries remain);
+  - three wrong or silent choices;
   - the bridge number reaching a process with no bridge wired.
 - **The log.** `op.bridge_calls` records the incident, who began the call (`vht`, `transporter`, `caller`), when it started, was answered and ended, and the result (`connected`, `no_answer` after the ring time, `failed`).
 - **What the client can do.** The ARI client gains plain mixing bridges (create, add a channel, destroy). It still has no way to record, snoop or stream media out.
@@ -74,7 +76,7 @@ Chosen option: **the masked bridge in ivr-controller**.
 
 ### Confirmation
 
-- `internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeTargetsAndLog`
+- `internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeTargetsAndLog`, `::TestBridgeCallerOfAMergedReport`
 - `internal/platform/ari/client_test.go::TestClientMixingBridge`, `::TestNoRecordingEndpointsUsed`, `::TestClientCallerIDAndRingback`
 - `internal/dispatch/plan_test.go::TestFollowUpAfterAcceptance`; `internal/platform/wiring/scenarios_integration_test.go::TestAcceptedIncidentIsFollowedUp`
 - `internal/platform/ivr/bridge_test.go`:
@@ -84,6 +86,10 @@ Chosen option: **the masked bridge in ivr-controller**.
   - `TestBridgeResponderWhoIsAlsoACaller`
   - `TestBridgeSeveralAssignmentsAskTheLastFourDigits`
   - `TestBridgeCallerCallsBack`
+  - `TestBridgeCallerWithTwoHelpersOfARoleKeysTheIncident`
+  - `TestBridgeChoiceWithNoKeyGoesToACoordinator`
+  - `TestBridgePromptThatCannotPlayGoesToACoordinator`
+  - `TestBridgeIsDestroyedAfterASlowLogWrite`
   - `TestBridgeUnknownNumber`
   - `TestBridgeNoAnswerAndFailure`
   - `TestOutboundRoutesBridgeEventsOnce`
