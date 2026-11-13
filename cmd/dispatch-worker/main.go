@@ -132,9 +132,9 @@ func run(log *slog.Logger) error {
 			}
 		}
 	}()
-	adminSrv := &http.Server{Addr: env.Default("SAUTI_ADMIN_ADDR", "127.0.0.1:9102"), Handler: admin, ReadHeaderTimeout: 2 * time.Second}
-	errc := make(chan error, 1)
-	go func() { errc <- adminSrv.ListenAndServe() }()
+	adminSrv := adminServer(env.Default("SAUTI_ADMIN_ADDR", "127.0.0.1:9102"), admin)
+	adminErr := make(chan error, 1)
+	go func() { adminErr <- adminSrv.ListenAndServe() }()
 
 	log.Info("dispatch-worker starting", "env", senv, "config", cfg.Fingerprint, "mode", built.Params.Mode,
 		"dispatch_logic", built.LogicVersion, "gazetteer", built.Gazetteer.Version)
@@ -148,25 +148,53 @@ func run(log *slog.Logger) error {
 		passFailures.Add(1)
 		log.Error("dispatch pass failed", "incident", id, "err", err)
 	}
+	leaderErr := make(chan error, 1)
 	go func() {
-		errc <- pg.RunAsLeader(ctx, pool, leaderKey, 5*time.Second, func(lctx context.Context) error {
+		leaderErr <- pg.RunAsLeader(ctx, pool, leaderKey, 5*time.Second, func(lctx context.Context) error {
 			leading.Store(true)
 			defer leading.Store(false)
 			return built.Engine.Run(lctx, poll, batch, lease, onErr)
 		})
 	}()
 
-	select {
-	case <-ctx.Done():
-	case err := <-errc:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.Canceled) {
-			return err
-		}
-	}
+	err = await(ctx, stop, adminErr, leaderErr)
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	_ = adminSrv.Shutdown(sctx)
-	return nil
+	return err
+}
+
+// await waits for a signal, or the first failure of the admin listener or
+// the leader. On every path it cancels the leader (stop) and waits for
+// RunAsLeader to return before run's deferred pool.Close: the leader holds
+// its lock connection until its context ends, and pool.Close waits for every
+// connection, so returning first would hang the worker with the lock held
+// (CodeRabbit PR #10). RunAsLeader's own calls are bounded, so the wait is.
+func await(ctx context.Context, stop context.CancelFunc, adminErr, leaderErr <-chan error) error {
+	var err error
+	leaderDone := false
+	select {
+	case <-ctx.Done():
+	case err = <-adminErr:
+	case err = <-leaderErr:
+		leaderDone = true
+	}
+	stop()
+	if !leaderDone {
+		<-leaderErr
+	}
+	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+// adminServer serves health and metrics. Every phase of a connection is
+// bounded, so a client cannot hold one open wherever SAUTI_ADMIN_ADDR
+// exposes the listener; writes allow for the 2 s health checks.
+func adminServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second,
+		WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 }
 
 // deliverer picks how responders are reached. The channel adapters arrive
