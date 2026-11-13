@@ -36,6 +36,16 @@ func TestFlagEventNeedsAJSONStringFlag(t *testing.T) {
 		}
 	}
 	appendEv(t, s, o.IncidentID, incident.EvFlagged, `{"flag":"test_call"}`, "")
+	// Added NOT VALID: no scan of existing rows when the migration runs (it
+	// cannot fail on, or lock the table for, events stored before it); new
+	// writes are checked; validating existing rows is a separate operator
+	// step (docs/runbooks/database-migrations.md).
+	var validated bool
+	if err := c.Owner(t, pg.StoreOperational).QueryRow(ctx,
+		"SELECT convalidated FROM pg_constraint WHERE conname = 'incident_events_flag_is_string' AND conrelid = 'op.incident_events'::regclass").
+		Scan(&validated); err != nil || validated {
+		t.Fatalf("constraint validated at migration time: %v %v", validated, err)
+	}
 	evs, err := s.Events(ctx, o.IncidentID)
 	if err != nil {
 		t.Fatal(err)
@@ -142,5 +152,51 @@ func TestClaimedBatchOutlivesThePerCallDeadline(t *testing.T) {
 	}
 	if err := b.Complete(ctx, ids); err != nil {
 		t.Fatalf("completing a batch held past the per-call bound: %v", err)
+	}
+}
+
+// CodeRabbit PR #3 (second round): the statements on a claimed batch's held
+// transaction are bounded one by one — a claim stuck behind a lock returns
+// at the per-call deadline, not at the server's statement timeout — while
+// the batch itself may stay open (TestClaimedBatchOutlivesThePerCallDeadline).
+func TestClaimStatementsHaveTheirOwnDeadline(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := pgtest.Context(t)
+	defer opstore.SetOpTimeout(300 * time.Millisecond)()
+	if _, err := storeAs(t, c, "op_intake").OpenIncident(ctx, openParams(t)); err != nil {
+		t.Fatal(err)
+	}
+	relay := storeAs(t, c, "op_relay")
+	tx, err := c.Owner(t, pg.StoreOperational).Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, "LOCK TABLE op.outbox IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	b, err := relay.Claim(context.Background(), "audit", 10)
+	if err == nil {
+		b.Abort(ctx)
+	}
+	if took := time.Since(start); !errors.Is(err, context.DeadlineExceeded) || took > 2*time.Second {
+		t.Fatalf("a claim stuck behind a lock: %v after %v, want context.DeadlineExceeded at the per-call bound", err, took)
+	}
+}
+
+// A verification run has a deadline of its own: every snapshot statement
+// inherits it, even when the caller's context has none.
+func TestVerifyProjectionsHasARunDeadline(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := pgtest.Context(t)
+	s := storeAs(t, c, "op_intake")
+	if _, err := s.OpenIncident(ctx, openParams(t)); err != nil {
+		t.Fatal(err)
+	}
+	defer opstore.SetVerifyTimeout(300 * time.Millisecond)()
+	defer opstore.SetVerifyHook(func() { time.Sleep(500 * time.Millisecond) })()
+	if _, _, err := opstore.VerifyProjections(context.Background(), storeAs(t, c, "op_readonly")); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a verification run past its deadline: %v, want context.DeadlineExceeded", err)
 	}
 }

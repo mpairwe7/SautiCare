@@ -19,3 +19,10 @@ func SetOpTimeout(d time.Duration) (restore func()) {
 	opTimeout = d
 	return func() { opTimeout = prev }
 }
+
+// SetVerifyTimeout replaces the deadline of a whole verification run.
+func SetVerifyTimeout(d time.Duration) (restore func()) {
+	prev := verifyTimeout
+	verifyTimeout = d
+	return func() { verifyTimeout = prev }
+}
