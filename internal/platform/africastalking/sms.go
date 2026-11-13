@@ -21,9 +21,14 @@ import (
 // the message: 100 Processed, 101 Sent (handed to the operator), 102
 // Queued. Delivery to the handset comes later as a delivery report.
 
-// ErrSMSRejected reports a message the provider refused: nothing was sent
-// (invalid number, blacklisted, insufficient balance, rejected by the
-// operator gateway, bad credentials). Any other error is an unknown outcome.
+// ErrSMSRejected reports a message the provider refused: nothing was sent.
+// It covers an HTTP 4xx (the request refused, usually the credentials) and
+// the per-recipient statusCodes 401-409 (401 RiskHold, 402 InvalidSenderId,
+// 403 InvalidPhoneNumber, 404 UnsupportedNumberType, 405
+// InsufficientBalance, 406 UserInBlacklist, 407 CouldNotRoute, 409
+// DoNotDisturbRejection) and 502 RejectedByGateway. Any other error,
+// per-recipient 500 and 501 included, is an unknown outcome
+// (docs/runbooks/sms-gateway-down.md).
 var ErrSMSRejected = fmt.Errorf("africastalking: SMS rejected by the provider: %w", dispatch.ErrRejected)
 
 // SMSConfig configures the SMS client.
