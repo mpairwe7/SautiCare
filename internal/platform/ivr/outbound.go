@@ -132,21 +132,27 @@ func defaults(ring time.Duration, lang string, log *slog.Logger, op time.Duratio
 
 // RunOnce calls every forwarded facility not yet called, once each.
 func (f *ForwardCalls) RunOnce(ctx context.Context) (int, error) {
-	due, err := f.c.Store.DueForwardCalls(ctx, 50)
+	due, err := bounded(ctx, f.c.OpTimeout, func(c context.Context) ([]dispatch.ForwardCall, error) {
+		return f.c.Store.DueForwardCalls(c, 50)
+	})
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, d := range due {
-		attempt, fresh, err := f.c.Store.BeginForwardAttempt(ctx, d.IncidentID, d.FacilityID, dispatch.ChannelVoice)
+		claim, err := bounded(ctx, f.c.OpTimeout, func(c context.Context) (claimed, error) {
+			id, fresh, err := f.c.Store.BeginForwardAttempt(c, d.IncidentID, d.FacilityID, dispatch.ChannelVoice)
+			return claimed{id, fresh}, err
+		})
 		if err != nil {
 			return n, err
 		}
-		if !fresh {
+		if !claim.fresh {
 			continue
 		}
+		attempt := claim.id
 		n++
-		ref, cerr := f.dial(ctx, d)
+		ref, cerr := bounded(ctx, originateTimeout, func(c context.Context) (string, error) { return f.dial(c, d) })
 		status := "sent"
 		if cerr != nil {
 			status = "unknown"
@@ -155,7 +161,9 @@ func (f *ForwardCalls) RunOnce(ctx context.Context) (int, error) {
 			}
 			f.c.Log.Error("forwarding call not placed", "incident", d.IncidentID, "facility", d.FacilityID, "err", cerr)
 		}
-		if _, err := f.c.Store.FinishForwardAttempt(ctx, attempt, status, ref); err != nil {
+		if _, err := bounded(context.WithoutCancel(ctx), f.c.OpTimeout, func(c context.Context) (bool, error) {
+			return f.c.Store.FinishForwardAttempt(c, attempt, status, ref)
+		}); err != nil {
 			return n, err
 		}
 	}
@@ -352,7 +360,9 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 	if free <= 0 {
 		return 0, nil
 	}
-	due, err := k.c.Store.ClaimCoordinatorCalls(ctx, k.c.Retry, free)
+	due, err := bounded(ctx, k.c.OpTimeout, func(c context.Context) ([]dispatch.CoordinatorCall, error) {
+		return k.c.Store.ClaimCoordinatorCalls(c, k.c.Retry, free)
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -361,8 +371,10 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 		if !reasonCode.MatchString(reason) {
 			reason = "other"
 		}
-		ch, err := k.c.ARI.Originate(ctx, k.c.Endpoint, k.c.CallerID,
-			[]string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reason, string(d.Reference)}, k.c.Ring)
+		ch, err := bounded(ctx, originateTimeout, func(c context.Context) (string, error) {
+			return k.c.ARI.Originate(c, k.c.Endpoint, k.c.CallerID,
+				[]string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reason, string(d.Reference)}, k.c.Ring)
+		})
 		if err != nil {
 			// The claim stands: the line is rung again after the retry interval.
 			k.c.Log.Error("coordinator call not placed", "incident", d.IncidentID, "calls", d.Calls, "err", err)
@@ -466,6 +478,25 @@ func (k *CoordinatorCalls) play(ctx context.Context, ch string, st *coordinatorC
 }
 
 func (k *CoordinatorCalls) hangup(ctx context.Context, ch string) { _ = k.c.ARI.Hangup(ctx, ch) }
+
+// originateTimeout bounds placing an outbound call (Asterisk creates the
+// channel and answers at once; the ring itself is not waited for).
+const originateTimeout = 10 * time.Second
+
+// claimed is an attempt claim's result.
+type claimed struct {
+	id    uuid.UUID
+	fresh bool
+}
+
+// bounded runs one store or ARI operation under a deadline of its own: the
+// leader's context brings cancellation, never a deadline, so a database or
+// Asterisk that hangs would otherwise stall the worker for the whole term.
+func bounded[T any](ctx context.Context, d time.Duration, f func(context.Context) (T, error)) (T, error) {
+	c, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	return f(c)
+}
 
 // endAfter plays a closing prompt and returns its playback ID, to hang up on
 // once it has been heard (ARI plays asynchronously: hanging up at once would

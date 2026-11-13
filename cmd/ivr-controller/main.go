@@ -33,6 +33,8 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -66,12 +68,12 @@ type eventStream interface{ EventsConnected() bool }
 // can be served, and Asterisk's dialplan sends callers to a coordinator.
 var errNoEvents = errors.New("ari event stream disconnected")
 
-// readiness lists what the voice line needs to serve a call: the
-// operational store and the ARI event stream (review I4).
-// alertCallsLeaderKey is the advisory-lock key of the voice-alert leader
+// alertCallsLeaderKey is the advisory-lock key of the outbound-call leader
 // (outbox-relay 7347002, sweeper 7347003, dispatch-worker 7347004).
 const alertCallsLeaderKey = 7347005
 
+// readiness lists what the voice line needs to serve a call: the
+// operational store and the ARI event stream (review I4).
 func readiness(db health.Check, events eventStream) map[string]health.Check {
 	return map[string]health.Check{
 		"operational_db": db,
@@ -142,7 +144,12 @@ func run(log *slog.Logger) error {
 	reg := metrics.NewRegistry()
 	admin := http.NewServeMux()
 	admin.Handle("/livez", health.Handler(map[string]health.Check{}, nil))
-	admin.Handle("/readyz", health.Handler(nil, readiness(pool.Ping, client)))
+	// The outbound leader's stream joins readiness (a no-op on instances that
+	// do not lead); the map is complete before the admin server starts.
+	ready := readiness(pool.Ping, client)
+	outbound := &outboundStatus{}
+	ready["outbound_events"] = outboundReady(outbound)
+	admin.Handle("/readyz", health.Handler(nil, ready))
 	admin.Handle("/metrics", reg.Handler())
 	adminSrv := &http.Server{Addr: env.Default("SAUTI_ADMIN_ADDR", "127.0.0.1:9101"), Handler: admin, ReadHeaderTimeout: 2 * time.Second}
 
@@ -152,9 +159,12 @@ func run(log *slog.Logger) error {
 
 	// Outbound calls (M2 Part B; scenarios 7–9, 11): an alert still pending
 	// after voice_fallback_after rings the responder; forwarded health centres
-	// and the coordinator line are called. One leader places the calls and
-	// alone holds the outbound application's websocket (outboundTerm).
-	if dial := os.Getenv("SAUTI_ARI_DIAL"); dial != "" {
+	// are called (both need SAUTI_ARI_DIAL); every escalation rings the
+	// coordinator line (SAUTI_COORDINATOR_DIAL), whichever else is set. One
+	// leader places the calls and alone holds the outbound application's
+	// websocket (outboundTerm).
+	dial, line := os.Getenv("SAUTI_ARI_DIAL"), os.Getenv("SAUTI_COORDINATOR_DIAL")
+	if dial != "" || line != "" {
 		alertClient, err := ari.New(ari.Config{
 			BaseURL: env.Default("SAUTI_ARI_URL", "http://127.0.0.1:8088"), User: env.Default("SAUTI_ARI_USER", "sauti"),
 			Password: password, App: env.Default("SAUTI_ARI_ALERT_APP", "sauti-alerts"), Timeout: 5 * time.Second,
@@ -163,23 +173,32 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		callerID := os.Getenv("SAUTI_ARI_CALLER_ID")
-		calls, err := ivr.NewAlertCalls(ivr.AlertCallsConfig{ARI: alertClient, Store: store, Opener: crypto.NewEnvelope(keys, rand.Reader),
-			Dial: dial, CallerID: callerID, After: cfg.Dispatch.VoiceFallbackAfter.Duration, Copy: cfg.Responder,
-			AskReasons: cfg.Dispatch.Mode == dispatch.ModeAmended, Gazetteer: built.Gazetteer, Log: log})
-		if err != nil {
-			return err
+		onErr := func(err error) { log.Error("outbound calls failed", "err", err) }
+		out := ivr.Outbound{ARI: alertClient}
+		var loops []func(context.Context) error
+		if dial != "" {
+			calls, err := ivr.NewAlertCalls(ivr.AlertCallsConfig{ARI: alertClient, Store: store, Opener: crypto.NewEnvelope(keys, rand.Reader),
+				Dial: dial, CallerID: callerID, After: cfg.Dispatch.VoiceFallbackAfter.Duration, Copy: cfg.Responder,
+				AskReasons: cfg.Dispatch.Mode == dispatch.ModeAmended, Gazetteer: built.Gazetteer, Log: log})
+			if err != nil {
+				return err
+			}
+			// Forwarded health centres are called (press 1 to acknowledge).
+			forwards, err := ivr.NewForwardCalls(ivr.ForwardCallsConfig{ARI: alertClient, Store: store, Dial: dial, CallerID: callerID,
+				Gazetteer: built.Gazetteer, Log: log})
+			if err != nil {
+				return err
+			}
+			out.Alerts, out.Forwards = calls, forwards
+			loops = append(loops,
+				func(lctx context.Context) error { return calls.Run(lctx, 2*time.Second, onErr) },
+				func(lctx context.Context) error { return forwards.Run(lctx, 2*time.Second, onErr) })
+		} else {
+			log.Warn("SAUTI_ARI_DIAL is not set: no voice alerts or forwarding calls (SMS and the USSD menu only)")
 		}
-		// Forwarded health centres are called (press 1 to acknowledge).
-		forwards, err := ivr.NewForwardCalls(ivr.ForwardCallsConfig{ARI: alertClient, Store: store, Dial: dial, CallerID: callerID,
-			Gazetteer: built.Gazetteer, Log: log})
-		if err != nil {
-			return err
-		}
-		out := ivr.Outbound{ARI: alertClient, Alerts: calls, Forwards: forwards}
 		// Every escalation rings the coordinator line until acknowledged
-		// (rule 3.14); without a line configured, coordinators work from the
-		// console list only.
-		if line := os.Getenv("SAUTI_COORDINATOR_DIAL"); line != "" {
+		// (rule 3.14).
+		if line != "" {
 			lines := 1
 			if v := os.Getenv("SAUTI_COORDINATOR_LINES"); v != "" {
 				if lines, err = strconv.Atoi(v); err != nil || lines < 1 || lines > 50 {
@@ -190,22 +209,16 @@ func run(log *slog.Logger) error {
 				CallerID: callerID, Lines: lines, Log: log}); err != nil {
 				return err
 			}
+			loops = append(loops, func(lctx context.Context) error { return out.Coordinator.Run(lctx, 5*time.Second, onErr) })
 		} else {
 			log.Warn("SAUTI_COORDINATOR_DIAL is not set: escalations are not rung to coordinators")
 		}
-		onErr := func(err error) { log.Error("outbound calls failed", "err", err) }
-		loops := []func(context.Context) error{
-			func(lctx context.Context) error { return calls.Run(lctx, 2*time.Second, onErr) },
-			func(lctx context.Context) error { return forwards.Run(lctx, 2*time.Second, onErr) },
-		}
-		if out.Coordinator != nil {
-			loops = append(loops, func(lctx context.Context) error { return out.Coordinator.Run(lctx, 5*time.Second, onErr) })
-		}
+		outbound.connected = alertClient.EventsConnected // before the leader runs: its atomic store publishes it
 		go func() {
-			_ = pg.RunAsLeader(ctx, pool, alertCallsLeaderKey, 5*time.Second, outboundTerm(alertClient.Events, out, loops...))
+			_ = pg.RunAsLeader(ctx, pool, alertCallsLeaderKey, 5*time.Second, outboundTerm(alertClient.Events, outbound, out, loops...))
 		}()
 	} else {
-		log.Warn("SAUTI_ARI_DIAL is not set: no voice alerts (SMS and the USSD menu only)")
+		log.Warn("SAUTI_ARI_DIAL and SAUTI_COORDINATOR_DIAL are not set: no outbound calls")
 	}
 	log.Info("ivr-controller running", "env", senv, "config", cfg.Fingerprint, "protocol", cfg.ProtocolStatus,
 		"triage", built.Triage.LogicVersion(), "gazetteer", built.Gazetteer.Version)
@@ -223,20 +236,72 @@ func run(log *slog.Logger) error {
 	return nil
 }
 
+// outboundPoll is how often the outbound leader checks its event stream.
+var outboundPoll = 500 * time.Millisecond
+
+// outboundStatus is whether this instance holds the outbound leadership, and
+// its event stream's state (set before the leader runs).
+type outboundStatus struct {
+	leading   atomic.Bool
+	connected func() bool
+}
+
+// errOutboundEvents fails readiness on the outbound leader while its event
+// stream is down: no outbound call is placed until it reconnects.
+var errOutboundEvents = errors.New("outbound ari event stream disconnected on the leader")
+
+// outboundReady is the outbound leader's readiness: its event stream is up
+// (instances that do not lead have nothing to check).
+func outboundReady(st *outboundStatus) health.Check {
+	return func(context.Context) error {
+		if st.leading.Load() && !st.connected() {
+			return errOutboundEvents
+		}
+		return nil
+	}
+}
+
 // outboundTerm is the outbound side's leadership term. The leader alone takes
 // the outbound application's events, because Asterisk gives an application one
 // websocket and a newer connection takes it over (ApplicationReplaced): the
 // calls the leader places and the events of their answers then meet in one
-// process, which the coordinator line's busy tracking relies on. The
-// subscription and the loops end with the term; the first loop's return ends
-// it.
-func outboundTerm(events func(context.Context, func(ari.Event)) error, out ivr.Outbound,
+// process, which the coordinator line's busy tracking relies on. Calls are
+// placed only while that stream is connected — an answer Sauti cannot hear
+// would be a one-shot attempt wasted — so the loops stop when it drops and
+// start again when it is back. The subscription ends with the term.
+func outboundTerm(events func(context.Context, func(ari.Event)) error, st *outboundStatus, out ivr.Outbound,
 	loops ...func(context.Context) error) func(context.Context) error {
+	connected := st.connected
 	return func(lctx context.Context) error {
+		st.leading.Store(true)
+		defer st.leading.Store(false)
 		go func() { _ = events(lctx, func(e ari.Event) { out.Handle(lctx, e) }) }()
-		for _, l := range loops[1:] {
-			go func() { _ = l(lctx) }()
+		t := time.NewTicker(outboundPoll)
+		defer t.Stop()
+		for {
+			for !connected() {
+				select {
+				case <-lctx.Done():
+					return lctx.Err()
+				case <-t.C:
+				}
+			}
+			rctx, stop := context.WithCancel(lctx)
+			var wg sync.WaitGroup
+			for _, l := range loops {
+				wg.Go(func() { _ = l(rctx) })
+			}
+			for connected() && lctx.Err() == nil {
+				select {
+				case <-lctx.Done():
+				case <-t.C:
+				}
+			}
+			stop()
+			wg.Wait()
+			if err := lctx.Err(); err != nil {
+				return err
+			}
 		}
-		return loops[0](lctx)
 	}
 }

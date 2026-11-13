@@ -113,21 +113,27 @@ func NewAlertCalls(c AlertCallsConfig) (*AlertCalls, error) {
 // RunOnce calls every alert due a voice call; each attempt is claimed before
 // the call (never twice) and settled with the call's placement.
 func (a *AlertCalls) RunOnce(ctx context.Context) (int, error) {
-	due, err := a.c.Store.DueVoiceAlerts(ctx, a.c.After, 50)
+	due, err := bounded(ctx, a.c.OpTimeout, func(c context.Context) ([]dispatch.VoiceAlert, error) {
+		return a.c.Store.DueVoiceAlerts(c, a.c.After, 50)
+	})
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, d := range due {
-		attempt, fresh, err := a.c.Store.BeginAttempt(ctx, d.AlertID, dispatch.PurposeAlert, dispatch.ChannelVoice)
+		claim, err := bounded(ctx, a.c.OpTimeout, func(c context.Context) (claimed, error) {
+			id, fresh, err := a.c.Store.BeginAttempt(c, d.AlertID, dispatch.PurposeAlert, dispatch.ChannelVoice)
+			return claimed{id, fresh}, err
+		})
 		if err != nil {
 			return n, err
 		}
-		if !fresh {
+		if !claim.fresh {
 			continue
 		}
+		attempt := claim.id
 		n++
-		ref, cerr := a.dial(ctx, d.ResponderID, attempt)
+		ref, cerr := bounded(ctx, originateTimeout, func(c context.Context) (string, error) { return a.dial(c, d.ResponderID, attempt) })
 		status := "sent"
 		if cerr != nil {
 			status = "unknown"
@@ -136,7 +142,9 @@ func (a *AlertCalls) RunOnce(ctx context.Context) (int, error) {
 			}
 			a.c.Log.Error("voice alert not placed", "alert", d.AlertID, "err", cerr)
 		}
-		if _, err := a.c.Store.FinishAttempt(ctx, attempt, status, ref); err != nil {
+		if _, err := bounded(context.WithoutCancel(ctx), a.c.OpTimeout, func(c context.Context) (bool, error) {
+			return a.c.Store.FinishAttempt(c, attempt, status, ref)
+		}); err != nil {
 			return n, err
 		}
 	}

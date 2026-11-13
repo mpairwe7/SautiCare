@@ -19,7 +19,8 @@ One leader (advisory lock 7347005) places the calls and alone holds the `sauti-a
 ## Triggers and detection
 - As `op_readonly`: `SELECT channel, status, count(*) FROM op.alert_attempts WHERE channel = 'voice' AND claimed_at > now() - interval '30 minutes' GROUP BY 1, 2;` (also `op.forward_attempts`).
 - Unacknowledged escalations: `SELECT incident_id, calls, last_call_at FROM op.coordinator_calls WHERE calls > 3 ORDER BY last_call_at;`.
-- Startup warnings "SAUTI_ARI_DIAL is not set" or "SAUTI_COORDINATOR_DIAL is not set": voice alerts or coordinator calls are off.
+- Startup warnings "SAUTI_ARI_DIAL is not set" (no voice alerts or forwarding calls) or "SAUTI_COORDINATOR_DIAL is not set" (no coordinator calls). Each works without the other.
+- `/readyz` on the leader reports `outbound_events` failing while its `sauti-alerts` event stream is down. No outbound call is placed until it reconnects: an answer Sauti could not hear would waste a one-shot attempt. Every store and Asterisk operation of the call workers has its own deadline (3 s; 10 s to place a call), so a hung database costs one deadline, not the leadership term.
 - The voice line's own runbook covers Asterisk or ARI being down: [ivr-controller-down.md](ivr-controller-down.md).
 
 ## Impact
