@@ -15,9 +15,20 @@
 -- becomes, and for every partition, present or future. A flag event with no
 -- flag fails it too (jsonb_typeof of a missing key is NULL); the write path
 -- already rejects those, and an empty string, first, with SA422.
+--
+-- Added NOT VALID: every new write is checked, but existing rows are not
+-- scanned here, so the migration neither holds the table's lock through a
+-- scan of the event store nor fails on a numeric flag stored before it.
+-- Validating existing rows is a separate operator step on a populated store
+-- (docs/runbooks/database-migrations.md): count the rows that would fail,
+--   SELECT count(*) FROM op.incident_events
+--    WHERE type = 'incident.flagged' AND jsonb_typeof(payload -> 'flag') IS DISTINCT FROM 'string';
+-- repair them by an approved correction if any, then
+--   ALTER TABLE op.incident_events VALIDATE CONSTRAINT incident_events_flag_is_string;
+-- which takes only a SHARE UPDATE EXCLUSIVE lock (reads and writes go on).
 ALTER TABLE op.incident_events
     ADD CONSTRAINT incident_events_flag_is_string
-    CHECK (type <> 'incident.flagged' OR jsonb_typeof(payload -> 'flag') IS NOT DISTINCT FROM 'string');
+    CHECK (type <> 'incident.flagged' OR jsonb_typeof(payload -> 'flag') IS NOT DISTINCT FROM 'string') NOT VALID;
 
 -- 2. op.ussd_steps.created_at stays under database control.
 --
