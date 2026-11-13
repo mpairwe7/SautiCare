@@ -101,7 +101,7 @@ type EngineConfig struct {
 	Suspension   Suspension
 	Params       Params
 	Ranker       Ranker
-	LogicVersion string        // stamped on every dispatch fact
+	LogicVersion string        // stamped on every fact the planner decides
 	Gazetteer    location.File // stages, wards and facilities in force
 	StoppingRule StoppingRule  // Guide §14 (O6)
 	PassTimeout  time.Duration // default DefaultPassTimeout

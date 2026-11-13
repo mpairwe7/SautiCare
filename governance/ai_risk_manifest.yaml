@@ -53,6 +53,7 @@ risks:
       - internal/dispatch/rank_test.go::TestNewRankerRejectsUnknownCriterion
       - internal/dispatch/plan_test.go::TestPlanIsIdempotent
       - internal/platform/wiring/dispatch_test.go::TestDispatchLogicVersion
+      - internal/platform/pg/opstore/dispatch_integration_test.go::TestDispatchLifecycleIsRecordedAndConsistent
   - id: AIR-004
     title: Luganda speech recognition misreads a landmark (Sunbird WER 14.2%)
     nist_function: MEASURE
@@ -121,8 +122,11 @@ aibom_inventory:
       Deterministic ranking (M2, internal/dispatch): zone distance, then
       response history (smoothed accept rate, 90 days), then least recently
       dispatched; responder ID breaks ties. The ranking version and the gated
-      configuration fingerprint are stamped on every dispatch fact. Not
-      machine learning.
+      configuration fingerprint are stamped on every fact the planner decides
+      (alerts, acceptances, declines, lapses, stand-downs, forwards, dispatch
+      escalations); a facility acknowledgement, a forward timeout and a caller
+      notice carry none, as they follow from a versioned forward or
+      acceptance. Not machine learning.
   - bom-ref: sunbird-asr-whisper-large-v3-salt
     type: machine-learning-model
     name: Sunbird asr-whisper-large-v3-salt (Luganda and English ASR)

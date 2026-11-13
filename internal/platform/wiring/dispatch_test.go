@@ -14,9 +14,10 @@ import (
 	"sautihealth.com/sauti/internal/location"
 )
 
-// Every dispatch fact carries the ranking version and the fingerprint of
-// the gated configuration it ran under (Build Prompt §10.4: stamp the
-// version on each incident), in the format the audit ledger accepts.
+// Every fact the planner decides carries the ranking version and the
+// fingerprint of the gated configuration it ran under (Build Prompt §10.4:
+// stamp the version on each incident), in the format the audit ledger
+// accepts.
 func TestDispatchLogicVersion(t *testing.T) {
 	b := config.Bundle{Dispatch: config.Dispatch{RankingVersion: "default-2026-11-12"},
 		Fingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
