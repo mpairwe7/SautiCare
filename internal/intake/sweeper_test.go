@@ -28,11 +28,12 @@ type appendLog struct {
 	calls   []incident.AppendParams
 	batches int
 	fail    error
+	failFor uuid.UUID // refuse only this incident's batches
 }
 
 func (a *appendLog) AppendBatch(_ context.Context, ps []incident.AppendParams) ([]incident.Appended, error) {
-	if a.fail != nil {
-		return nil, a.fail
+	if a.fail != nil || (len(ps) > 0 && ps[0].IncidentID == a.failFor) {
+		return nil, errors.New("store unavailable")
 	}
 	a.batches++
 	a.calls = append(a.calls, ps...)
@@ -52,7 +53,7 @@ func (a *appendLog) payloads(id uuid.UUID) []string {
 func TestSweeperFlagsAbandonedBeforeCategory(t *testing.T) {
 	id := uuid.NewV7()
 	r, log := &idleReader{idle: []Idle{{ID: id, Danger: "no"}}}, &appendLog{}
-	n, err := NewSweeper(r, log, 2*time.Minute).RunOnce(context.Background())
+	n, err := NewSweeper(r, log, noCatchUp{}, 2*time.Minute).RunOnce(context.Background())
 	if err != nil || n != 1 || r.window != 2*time.Minute {
 		t.Fatalf("n=%d err=%v window=%v", n, err, r.window)
 	}
@@ -72,7 +73,7 @@ func TestSweeperEscalatesDangerYesBeforeDispatch(t *testing.T) {
 		{ID: dispatched, Danger: "yes", Category: "trauma", Dispatched: true},
 	}}
 	log := &appendLog{}
-	if _, err := NewSweeper(r, log, time.Minute).RunOnce(context.Background()); err != nil {
+	if _, err := NewSweeper(r, log, noCatchUp{}, time.Minute).RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := log.payloads(early); !slices.Contains(got, `incident.escalated {"reason":"abandoned_after_danger_yes"}`) {
@@ -97,7 +98,7 @@ func TestSweeperEscalatesRedBeforeDispatch(t *testing.T) {
 		{ID: yellow, Danger: "no", Category: "trauma", Severity: incident.SevYellow},
 	}}
 	log := &appendLog{}
-	if _, err := NewSweeper(r, log, time.Minute).RunOnce(context.Background()); err != nil {
+	if _, err := NewSweeper(r, log, noCatchUp{}, time.Minute).RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	red := `incident.escalated {"reason":"abandoned_red_before_dispatch"}`
@@ -122,7 +123,7 @@ func TestSweeperIsIdempotent(t *testing.T) {
 	id := uuid.NewV7()
 	r := &idleReader{idle: []Idle{{ID: id, Danger: "yes"}}}
 	log := &appendLog{}
-	sw := NewSweeper(r, log, time.Minute)
+	sw := NewSweeper(r, log, noCatchUp{}, time.Minute)
 	_, _ = sw.RunOnce(context.Background())
 	_, _ = sw.RunOnce(context.Background())
 	keys := map[string]int{}
@@ -151,11 +152,11 @@ func TestSweeperCommitsAbandonmentAndEscalationTogether(t *testing.T) {
 	id := uuid.NewV7()
 	r := &idleReader{idle: []Idle{{ID: id, Danger: "yes"}}}
 	failing := &appendLog{fail: errors.New("store unavailable")}
-	if _, err := NewSweeper(r, failing, time.Minute).RunOnce(context.Background()); err == nil || len(failing.calls) != 0 {
+	if _, err := NewSweeper(r, failing, noCatchUp{}, time.Minute).RunOnce(context.Background()); err == nil || len(failing.calls) != 0 {
 		t.Fatalf("failed batch: err=%v, stored %v", err, failing.calls)
 	}
 	log := &appendLog{}
-	if _, err := NewSweeper(r, log, time.Minute).RunOnce(context.Background()); err != nil {
+	if _, err := NewSweeper(r, log, noCatchUp{}, time.Minute).RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{`incident.flagged {"flag":"abandoned"}`, `incident.flagged {"flag":"abandoned_before_category"}`,
@@ -171,5 +172,86 @@ func TestNewSweeperRejectsNonPositiveIdle(t *testing.T) {
 			t.Fatal("NewSweeper accepted a zero idle time")
 		}
 	}()
-	NewSweeper(&idleReader{}, &appendLog{}, 0)
+	NewSweeper(&idleReader{}, &appendLog{}, noCatchUp{}, 0)
+}
+
+// noCatchUp is a store where nothing more can be recorded for an incident.
+type noCatchUp struct{}
+
+func (noCatchUp) CatchUp(context.Context, uuid.UUID) (bool, error) { return false, nil }
+
+// catchUps records the catch-ups and reports some incidents dispatched.
+type catchUps struct {
+	dispatches map[uuid.UUID]bool
+	asked      []uuid.UUID
+}
+
+func (c *catchUps) CatchUp(_ context.Context, id uuid.UUID) (bool, error) {
+	c.asked = append(c.asked, id)
+	return c.dispatches[id], nil
+}
+
+func escalations(log *appendLog, id uuid.UUID) []string {
+	var out []string
+	for _, p := range log.payloads(id) {
+		if p[:18] == "incident.escalated" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// F-04: a yellow call located to its ward whose dispatch never started (a
+// failed screen-7 request, the caller gone) reaches a coordinator.
+func TestSweeperEscalatesALocatedYellowCallWithoutT2(t *testing.T) {
+	id := uuid.NewV7()
+	r := &idleReader{idle: []Idle{{ID: id, Danger: "no", Category: "poisoning", Severity: incident.SevYellow, Ward: "w01"}}}
+	log, c := &appendLog{}, &catchUps{}
+	if _, err := NewSweeper(r, log, c, time.Minute).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := escalations(log, id); !slices.Equal(got, []string{`incident.escalated {"reason":"dispatch_not_started"}`}) || !slices.Equal(c.asked, []uuid.UUID{id}) {
+		t.Fatalf("escalations %v, catch-ups %v", got, c.asked)
+	}
+}
+
+// A recorded landmark is dispatched by the sweep, exactly as a redial would
+// (catch-up records T2): dispatch is under way, so nothing is escalated.
+func TestSweeperRecordsT2ByCatchUpWhenTheLandmarkIsKnown(t *testing.T) {
+	id := uuid.NewV7()
+	r := &idleReader{idle: []Idle{{ID: id, Danger: "no", Category: "poisoning", Severity: incident.SevYellow, Ward: "w01"}}}
+	log := &appendLog{}
+	if _, err := NewSweeper(r, log, &catchUps{dispatches: map[uuid.UUID]bool{id: true}}, time.Minute).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := escalations(log, id); len(got) != 0 || !slices.Contains(log.payloads(id), `incident.flagged {"flag":"abandoned"}`) {
+		t.Fatalf("events %v", log.payloads(id))
+	}
+}
+
+// Before a ward is given there is nowhere to send help: the call is only
+// flagged, as today (the PI decides whether ward-level dispatch should
+// change that, R-9).
+func TestSweeperBeforeTheWardStillOnlyFlags(t *testing.T) {
+	id := uuid.NewV7()
+	r := &idleReader{idle: []Idle{{ID: id, Danger: "no", Category: "trauma", Severity: incident.SevGreen}}}
+	log := &appendLog{}
+	if _, err := NewSweeper(r, log, &catchUps{}, time.Minute).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := log.payloads(id); !slices.Equal(got, []string{`incident.flagged {"flag":"abandoned"}`}) {
+		t.Fatalf("events %v", got)
+	}
+}
+
+// F-10: one incident whose writes keep failing does not hold up the others
+// behind it in the list; the failure is reported.
+func TestOneFailingIncidentDoesNotStopTheSweep(t *testing.T) {
+	bad, good := uuid.NewV7(), uuid.NewV7()
+	r := &idleReader{idle: []Idle{{ID: bad, Danger: "yes"}, {ID: good, Danger: "yes"}}}
+	log := &appendLog{failFor: bad}
+	n, err := NewSweeper(r, log, noCatchUp{}, time.Minute).RunOnce(context.Background())
+	if err == nil || n != 1 || len(escalations(log, good)) != 1 {
+		t.Fatalf("n=%d err=%v events %v", n, err, log.calls)
+	}
 }

@@ -88,7 +88,21 @@ func (s *Store) ListIdle(ctx context.Context, idleFor time.Duration) ([]intake.I
 	out := make([]intake.Idle, len(rows))
 	for i, r := range rows {
 		out[i] = intake.Idle{ID: uuid.UUID(r.ID.Bytes), Danger: deref(r.Danger), Category: deref(r.Category),
-			Severity: incident.Severity(deref(r.Severity)), Dispatched: r.Dispatched}
+			Severity: incident.Severity(deref(r.Severity)), Dispatched: r.Dispatched, Ward: deref(r.Ward)}
+	}
+	return out, nil
+}
+
+// ListOverdueDispatch lists dispatching incidents whose dispatch timer is
+// overdue by after and unleased (intake-gw's watchdog, F-05).
+func (s *Store) ListOverdueDispatch(ctx context.Context, after time.Duration) ([]intake.Overdue, error) {
+	rows, err := s.q.ListOverdueDispatch(ctx, pgtype.Interval{Microseconds: after.Microseconds(), Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("opstore: overdue dispatch: %w", err)
+	}
+	out := make([]intake.Overdue, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, intake.Overdue{ID: uuid.UUID(r.ID.Bytes), DueAt: r.DueAt.Time})
 	}
 	return out, nil
 }

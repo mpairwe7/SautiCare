@@ -163,7 +163,7 @@ func run(log *slog.Logger) error {
 	go func() { errc <- adminSrv.ListenAndServe() }()
 	// One abandonment sweeper across all intake-gw instances (leadership by
 	// advisory lock); it never blocks the request path.
-	sweeper := intake.NewSweeper(store, built.Incidents, cfg.Intake.AbandonAfter.Duration)
+	sweeper := intake.NewSweeper(store, built.Incidents, svc, cfg.Intake.AbandonAfter.Duration)
 	// The dispatch watchdog (review I8) runs here, apart from dispatch-worker:
 	// an incident dispatch has not touched two minutes after T2 is escalated.
 	watchdog := intake.NewWatchdog(store, built.Incidents, intake.DispatchWatchdogAfter)

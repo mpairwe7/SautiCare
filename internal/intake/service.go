@@ -508,6 +508,14 @@ func (s *Service) catchUp(ctx context.Context, id uuid.UUID, matched string) (in
 	return p, nil
 }
 
+// CatchUp records what an incident's stored answers imply but its log lacks
+// (its classification, T2), as a redial would, and reports whether dispatch
+// is under way (the abandonment sweeper; F-04).
+func (s *Service) CatchUp(ctx context.Context, id uuid.UUID) (bool, error) {
+	p, err := s.catchUp(ctx, id, "")
+	return p.T[2] != nil, err
+}
+
 // Flags recorded by intake.
 const (
 	FlagOutOfArea             = "out_of_area"

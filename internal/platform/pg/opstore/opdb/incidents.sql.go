@@ -421,7 +421,7 @@ func (q *Queries) ListEvents(ctx context.Context, incidentID pgtype.UUID) ([]Lis
 }
 
 const listIdle = `-- name: ListIdle :many
-SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
+SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched, ward FROM op.incidents
 WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - $1::int * interval '1 second'
   AND (NOT ('abandoned' = ANY (flags))
@@ -436,6 +436,7 @@ type ListIdleRow struct {
 	Category   *string
 	Severity   *string
 	Dispatched bool
+	Ward       *string
 }
 
 // An idle incident is listed until the sweeper flags it abandoned, and again
@@ -458,6 +459,7 @@ func (q *Queries) ListIdle(ctx context.Context, idleSeconds int32) ([]ListIdleRo
 			&i.Category,
 			&i.Severity,
 			&i.Dispatched,
+			&i.Ward,
 		); err != nil {
 			return nil, err
 		}
@@ -486,6 +488,44 @@ func (q *Queries) ListIncidentIDs(ctx context.Context) ([]pgtype.UUID, error) {
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOverdueDispatch = `-- name: ListOverdueDispatch :many
+SELECT t.incident_id::uuid AS id, t.due_at::timestamptz AS due_at FROM op.dispatch_timers t
+JOIN op.incidents i ON i.id = t.incident_id
+WHERE i.state = 'dispatching' AND t.due_at < clock_timestamp() - $1::interval
+  AND (t.lease_until IS NULL OR t.lease_until < clock_timestamp())
+ORDER BY t.due_at
+LIMIT 500
+`
+
+type ListOverdueDispatchRow struct {
+	ID    pgtype.UUID
+	DueAt pgtype.Timestamptz
+}
+
+// Dispatch watchdog, F-05: a dispatching incident whose dispatch timer is
+// overdue by after and not leased (no worker is processing it), T3 or not:
+// dispatch-worker died or is stuck after the first alert. Read by
+// intake-gw's leader (op_intake).
+func (q *Queries) ListOverdueDispatch(ctx context.Context, after pgtype.Interval) ([]ListOverdueDispatchRow, error) {
+	rows, err := q.db.Query(ctx, listOverdueDispatch, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOverdueDispatchRow
+	for rows.Next() {
+		var i ListOverdueDispatchRow
+		if err := rows.Scan(&i.ID, &i.DueAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

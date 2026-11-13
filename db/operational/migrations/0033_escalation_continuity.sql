@@ -63,3 +63,7 @@ REVOKE ALL ON FUNCTION op.claim_coordinator_calls(interval, int) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION op.claim_coordinator_calls(interval, int) TO op_ivr;
 
 GRANT SELECT (incident_id, acked_seq) ON op.coordinator_calls TO op_intake, op_ivr;
+
+-- 3. intake-gw's watchdog (op_intake) sees a dispatch timer overdue and
+--    unleased: a stall after T3 (F-05).
+GRANT SELECT (incident_id, due_at, lease_until) ON op.dispatch_timers TO op_intake;

@@ -122,7 +122,7 @@ SELECT floor(extract(epoch FROM clock_timestamp()) / sqlc.arg(seconds)::int)::bi
 -- abandoned incident, answered danger yes (or was classified red) and
 -- dropped again before T2. The flag is never cleared, and escalated is
 -- sticky. The second condition is intake.escalation's rule.
-SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
+SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched, ward FROM op.incidents
 WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - sqlc.arg(idle_seconds)::int * interval '1 second'
   AND (NOT ('abandoned' = ANY (flags))
@@ -181,4 +181,16 @@ WHERE i.state = 'dispatching' AND i.t3 IS NULL AND i.t2 < clock_timestamp() - sq
                                         'forwarded_to_facility', 'no_facility_acknowledged', 'dispatch_suspended',
                                         'dispatch_error', 'dispatch_stalled'))
 ORDER BY i.t2
+LIMIT 500;
+
+-- Dispatch watchdog, F-05: a dispatching incident whose dispatch timer is
+-- overdue by after and not leased (no worker is processing it), T3 or not:
+-- dispatch-worker died or is stuck after the first alert. Read by
+-- intake-gw's leader (op_intake).
+-- name: ListOverdueDispatch :many
+SELECT t.incident_id::uuid AS id, t.due_at::timestamptz AS due_at FROM op.dispatch_timers t
+JOIN op.incidents i ON i.id = t.incident_id
+WHERE i.state = 'dispatching' AND t.due_at < clock_timestamp() - sqlc.arg(after)::interval
+  AND (t.lease_until IS NULL OR t.lease_until < clock_timestamp())
+ORDER BY t.due_at
 LIMIT 500;
