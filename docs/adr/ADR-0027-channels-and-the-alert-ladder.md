@@ -76,7 +76,7 @@ Chosen option: **ports, adapters, attempts claimed once**.
 * Good: hard constraints 5 and 6 hold by construction and are tested. Every message and call is recorded per channel. Scenarios 7–11 run end to end against the real store and a fake Asterisk.
 * Good: the coordinator is never left unaware; escalations ring until acknowledged.
 * Bad: all wording is PENDING (the PI, plus Luganda translation). Voice needs recordings for every catalogue prompt. Telephony (trunk, caller ID, coordinator line) is provisioned in P0.
-* Neutral: an accepted responder dialling the menu sees their active assignment (incident number, ward, landmark); a menu session is pinned to the alert of its first screen, so a newer alert cannot redirect an answer under way.
+* Neutral: an accepted responder dialling the menu sees their active assignment (incident number, ward, landmark), ahead of any alert still pending, which they could not take (`already_assigned`); without an assignment, the newest pending alert of the hour. A menu session is pinned to the alert of its first screen, so a newer alert cannot redirect an answer under way (`op.responder_menu_alert`, migration 0020; CodeRabbit PR #11).
 
 ### Confirmation
 
