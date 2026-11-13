@@ -176,3 +176,11 @@ const (
 	BridgeNoAnswer  = "no_answer"
 	BridgeFailed    = "failed"
 )
+
+// Surge is more emergencies than responders (Build Prompt §10.4): the
+// incidents waiting for a first acceptance against the responders free now.
+// Incidents queue by severity, then T2; nothing is dropped.
+type Surge struct {
+	Waiting, Available int
+	Surge              bool
+}

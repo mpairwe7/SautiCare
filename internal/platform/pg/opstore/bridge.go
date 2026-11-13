@@ -72,3 +72,12 @@ func (s *Store) FinishBridgeCall(ctx context.Context, id uuid.UUID, result strin
 	_, err := s.q.FinishBridgeCall(ctx, opdb.FinishBridgeCallParams{ID: pgID(id), Result: result})
 	return mapErr(err)
 }
+
+// DispatchSurge reports the surge flag (op_readonly, op_console, op_dispatch).
+func (s *Store) DispatchSurge(ctx context.Context) (dispatch.Surge, error) {
+	r, err := s.q.DispatchSurge(ctx)
+	if err != nil {
+		return dispatch.Surge{}, fmt.Errorf("opstore: surge: %w", err)
+	}
+	return dispatch.Surge{Waiting: int(r.Waiting), Available: int(r.Available), Surge: r.Surge}, nil
+}

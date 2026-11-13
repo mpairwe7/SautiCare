@@ -244,3 +244,7 @@ SELECT op.bridge_call_answered(sqlc.arg(id)::uuid);
 
 -- name: FinishBridgeCall :one
 SELECT op.finish_bridge_call(sqlc.arg(id)::uuid, sqlc.arg(result)::text)::boolean AS changed;
+
+-- name: DispatchSurge :one
+SELECT s.waiting::int AS waiting, s.available::int AS available, s.surge::boolean AS surge
+FROM op.dispatch_surge() AS s(waiting, available, surge);

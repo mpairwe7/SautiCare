@@ -806,6 +806,24 @@ func (q *Queries) DispatchRedSince(ctx context.Context, incidentID pgtype.UUID) 
 	return red_since, err
 }
 
+const dispatchSurge = `-- name: DispatchSurge :one
+SELECT s.waiting::int AS waiting, s.available::int AS available, s.surge::boolean AS surge
+FROM op.dispatch_surge() AS s(waiting, available, surge)
+`
+
+type DispatchSurgeRow struct {
+	Waiting   int32
+	Available int32
+	Surge     bool
+}
+
+func (q *Queries) DispatchSurge(ctx context.Context) (DispatchSurgeRow, error) {
+	row := q.db.QueryRow(ctx, dispatchSurge)
+	var i DispatchSurgeRow
+	err := row.Scan(&i.Waiting, &i.Available, &i.Surge)
+	return i, err
+}
+
 const dispatchSuspended = `-- name: DispatchSuspended :one
 SELECT op.dispatch_suspended()::boolean AS suspended
 `

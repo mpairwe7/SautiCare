@@ -696,6 +696,17 @@ func cmdDispatch(ctx context.Context, args []string, out io.Writer) error {
 			state = "SUSPENDED"
 		}
 		fmt.Fprintf(out, "dispatch: %s\n", state)
+		// Surge (Build Prompt §10.4): calls waiting for a first acceptance
+		// against responders free now; they queue by severity, then T2.
+		sg, err := store.DispatchSurge(ctx)
+		if err != nil {
+			return err
+		}
+		flag := "no"
+		if sg.Surge {
+			flag = "YES"
+		}
+		fmt.Fprintf(out, "surge: %s (%d waiting, %d free responders)\n", flag, sg.Waiting, sg.Available)
 		log, err := store.ControlLog(ctx, 10)
 		if err != nil {
 			return err
