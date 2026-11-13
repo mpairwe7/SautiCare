@@ -79,7 +79,14 @@ func (s *Store) Escalate(ctx context.Context, incidentID uuid.UUID, reason, scop
 		return err
 	}
 	if every > 0 {
-		n, err := s.q.ClockWindow(ctx, int32(every/time.Second))
+		secs, err := i32(int(every / time.Second))
+		if err != nil {
+			return err
+		}
+		if secs < 1 {
+			return fmt.Errorf("opstore: escalation window %v is under a second", every)
+		}
+		n, err := s.q.ClockWindow(ctx, secs)
 		if err != nil {
 			return mapErr(err)
 		}
