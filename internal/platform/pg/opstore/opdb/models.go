@@ -136,14 +136,18 @@ type OpForward struct {
 }
 
 type OpForwardAttempt struct {
-	ID          pgtype.UUID
-	IncidentID  pgtype.UUID
-	FacilityID  string
-	Channel     string
-	Status      string
-	ProviderRef *string
-	ClaimedAt   pgtype.Timestamptz
-	SettledAt   pgtype.Timestamptz
+	ID              pgtype.UUID
+	IncidentID      pgtype.UUID
+	FacilityID      string
+	Channel         string
+	Status          string
+	ProviderRef     *string
+	ClaimedAt       pgtype.Timestamptz
+	SettledAt       pgtype.Timestamptz
+	DeliveryStatus  *string
+	DeliveryFailure *string
+	DeliveryFinal   bool
+	DeliveryAt      pgtype.Timestamptz
 }
 
 type OpGazetteerVersion struct {
