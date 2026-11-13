@@ -20,6 +20,7 @@ Migrations are forward-only and checksummed (ADR-0010). Each store applies `db/<
 ## Impact
 
 * A failing migration rolls back entirely and the old schema keeps serving. Services are deployed after their migrations.
+* A file that creates an index blocks writes to that table until the file commits: the migrator runs each file in one transaction, where PostgreSQL refuses `CREATE INDEX CONCURRENTLY`. Runtime statements time out after 5 s (`statement_timeout`). Measured on PostgreSQL 18.6 on a development machine, migration 0026's partial index on `op.incidents` builds in about 0.25 s over 1,000,000 incidents (411 MB) and in under 20 ms over 100,000, so at pilot volumes such a file is applied with intake running. Before applying a file that indexes a table far larger than that, check the table's size (`SELECT pg_size_pretty(pg_total_relation_size('op.incidents'));`) and apply it outside busy hours.
 * A checksum mismatch blocks every further migration on that store until resolved.
 * Before applying anything, the migrator checks the whole recorded history: an applied migration missing from the repository (`ErrMissingMigration`) or edited (`ErrChecksumMismatch`) stops the run with nothing applied.
 
