@@ -70,14 +70,27 @@ type BridgeConfig struct {
 	Ring     time.Duration // how long the other party's phone rings (default 30 s)
 	// NoAnswerAfter ends a leg nobody answered (default Ring + 5 s).
 	NoAnswerAfter time.Duration
-	Language      string
-	Log           *slog.Logger
-	OpTimeout     time.Duration
+	// NoInput is how long a choice waits for a key, counted from the end of
+	// its prompt or from the last key (default 15 s, as on the toll-free
+	// line): a silent choice is asked again, and after choiceTries a
+	// coordinator takes the call.
+	NoInput time.Duration
+	// PromptMax is the longest a bridge prompt plays (default 30 s). The
+	// wait armed when a prompt starts is PromptMax + NoInput, so a prompt
+	// whose end event is lost still ends the wait.
+	PromptMax time.Duration
+	Language  string
+	Log       *slog.Logger
+	OpTimeout time.Duration
 }
 
 // choiceTries is how many times a choice (the last 4 digits, a role, a
-// party) may be keyed before a coordinator takes the call.
+// party) may be keyed wrongly or go unanswered before a coordinator takes
+// the call.
 const choiceTries = 3
+
+// choicePrompt is each choice's prompt, asked again after a silent try.
+var choicePrompt = map[string]string{"side": "bridge-choose-side", "role": "bridge-choose-role", "last4": "bridge-last-four"}
 
 // EventChannelDestroyed: a channel ended, including a leg never answered.
 const EventChannelDestroyed = ari.EventChannelDestroyed
@@ -99,7 +112,9 @@ type bridgeCall struct {
 	plays    int
 	current  string
 	hangupOn string
-	timer    *time.Timer
+	timer    *time.Timer // the other party's ring time
+	wait     *time.Timer // a choice's no-input time, or the closing prompt's hang-up backstop
+	waitGen  int         // bumped whenever the wait is started again or stopped: a stale timer does nothing
 }
 
 // Bridge runs bridge calls: the bridge number's inbound calls and the legs
@@ -120,6 +135,12 @@ func NewBridge(c BridgeConfig) (*Bridge, error) {
 	if c.NoAnswerAfter <= 0 {
 		c.NoAnswerAfter = c.Ring + 5*time.Second
 	}
+	if c.NoInput <= 0 {
+		c.NoInput = 15 * time.Second
+	}
+	if c.PromptMax <= 0 {
+		c.PromptMax = 30 * time.Second
+	}
 	return &Bridge{c: c, calls: map[string]*bridgeCall{}, byID: map[uuid.UUID]*bridgeCall{}}, nil
 }
 
@@ -138,7 +159,9 @@ func (b *Bridge) Handle(ctx context.Context, e Event) {
 			b.hangup(ctx, e.ChannelID)
 		}
 	case EventDTMF:
-		if st := b.calls[e.ChannelID]; st != nil && !st.done && e.ChannelID == st.inbound && st.choosing != "" {
+		// Only a key the choice offers cuts the prompt: any other is not
+		// input and leaves the prompt playing.
+		if st := b.calls[e.ChannelID]; st != nil && !st.done && e.ChannelID == st.inbound && offered(st.choosing, e.Digit) {
 			b.cut(ctx, st)
 			b.key(ctx, st, e.Digit)
 		}
@@ -146,8 +169,12 @@ func (b *Bridge) Handle(ctx context.Context, e Event) {
 		if st := b.calls[e.ChannelID]; st != nil {
 			if st.current == e.PlaybackID {
 				st.current = ""
+				if !st.done && st.choosing != "" {
+					b.arm(ctx, st, b.c.NoInput) // the prompt was heard: the wait runs from its end
+				}
 			}
 			if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+				b.disarm(st)
 				b.hangup(ctx, e.ChannelID)
 			}
 		}
@@ -206,7 +233,7 @@ func (b *Bridge) start(ctx context.Context, e Event) {
 	case len(asResp) > 0 && len(asCaller) > 0:
 		// A responder who also reported an emergency: which party?
 		st.choosing = "side"
-		b.play(ctx, st, "bridge-choose-side")
+		b.ask(ctx, st, "bridge-choose-side")
 	case len(asResp) > 0:
 		b.proceed(ctx, st, asResp, roleBy(asResp[0].Role))
 	default:
@@ -224,10 +251,10 @@ func (b *Bridge) proceed(ctx context.Context, st *bridgeCall, targets []dispatch
 		b.connect(ctx, st, targets[0])
 	case by == dispatch.BridgeByCaller:
 		st.choosing = "role"
-		b.play(ctx, st, "bridge-choose-role")
+		b.ask(ctx, st, "bridge-choose-role")
 	default:
 		st.choosing = "last4"
-		b.play(ctx, st, "bridge-last-four")
+		b.ask(ctx, st, "bridge-last-four")
 	}
 }
 
@@ -283,40 +310,42 @@ func roleBy(r responder.Role) string {
 	return dispatch.BridgeByVHT
 }
 
-// key takes the last 4 digits (a responder with several assignments) or the
-// role (a caller with both roles assigned).
-func (b *Bridge) key(ctx context.Context, st *bridgeCall, digit string) {
-	again := func(sound string) {
-		if st.tries++; st.tries >= choiceTries {
-			b.toCoordinator(ctx, st)
-			return
-		}
-		b.play(ctx, st, sound)
+// offered reports whether the choice under way takes digit: 1 or 2 for a
+// party or a role, any digit for the last 4 digits.
+func offered(choosing, digit string) bool {
+	switch choosing {
+	case "side", "role":
+		return digit == "1" || digit == "2"
+	case "last4":
+		return len(digit) == 1 && digit[0] >= '0' && digit[0] <= '9'
 	}
+	return false
+}
+
+// key takes a key the choice offers: the party (a responder who also
+// reported an emergency), the role (a caller with both roles assigned) or one
+// of the last 4 digits (a responder with several assignments). It is input:
+// the wait starts again from it.
+func (b *Bridge) key(ctx context.Context, st *bridgeCall, digit string) {
+	b.arm(ctx, st, b.c.NoInput)
 	switch st.choosing {
 	case "side":
-		switch digit {
-		case "1":
+		if digit == "1" {
 			b.proceed(ctx, st, st.asResp, roleBy(st.asResp[0].Role))
-		case "2":
+		} else {
 			b.proceed(ctx, st, st.asCaller, dispatch.BridgeByCaller)
-		default:
-			again("bridge-choose-side")
 		}
 		return
 	case "role":
 		want := map[string]responder.Role{"1": responder.RoleVHT, "2": responder.RoleTransporter}[digit]
 		for _, t := range st.targets {
-			if want != "" && t.Role == want {
+			if t.Role == want {
 				st.choosing = ""
 				b.connect(ctx, st, t)
 				return
 			}
 		}
-		again("bridge-choose-role")
-		return
-	}
-	if len(digit) != 1 || digit[0] < '0' || digit[0] > '9' {
+		b.again(ctx, st, "bridge-choose-role")
 		return
 	}
 	st.digits += digit
@@ -336,12 +365,76 @@ func (b *Bridge) key(ctx context.Context, st *bridgeCall, digit string) {
 		b.connect(ctx, st, match[0])
 		return
 	}
-	again("bridge-last-four-again")
+	b.again(ctx, st, "bridge-last-four-again")
+}
+
+// again counts a wrong or silent try: the choice is asked again, and after
+// choiceTries a coordinator takes the call (rule 14).
+func (b *Bridge) again(ctx context.Context, st *bridgeCall, sound string) {
+	st.digits = ""
+	if st.tries++; st.tries >= choiceTries {
+		b.toCoordinator(ctx, st)
+		return
+	}
+	b.ask(ctx, st, sound)
+}
+
+// ask plays a choice's prompt and starts its wait, long enough for the
+// prompt and the no-input time after it. A prompt that cannot be played
+// leaves the caller without instructions, so a coordinator takes the call at
+// once (rule 14), whatever tries remain.
+func (b *Bridge) ask(ctx context.Context, st *bridgeCall, sound string) {
+	if err := b.play(ctx, st, b.sound(sound)); err != nil {
+		b.c.Log.Error("bridge prompt not played; to a coordinator", "prompt", sound, "err", err)
+		b.toCoordinator(ctx, st)
+		return
+	}
+	b.arm(ctx, st, b.c.PromptMax+b.c.NoInput)
+}
+
+// arm starts the call's wait again, ending d from now. It runs under b.mu,
+// and so does the timer's work (noInput).
+func (b *Bridge) arm(ctx context.Context, st *bridgeCall, d time.Duration) {
+	b.disarm(st)
+	gen, bg := st.waitGen, context.WithoutCancel(ctx) // the wait outlives the event
+	st.wait = time.AfterFunc(d, func() { b.noInput(bg, st, gen) })
+}
+
+// disarm stops the call's wait; a timer already firing finds its generation
+// gone and does nothing.
+func (b *Bridge) disarm(st *bridgeCall) {
+	st.waitGen++
+	if st.wait != nil {
+		st.wait.Stop()
+		st.wait = nil
+	}
+}
+
+// noInput ends a wait that ran out: a choice heard no key it offers (a
+// silent try: asked again, or a coordinator after choiceTries), or a closing
+// prompt's end never arrived (the call is hung up all the same).
+func (b *Bridge) noInput(ctx context.Context, st *bridgeCall, gen int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if st.waitGen != gen {
+		return
+	}
+	st.wait = nil
+	switch {
+	case st.hangupOn != "":
+		b.hangup(ctx, st.inbound)
+	case !st.done && st.choosing != "":
+		octx, cancel := b.op(ctx)
+		defer cancel()
+		b.cut(octx, st)
+		b.again(ctx, st, choicePrompt[st.choosing])
+	}
 }
 
 // connect logs the bridge call, puts the caller in a mixing bridge with a
 // hold prompt and calls the other party, showing Sauti's number.
 func (b *Bridge) connect(ctx context.Context, st *bridgeCall, t dispatch.BridgeTarget) {
+	b.disarm(st) // the choice is made
 	octx, cancel := b.op(ctx)
 	defer cancel()
 	id, err := b.c.Store.BeginBridgeCall(octx, t.IncidentID, st.by)
@@ -371,7 +464,11 @@ func (b *Bridge) connect(ctx context.Context, st *bridgeCall, t dispatch.BridgeT
 	}
 	// The connecting prompt, then ringback until the other party answers
 	// (never dead air, which a basic-phone user takes for a dropped call).
-	b.playAll(ctx, st, b.sound("bridge-connecting"), ari.RingbackTone)
+	if err := b.play(ctx, st, b.sound("bridge-connecting"), ari.RingbackTone); err != nil {
+		// The other party is called all the same; the caller hears silence
+		// until the answer.
+		b.c.Log.Warn("bridge connecting prompt not played", "bridge_call", id, "err", err)
+	}
 	octx2, cancel2 := context.WithTimeout(ctx, originateTimeout)
 	defer cancel2()
 	leg, err := b.c.ARI.Originate(octx2, endpoint, b.c.CallerID, []string{"bridge-leg", id.String()}, b.c.Ring)
@@ -440,6 +537,7 @@ func (b *Bridge) legAnswered(ctx context.Context, e Event) {
 // ended: either party hung up — the other is hung up and the call logged.
 func (b *Bridge) ended(ctx context.Context, st *bridgeCall, ch string) {
 	delete(b.calls, ch)
+	b.disarm(st)
 	if st.done {
 		return
 	}
@@ -490,6 +588,7 @@ func (b *Bridge) fail(ctx context.Context, st *bridgeCall, err error) {
 // coordinator; if even that fails, the call ends.
 func (b *Bridge) toCoordinator(ctx context.Context, st *bridgeCall) {
 	st.done = true
+	b.disarm(st)
 	octx, cancel := b.op(context.WithoutCancel(ctx))
 	defer cancel()
 	b.cut(octx, st)
@@ -530,26 +629,24 @@ func (b *Bridge) closing(ctx context.Context, st *bridgeCall, sound string) {
 	st.plays++
 	st.hangupOn = endAfter(octx, b.c.ARI, st.inbound, fmt.Sprintf("%s-b%d", st.inbound, st.plays), []string{b.sound(sound)})
 	st.current = st.hangupOn
+	if st.hangupOn != "" {
+		// The hang-up follows the prompt's end event; should that be lost,
+		// the call still ends.
+		b.arm(ctx, st, b.c.PromptMax+b.c.NoInput)
+	}
 }
 
-func (b *Bridge) play(ctx context.Context, st *bridgeCall, sound string) {
+// play plays media to the calling party: the prompt a key cuts.
+func (b *Bridge) play(ctx context.Context, st *bridgeCall, media ...string) error {
 	octx, cancel := b.op(ctx)
 	defer cancel()
 	st.plays++
 	pb := fmt.Sprintf("%s-b%d", st.inbound, st.plays)
-	if b.c.ARI.Play(octx, st.inbound, pb, []string{b.sound(sound)}) == nil {
-		st.current = pb
+	if err := b.c.ARI.Play(octx, st.inbound, pb, media); err != nil {
+		return err
 	}
-}
-
-func (b *Bridge) playAll(ctx context.Context, st *bridgeCall, media ...string) {
-	octx, cancel := b.op(ctx)
-	defer cancel()
-	st.plays++
-	pb := fmt.Sprintf("%s-b%d", st.inbound, st.plays)
-	if b.c.ARI.Play(octx, st.inbound, pb, media) == nil {
-		st.current = pb
-	}
+	st.current = pb
+	return nil
 }
 
 func (b *Bridge) cut(ctx context.Context, st *bridgeCall) { cut(ctx, b.c.ARI, &st.current) }

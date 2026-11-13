@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
@@ -37,6 +38,8 @@ type bridgeARI struct {
 	ops       []string          // bridge and caller-ID operations, in order
 	callerID  map[string]string // channel → caller ID Sauti set
 	continued []string
+	stopped   []string // playbacks stopped (a prompt cut by a key)
+	failPlay  string   // a sound whose playback Asterisk refuses
 }
 
 func (a *bridgeARI) Continue(_ context.Context, ch, dialContext, _ string, _ int) error {
@@ -75,11 +78,19 @@ func (a *bridgeARI) Answer(_ context.Context, ch string) error {
 func (a *bridgeARI) Play(_ context.Context, ch, pb string, sounds []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.failPlay != "" && slices.Contains(sounds, a.failPlay) {
+		return errors.New("ari: playback refused")
+	}
 	a.plays[ch] = append(a.plays[ch], sounds)
 	a.pbs[ch] = append(a.pbs[ch], pb)
 	return nil
 }
-func (a *bridgeARI) StopPlayback(context.Context, string) error { return nil }
+func (a *bridgeARI) StopPlayback(_ context.Context, pb string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.stopped = append(a.stopped, pb)
+	return nil
+}
 func (a *bridgeARI) Hangup(_ context.Context, ch string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -123,6 +134,37 @@ func (a *bridgeARI) wasHungUp(ch string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return slices.Contains(a.hungUp, ch)
+}
+
+// heard counts the times sound was played on ch.
+func (a *bridgeARI) heard(ch, sound string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, p := range a.plays[ch] {
+		if slices.Contains(p, sound) {
+			n++
+		}
+	}
+	return n
+}
+
+func (a *bridgeARI) handedOver() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.continued)
+}
+
+func (a *bridgeARI) dialled() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.endpoints)
+}
+
+func (a *bridgeARI) stops() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.stopped)
 }
 
 const (
@@ -227,6 +269,12 @@ func bridgeRig(t *testing.T, st *bridgeStore, ring time.Duration) (*Bridge, *bri
 
 func dialIn(b *Bridge, ch, from string) {
 	b.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: ch, CallerNumber: from, Args: []string{"bridge"}})
+}
+
+func press(b *Bridge, ch, keys string) {
+	for _, k := range keys {
+		b.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: string(k)})
+	}
 }
 
 // noNumbers fails if a phone number reached the logs, in any common form.
@@ -455,5 +503,155 @@ func TestOutboundRoutesBridgeEventsOnce(t *testing.T) {
 	}
 	if len(a.endpoints) != 1 {
 		t.Fatalf("3210 did not connect: %v", a.endpoints)
+	}
+}
+
+// twoAssignments is a responder holding two open assignments: the bridge
+// asks for the last 4 digits (3210 picks the second).
+func twoAssignments() *bridgeStore {
+	resp := uuid.NewV7()
+	return &bridgeStore{responders: map[string]uuid.UUID{responderNum: resp},
+		byResp: map[uuid.UUID][]dispatch.BridgeTarget{resp: {target("1234567894", responder.RoleTransporter), target("9876543210", responder.RoleTransporter)}}}
+}
+
+// CodeRabbit PR #12 (the ledger's deferred minor): a choice nobody answers
+// cannot hold the call open. With no key — or only part of the last 4
+// digits — for the no-input time (15 s from the end of the prompt, as on the
+// toll-free line) the choice is asked again, and after three silent or wrong
+// tries a coordinator takes the call (rule 14). A lost end-of-prompt event
+// does not stop this: the wait armed when a prompt starts (the longest
+// prompt, 30 s, plus the no-input time) still ends. A key the choice does not
+// offer is not input and leaves the prompt playing. The end of the choice or
+// of the call stops the time, and a closing prompt whose end never comes is
+// still followed by the hang-up.
+func TestBridgeChoiceWithNoKeyGoesToACoordinator(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const lastFour = "sauti/en/bridge-last-four"
+		// Silence, and no end-of-prompt event ever arrives.
+		b, a, _ := bridgeRig(t, twoAssignments(), 30*time.Second)
+		if b.c.NoInput != 15*time.Second || b.c.PromptMax != 30*time.Second {
+			t.Fatalf("defaults: no input %v, longest prompt %v", b.c.NoInput, b.c.PromptMax)
+		}
+		dialIn(b, "in-1", responderNum)
+		// Each wait is 45 s from its prompt's start: asked again at 45 s and
+		// 90 s, to a coordinator at 135 s.
+		for _, step := range []struct {
+			sleep time.Duration
+			heard int
+		}{{44 * time.Second, 1}, {2 * time.Second, 2}, {43 * time.Second, 2}, {2 * time.Second, 3}} {
+			time.Sleep(step.sleep)
+			synctest.Wait()
+			if a.heard("in-1", lastFour) != step.heard {
+				t.Fatalf("at %v: prompt heard %d times, want %d", time.Since(time.Unix(946684800, 0)), a.heard("in-1", lastFour), step.heard)
+			}
+		}
+		time.Sleep(45 * time.Second)
+		synctest.Wait()
+		if !slices.Equal(a.handedOver(), []string{"in-1→" + FallbackContext}) || len(a.dialled()) != 0 {
+			t.Fatalf("three silent tries: handed over %v dialled %v", a.handedOver(), a.dialled())
+		}
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if a.heard("in-1", lastFour) != 3 || len(a.handedOver()) != 1 {
+			t.Fatalf("the time ran on after the hand-over: plays %v handed over %v", a.plays, a.handedOver())
+		}
+
+		// Part of the digits, then silence: counted from the last key, the
+		// choice is asked again with the digits cleared.
+		b2, a2, _ := bridgeRig(t, twoAssignments(), 30*time.Second)
+		dialIn(b2, "in-2", responderNum)
+		press(b2, "in-2", "*#")
+		if len(a2.stops()) != 0 {
+			t.Fatalf("a key the choice does not offer cut the prompt: %v", a2.stops())
+		}
+		time.Sleep(10 * time.Second)
+		b2.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: "in-2", PlaybackID: a2.lastPlayback("in-2")})
+		time.Sleep(10 * time.Second)
+		press(b2, "in-2", "32")
+		time.Sleep(14 * time.Second)
+		synctest.Wait()
+		if a2.heard("in-2", lastFour) != 1 {
+			t.Fatalf("asked again 14 s after a key: %v", a2.plays)
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if a2.heard("in-2", lastFour) != 2 {
+			t.Fatalf("part of the digits, then silence: not asked again: %v", a2.plays)
+		}
+		press(b2, "in-2", "3210") // with "32" kept this would read 3232
+		if len(a2.dialled()) != 1 {
+			t.Fatalf("3210 after a silent try did not connect: %v", a2.plays)
+		}
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if len(a2.handedOver()) != 0 || a2.heard("in-2", lastFour) != 2 {
+			t.Fatalf("the time ran on after the choice: handed over %v plays %v", a2.handedOver(), a2.plays)
+		}
+
+		// The prompt's end arrives: the 15 s run from it, not from its start.
+		b5, a5, _ := bridgeRig(t, twoAssignments(), 30*time.Second)
+		dialIn(b5, "in-5", responderNum)
+		time.Sleep(5 * time.Second)
+		b5.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: "in-5", PlaybackID: a5.lastPlayback("in-5")})
+		time.Sleep(14 * time.Second)
+		synctest.Wait()
+		if a5.heard("in-5", lastFour) != 1 {
+			t.Fatalf("asked again 14 s after the prompt ended: %v", a5.plays)
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if a5.heard("in-5", lastFour) != 2 {
+			t.Fatalf("not asked again 16 s after the prompt ended: %v", a5.plays)
+		}
+
+		// The caller hangs up mid-choice: the time stops with the call.
+		b3, a3, _ := bridgeRig(t, twoAssignments(), 30*time.Second)
+		dialIn(b3, "in-3", responderNum)
+		b3.Handle(context.Background(), Event{Type: EventStasisEnd, ChannelID: "in-3"})
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if len(a3.handedOver()) != 0 || a3.heard("in-3", lastFour) != 1 {
+			t.Fatalf("a call that ended was still served: handed over %v plays %v", a3.handedOver(), a3.plays)
+		}
+
+		// A closing prompt whose end never arrives: hung up all the same.
+		b4, a4, _ := bridgeRig(t, &bridgeStore{}, 30*time.Second)
+		dialIn(b4, "in-4", "+256772000999")
+		time.Sleep(46 * time.Second)
+		synctest.Wait()
+		if !a4.wasHungUp("in-4") {
+			t.Fatal("a closing prompt with no end event held the call open")
+		}
+	})
+}
+
+// CodeRabbit PR #12: a choice whose prompt Asterisk cannot play leaves the
+// caller with no instructions, so a coordinator takes the call at once
+// (rule 14) — not after the tries a wrong key would have.
+func TestBridgePromptThatCannotPlayGoesToACoordinator(t *testing.T) {
+	self := uuid.NewV7()
+	helping := target("1234567894", responder.RoleVHT)
+	helping.ResponderID = self
+	for _, c := range []struct {
+		name, sound, from, keys string
+		store                   *bridgeStore
+	}{
+		{"last four", "sauti/en/bridge-last-four", responderNum, "", twoAssignments()},
+		{"again", "sauti/en/bridge-last-four-again", responderNum, "1111", twoAssignments()},
+		{"role", "sauti/en/bridge-choose-role", callerNum, "", &bridgeStore{byCaller: map[string][]dispatch.BridgeTarget{
+			callerNum: {target("1234567894", responder.RoleVHT), target("1234567894", responder.RoleTransporter)}}}},
+		{"side", "sauti/en/bridge-choose-side", responderNum, "", &bridgeStore{responders: map[string]uuid.UUID{responderNum: self},
+			byResp:   map[uuid.UUID][]dispatch.BridgeTarget{self: {helping}},
+			byCaller: map[string][]dispatch.BridgeTarget{responderNum: {target("5555555555", responder.RoleTransporter)}}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b, a, _ := bridgeRig(t, c.store, 30*time.Second)
+			a.failPlay = c.sound
+			dialIn(b, "in-1", c.from)
+			press(b, "in-1", c.keys)
+			if !slices.Equal(a.handedOver(), []string{"in-1→" + FallbackContext}) || len(a.dialled()) != 0 {
+				t.Fatalf("%s not played: handed over %v dialled %v", c.sound, a.handedOver(), a.dialled())
+			}
+		})
 	}
 }
