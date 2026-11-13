@@ -140,7 +140,10 @@ const maxRounds = 32
 // Process plans one due incident until nothing more is due now, delivers,
 // and stores the next wake for the generation it was claimed at.
 func (e *Engine) Process(ctx context.Context, due Due) error {
-	refused := map[uuid.UUID]bool{} // refused by the database this wake (a lapse since the read)
+	// Refused by the database this wake: a responder who lapsed since the
+	// read, a facility it would not take (a suspension committed since the
+	// read). The next round re-reads the facts without them.
+	refused := refusals{responders: map[uuid.UUID]bool{}, facilities: map[string]bool{}}
 	for range maxRounds {
 		snap, err := e.store.DispatchSnapshot(ctx, due.IncidentID)
 		if err != nil {
@@ -154,11 +157,12 @@ func (e *Engine) Process(ctx context.Context, due Due) error {
 		if err != nil {
 			return err
 		}
-		st, pool, err := e.state(ctx, snap, suspended, now, refused)
+		st, pool, err := e.state(ctx, snap, suspended, now, refused.responders)
 		if err != nil {
 			return err
 		}
-		acts, wake := Plan(st, pool, e.gazetteer.Facilities, e.params, now)
+		facilities := slices.DeleteFunc(slices.Clone(e.gazetteer.Facilities), func(f location.Facility) bool { return refused.facilities[f.ID] })
+		acts, wake := Plan(st, pool, facilities, e.params, now)
 		if len(acts) == 0 {
 			if err := e.deliver(ctx, snap); err != nil {
 				return err
@@ -258,7 +262,13 @@ func (p rankedPool) Ranked(role responder.Role, ring int) []Candidate {
 	return out
 }
 
-func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, refused map[uuid.UUID]bool) error {
+// refusals are what the database refused during one wake.
+type refusals struct {
+	responders map[uuid.UUID]bool
+	facilities map[string]bool
+}
+
+func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, refused refusals) error {
 	var err error
 	switch a.Kind {
 	case ActAlert:
@@ -267,7 +277,7 @@ func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, re
 		if errors.Is(err, incident.ErrIllegalTransition) {
 			// The responder lapsed or was taken since the read: leave them
 			// out and re-plan; the database is the last guard (review focus 4).
-			refused[a.ResponderID] = true
+			refused.responders[a.ResponderID] = true
 			return nil
 		}
 	case ActExpire:
@@ -278,6 +288,12 @@ func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, re
 		_, err = e.store.DispatchEscalate(ctx, incidentID, a.Reason, a.Role, e.logic)
 	case ActForward:
 		_, err = e.store.RecordForward(ctx, incidentID, a.FacilityID, e.gazetteer.Version, e.logic)
+		if errors.Is(err, incident.ErrIllegalTransition) {
+			// Suspended since the read (or a facility the database will not
+			// take): re-plan without it; the next round reads the suspension.
+			refused.facilities[a.FacilityID] = true
+			return nil
+		}
 	case ActForwardTimeout:
 		_, err = e.store.TimeOutForward(ctx, incidentID, a.FacilityID)
 	case ActCallerSMS:

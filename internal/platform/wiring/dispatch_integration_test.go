@@ -40,6 +40,15 @@ type hooked struct {
 	// refuse, if set, makes the database refuse alerts to these responders
 	// (a gate lapsing between the worker's read and its write).
 	refuse map[uuid.UUID]bool
+	// beforeForward, if set, runs before a forward is recorded.
+	beforeForward func()
+}
+
+func (c *hooked) RecordForward(ctx context.Context, incidentID uuid.UUID, facility, gazetteerVersion, logicVersion string) (bool, error) {
+	if c.beforeForward != nil {
+		c.beforeForward()
+	}
+	return c.Store.RecordForward(ctx, incidentID, facility, gazetteerVersion, logicVersion)
 }
 
 func (c *hooked) IssueAlert(ctx context.Context, p dispatch.IssueParams) (dispatch.Issued, error) {
@@ -557,5 +566,34 @@ func TestEngineDeliversStandDownsAfterClosure(t *testing.T) {
 	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(context.Background(),
 		"SELECT due_at = 'infinity' FROM op.dispatch_timers WHERE incident_id = $1", id).Scan(&parked); err != nil || !parked {
 		t.Fatalf("not parked after closure: %v %v", parked, err)
+	}
+}
+
+// CodeRabbit PR #10 (4557205847): a suspension that commits after the
+// worker read "active" and before it records a forward makes the database
+// refuse the forward; the engine re-plans, reads the suspension, and hands
+// the incident to the coordinator — no forward, no dispatch_error.
+func TestEngineDoesNotForwardAfterADatabaseSuspension(t *testing.T) {
+	r := newEngineRig(t, func(b *config.Bundle) { b.Dispatch.Mode = dispatch.ModeAmended })
+	id := r.incident(t, incident.SevRed)
+	r.mustProcess(t, id)
+	r.age(t, id, 5*time.Minute) // 2.5 km reached with nobody: the nearest centre is due
+	r.store.beforeForward = func() {
+		r.store.beforeForward = nil
+		if _, err := r.console.SuspendDispatch(context.Background(), "coordinator_decision", uuid.NewV7()); err != nil {
+			t.Error(err)
+		}
+		r.suspension.v.Store(true) // what the store reports from now on
+	}
+	if err := r.process(t, id); err != nil {
+		t.Fatalf("a forward refused by the suspension failed the pass: %v", err)
+	}
+	snap, err := r.store.DispatchSnapshot(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Forwards) != 0 || !dispatch.HasEscalation(snap.Escalations, dispatch.ReasonSuspended) ||
+		dispatch.HasEscalation(snap.Escalations, dispatch.ReasonForwardingExhausted) {
+		t.Fatalf("forwards %+v escalations %v", snap.Forwards, snap.Escalations)
 	}
 }
