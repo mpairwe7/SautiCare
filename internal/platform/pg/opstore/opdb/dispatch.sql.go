@@ -34,6 +34,20 @@ func (q *Queries) AcceptAlert(ctx context.Context, arg AcceptAlertParams) (Accep
 	return i, err
 }
 
+const acknowledgeCoordinatorCall = `-- name: AcknowledgeCoordinatorCall :exec
+SELECT op.acknowledge_coordinator_call($1::uuid, $2::bigint)
+`
+
+type AcknowledgeCoordinatorCallParams struct {
+	IncidentID pgtype.UUID
+	Seq        int64
+}
+
+func (q *Queries) AcknowledgeCoordinatorCall(ctx context.Context, arg AcknowledgeCoordinatorCallParams) error {
+	_, err := q.db.Exec(ctx, acknowledgeCoordinatorCall, arg.IncidentID, arg.Seq)
+	return err
+}
+
 const acknowledgeForward = `-- name: AcknowledgeForward :one
 SELECT op.acknowledge_forward($1::uuid, $2::text)::boolean AS changed
 `
@@ -50,6 +64,46 @@ func (q *Queries) AcknowledgeForward(ctx context.Context, arg AcknowledgeForward
 	return changed, err
 }
 
+const alertForAttempt = `-- name: AlertForAttempt :one
+SELECT a.id, a.incident_id, a.responder_id, a.role, a.outcome, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
+FROM op.alert_attempts x JOIN op.alerts a ON a.id = x.alert_id JOIN op.incidents i ON i.id = a.incident_id
+WHERE x.id = $1::uuid AND x.channel = 'voice'
+`
+
+type AlertForAttemptRow struct {
+	ID          pgtype.UUID
+	IncidentID  pgtype.UUID
+	ResponderID pgtype.UUID
+	Role        string
+	Outcome     string
+	Reference   string
+	Severity    *string
+	Category    *string
+	Ward        *string
+	Landmark    *string
+	Language    *string
+}
+
+// The alert an answered voice call is about (by its attempt).
+func (q *Queries) AlertForAttempt(ctx context.Context, attemptID pgtype.UUID) (AlertForAttemptRow, error) {
+	row := q.db.QueryRow(ctx, alertForAttempt, attemptID)
+	var i AlertForAttemptRow
+	err := row.Scan(
+		&i.ID,
+		&i.IncidentID,
+		&i.ResponderID,
+		&i.Role,
+		&i.Outcome,
+		&i.Reference,
+		&i.Severity,
+		&i.Category,
+		&i.Ward,
+		&i.Landmark,
+		&i.Language,
+	)
+	return i, err
+}
+
 const autoSuspendDispatch = `-- name: AutoSuspendDispatch :one
 SELECT op.auto_suspend_dispatch($1::int, $2::int)::boolean AS changed
 `
@@ -64,6 +118,31 @@ func (q *Queries) AutoSuspendDispatch(ctx context.Context, arg AutoSuspendDispat
 	var changed bool
 	err := row.Scan(&changed)
 	return changed, err
+}
+
+const availableUntil = `-- name: AvailableUntil :many
+SELECT upper(period)::timestamptz AS until FROM op.availability
+WHERE responder_id = $1::uuid AND period @> clock_timestamp()
+`
+
+func (q *Queries) AvailableUntil(ctx context.Context, responderID pgtype.UUID) ([]pgtype.Timestamptz, error) {
+	rows, err := q.db.Query(ctx, availableUntil, responderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.Timestamptz
+	for rows.Next() {
+		var until pgtype.Timestamptz
+		if err := rows.Scan(&until); err != nil {
+			return nil, err
+		}
+		items = append(items, until)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const beginAttempt = `-- name: BeginAttempt :one
@@ -89,6 +168,52 @@ func (q *Queries) BeginAttempt(ctx context.Context, arg BeginAttemptParams) (Beg
 	return i, err
 }
 
+const beginForwardAttempt = `-- name: BeginForwardAttempt :one
+SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
+FROM op.begin_forward_attempt($1::uuid, $2::text, $3::text) AS a(attempt_id, fresh)
+`
+
+type BeginForwardAttemptParams struct {
+	IncidentID pgtype.UUID
+	FacilityID string
+	Channel    string
+}
+
+type BeginForwardAttemptRow struct {
+	AttemptID pgtype.UUID
+	Fresh     bool
+}
+
+func (q *Queries) BeginForwardAttempt(ctx context.Context, arg BeginForwardAttemptParams) (BeginForwardAttemptRow, error) {
+	row := q.db.QueryRow(ctx, beginForwardAttempt, arg.IncidentID, arg.FacilityID, arg.Channel)
+	var i BeginForwardAttemptRow
+	err := row.Scan(&i.AttemptID, &i.Fresh)
+	return i, err
+}
+
+const beginNoticeAttempt = `-- name: BeginNoticeAttempt :one
+SELECT a.attempt_id::uuid AS attempt_id, a.fresh::boolean AS fresh
+FROM op.begin_notice_attempt($1::uuid, $2::text, $3::text) AS a(attempt_id, fresh)
+`
+
+type BeginNoticeAttemptParams struct {
+	IncidentID pgtype.UUID
+	Kind       string
+	Channel    string
+}
+
+type BeginNoticeAttemptRow struct {
+	AttemptID pgtype.UUID
+	Fresh     bool
+}
+
+func (q *Queries) BeginNoticeAttempt(ctx context.Context, arg BeginNoticeAttemptParams) (BeginNoticeAttemptRow, error) {
+	row := q.db.QueryRow(ctx, beginNoticeAttempt, arg.IncidentID, arg.Kind, arg.Channel)
+	var i BeginNoticeAttemptRow
+	err := row.Scan(&i.AttemptID, &i.Fresh)
+	return i, err
+}
+
 const busyResponders = `-- name: BusyResponders :many
 SELECT DISTINCT s.responder_id FROM op.assignments s JOIN op.incidents i ON i.id = s.incident_id
 WHERE s.released_at IS NULL AND i.state NOT IN ('closed', 'merged')
@@ -108,6 +233,123 @@ func (q *Queries) BusyResponders(ctx context.Context) ([]pgtype.UUID, error) {
 			return nil, err
 		}
 		items = append(items, responder_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const callerContact = `-- name: CallerContact :many
+SELECT c.source::text AS source, c.row_id::uuid AS row_id, c.ct::bytea AS ct, c.key_id::text AS key_id
+FROM op.caller_contact($1::uuid) AS c(source, row_id, ct, key_id)
+`
+
+type CallerContactRow struct {
+	Source string
+	RowID  pgtype.UUID
+	Ct     []byte
+	KeyID  string
+}
+
+func (q *Queries) CallerContact(ctx context.Context, incidentID pgtype.UUID) ([]CallerContactRow, error) {
+	rows, err := q.db.Query(ctx, callerContact, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CallerContactRow
+	for rows.Next() {
+		var i CallerContactRow
+		if err := rows.Scan(
+			&i.Source,
+			&i.RowID,
+			&i.Ct,
+			&i.KeyID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimAvailabilityReminders = `-- name: ClaimAvailabilityReminders :many
+SELECT c.responder_id::uuid AS responder_id, c.until::timestamptz AS until
+FROM op.claim_availability_reminders($1::interval, $2::int) AS c(responder_id, until)
+`
+
+type ClaimAvailabilityRemindersParams struct {
+	Within  pgtype.Interval
+	MaxRows int32
+}
+
+type ClaimAvailabilityRemindersRow struct {
+	ResponderID pgtype.UUID
+	Until       pgtype.Timestamptz
+}
+
+func (q *Queries) ClaimAvailabilityReminders(ctx context.Context, arg ClaimAvailabilityRemindersParams) ([]ClaimAvailabilityRemindersRow, error) {
+	rows, err := q.db.Query(ctx, claimAvailabilityReminders, arg.Within, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimAvailabilityRemindersRow
+	for rows.Next() {
+		var i ClaimAvailabilityRemindersRow
+		if err := rows.Scan(&i.ResponderID, &i.Until); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimCoordinatorCalls = `-- name: ClaimCoordinatorCalls :many
+SELECT c.incident_id::uuid AS incident_id, c.seq::bigint AS seq, coalesce(c.reason, '')::text AS reason,
+       c.reference::text AS reference, c.calls::int AS calls
+FROM op.claim_coordinator_calls($1::interval, $2::int) AS c(incident_id, seq, reason, reference, calls)
+`
+
+type ClaimCoordinatorCallsParams struct {
+	Retry   pgtype.Interval
+	MaxRows int32
+}
+
+type ClaimCoordinatorCallsRow struct {
+	IncidentID pgtype.UUID
+	Seq        int64
+	Reason     string
+	Reference  string
+	Calls      int32
+}
+
+func (q *Queries) ClaimCoordinatorCalls(ctx context.Context, arg ClaimCoordinatorCallsParams) ([]ClaimCoordinatorCallsRow, error) {
+	rows, err := q.db.Query(ctx, claimCoordinatorCalls, arg.Retry, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimCoordinatorCallsRow
+	for rows.Next() {
+		var i ClaimCoordinatorCallsRow
+		if err := rows.Scan(
+			&i.IncidentID,
+			&i.Seq,
+			&i.Reason,
+			&i.Reference,
+			&i.Calls,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -476,6 +718,81 @@ func (q *Queries) DispatchSuspended(ctx context.Context) (bool, error) {
 	return suspended, err
 }
 
+const dueForwardCalls = `-- name: DueForwardCalls :many
+SELECT f.incident_id, f.facility_id FROM op.forwards f JOIN op.incidents i ON i.id = f.incident_id
+WHERE f.acknowledged_at IS NULL AND f.timed_out_at IS NULL AND i.state NOT IN ('closed', 'merged')
+  AND NOT EXISTS (SELECT 1 FROM op.forward_attempts x WHERE x.incident_id = f.incident_id AND x.facility_id = f.facility_id AND x.channel = 'voice')
+ORDER BY f.sent_at LIMIT $1::int
+`
+
+type DueForwardCallsRow struct {
+	IncidentID pgtype.UUID
+	FacilityID string
+}
+
+// Forwards awaiting acknowledgement and not yet called (ivr-controller), of
+// incidents still open (a closed or merged one takes no acknowledgement).
+func (q *Queries) DueForwardCalls(ctx context.Context, maxRows int32) ([]DueForwardCallsRow, error) {
+	rows, err := q.db.Query(ctx, dueForwardCalls, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DueForwardCallsRow
+	for rows.Next() {
+		var i DueForwardCallsRow
+		if err := rows.Scan(&i.IncidentID, &i.FacilityID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const dueVoiceAlerts = `-- name: DueVoiceAlerts :many
+SELECT a.id, a.responder_id FROM op.alerts a
+WHERE a.outcome = 'pending' AND a.sent_at <= clock_timestamp() - $1::interval AND NOT op.dispatch_suspended()
+  AND op.responder_eligible_now(a.responder_id)
+  AND NOT EXISTS (SELECT 1 FROM op.alert_attempts x WHERE x.alert_id = a.id AND x.channel = 'voice')
+ORDER BY a.sent_at LIMIT $2::int
+`
+
+type DueVoiceAlertsParams struct {
+	After   pgtype.Interval
+	MaxRows int32
+}
+
+type DueVoiceAlertsRow struct {
+	ID          pgtype.UUID
+	ResponderID pgtype.UUID
+}
+
+// Alerts due a voice call (ivr-controller): pending, sent at least `after`
+// ago, no voice attempt yet, dispatch not suspended, the responder still
+// eligible (switched off or a gate lapsed: not rung).
+func (q *Queries) DueVoiceAlerts(ctx context.Context, arg DueVoiceAlertsParams) ([]DueVoiceAlertsRow, error) {
+	rows, err := q.db.Query(ctx, dueVoiceAlerts, arg.After, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DueVoiceAlertsRow
+	for rows.Next() {
+		var i DueVoiceAlertsRow
+		if err := rows.Scan(&i.ID, &i.ResponderID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const finishAttempt = `-- name: FinishAttempt :one
 SELECT op.finish_attempt($1::uuid, $2::text, $3::text)::boolean AS changed
 `
@@ -488,6 +805,40 @@ type FinishAttemptParams struct {
 
 func (q *Queries) FinishAttempt(ctx context.Context, arg FinishAttemptParams) (bool, error) {
 	row := q.db.QueryRow(ctx, finishAttempt, arg.AttemptID, arg.Status, arg.ProviderRef)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
+const finishForwardAttempt = `-- name: FinishForwardAttempt :one
+SELECT op.finish_forward_attempt($1::uuid, $2::text, $3::text)::boolean AS changed
+`
+
+type FinishForwardAttemptParams struct {
+	AttemptID   pgtype.UUID
+	Status      string
+	ProviderRef *string
+}
+
+func (q *Queries) FinishForwardAttempt(ctx context.Context, arg FinishForwardAttemptParams) (bool, error) {
+	row := q.db.QueryRow(ctx, finishForwardAttempt, arg.AttemptID, arg.Status, arg.ProviderRef)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
+const finishNoticeAttempt = `-- name: FinishNoticeAttempt :one
+SELECT op.finish_notice_attempt($1::uuid, $2::text, $3::text)::boolean AS changed
+`
+
+type FinishNoticeAttemptParams struct {
+	AttemptID   pgtype.UUID
+	Status      string
+	ProviderRef *string
+}
+
+func (q *Queries) FinishNoticeAttempt(ctx context.Context, arg FinishNoticeAttemptParams) (bool, error) {
+	row := q.db.QueryRow(ctx, finishNoticeAttempt, arg.AttemptID, arg.Status, arg.ProviderRef)
 	var changed bool
 	err := row.Scan(&changed)
 	return changed, err
@@ -531,6 +882,111 @@ func (q *Queries) IssueAlert(ctx context.Context, arg IssueAlertParams) (IssueAl
 	return i, err
 }
 
+const menuAlert = `-- name: MenuAlert :many
+SELECT m.alert_id::uuid AS id, m.incident_id::uuid AS incident_id, m.role::text AS role, m.outcome::text AS outcome,
+       m.reference::text AS reference, coalesce(m.severity, '')::text AS severity, coalesce(m.category, '')::text AS category,
+       coalesce(m.ward, '')::text AS ward, coalesce(m.landmark, '')::text AS landmark, coalesce(m.language, '')::text AS language,
+       m.assigned::boolean AS assigned
+FROM op.responder_menu_alert($1::bytea, $2::uuid)
+     AS m(alert_id, incident_id, role, outcome, reference, severity, category, ward, landmark, language, assigned)
+`
+
+type MenuAlertParams struct {
+	SessionKey  []byte
+	ResponderID pgtype.UUID
+}
+
+type MenuAlertRow struct {
+	ID         pgtype.UUID
+	IncidentID pgtype.UUID
+	Role       string
+	Outcome    string
+	Reference  string
+	Severity   string
+	Category   string
+	Ward       string
+	Landmark   string
+	Language   string
+	Assigned   bool
+}
+
+// The alert a responder's menu session is about (pinned at its first screen).
+func (q *Queries) MenuAlert(ctx context.Context, arg MenuAlertParams) ([]MenuAlertRow, error) {
+	rows, err := q.db.Query(ctx, menuAlert, arg.SessionKey, arg.ResponderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MenuAlertRow
+	for rows.Next() {
+		var i MenuAlertRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IncidentID,
+			&i.Role,
+			&i.Outcome,
+			&i.Reference,
+			&i.Severity,
+			&i.Category,
+			&i.Ward,
+			&i.Landmark,
+			&i.Language,
+			&i.Assigned,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const messageFacts = `-- name: MessageFacts :one
+SELECT reference, severity, category, ward, landmark, language FROM op.incidents WHERE id = $1::uuid
+`
+
+type MessageFactsRow struct {
+	Reference string
+	Severity  *string
+	Category  *string
+	Ward      *string
+	Landmark  *string
+	Language  *string
+}
+
+func (q *Queries) MessageFacts(ctx context.Context, id pgtype.UUID) (MessageFactsRow, error) {
+	row := q.db.QueryRow(ctx, messageFacts, id)
+	var i MessageFactsRow
+	err := row.Scan(
+		&i.Reference,
+		&i.Severity,
+		&i.Category,
+		&i.Ward,
+		&i.Landmark,
+		&i.Language,
+	)
+	return i, err
+}
+
+const noticeFacility = `-- name: NoticeFacility :one
+SELECT coalesce(facility_id, '')::text AS facility_id FROM op.caller_notices
+WHERE incident_id = $1::uuid AND kind = $2::text
+`
+
+type NoticeFacilityParams struct {
+	IncidentID pgtype.UUID
+	Kind       string
+}
+
+func (q *Queries) NoticeFacility(ctx context.Context, arg NoticeFacilityParams) (string, error) {
+	row := q.db.QueryRow(ctx, noticeFacility, arg.IncidentID, arg.Kind)
+	var facility_id string
+	err := row.Scan(&facility_id)
+	return facility_id, err
+}
+
 const notifyCaller = `-- name: NotifyCaller :one
 SELECT op.notify_caller($1::uuid, $2::text, $3::text)::boolean AS changed
 `
@@ -560,6 +1016,30 @@ func (q *Queries) OldestOverdueDispatch(ctx context.Context) (float64, error) {
 	var seconds float64
 	err := row.Scan(&seconds)
 	return seconds, err
+}
+
+const recordDeliveryReport = `-- name: RecordDeliveryReport :one
+SELECT op.record_delivery_report($1::text, $2::text, $3::text,
+                                 $4::boolean)::boolean AS known
+`
+
+type RecordDeliveryReportParams struct {
+	ProviderRef string
+	Status      string
+	Failure     *string
+	Final       bool
+}
+
+func (q *Queries) RecordDeliveryReport(ctx context.Context, arg RecordDeliveryReportParams) (bool, error) {
+	row := q.db.QueryRow(ctx, recordDeliveryReport,
+		arg.ProviderRef,
+		arg.Status,
+		arg.Failure,
+		arg.Final,
+	)
+	var known bool
+	err := row.Scan(&known)
+	return known, err
 }
 
 const recordForward = `-- name: RecordForward :one
@@ -638,6 +1118,55 @@ func (q *Queries) RedDispatchOutcomes(ctx context.Context, arg RedDispatchOutcom
 	return items, nil
 }
 
+const responderAlertHistory = `-- name: ResponderAlertHistory :many
+SELECT id, incident_id, role, sent_at, outcome, decline_reason, responded_at FROM op.alerts
+WHERE responder_id = $1::uuid ORDER BY sent_at DESC LIMIT $2::int
+`
+
+type ResponderAlertHistoryParams struct {
+	ResponderID pgtype.UUID
+	MaxRows     int32
+}
+
+type ResponderAlertHistoryRow struct {
+	ID            pgtype.UUID
+	IncidentID    pgtype.UUID
+	Role          string
+	SentAt        pgtype.Timestamptz
+	Outcome       string
+	DeclineReason *string
+	RespondedAt   pgtype.Timestamptz
+}
+
+// A responder's alerts, newest first (scenario 10: decline reasons shown).
+func (q *Queries) ResponderAlertHistory(ctx context.Context, arg ResponderAlertHistoryParams) ([]ResponderAlertHistoryRow, error) {
+	rows, err := q.db.Query(ctx, responderAlertHistory, arg.ResponderID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ResponderAlertHistoryRow
+	for rows.Next() {
+		var i ResponderAlertHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IncidentID,
+			&i.Role,
+			&i.SentAt,
+			&i.Outcome,
+			&i.DeclineReason,
+			&i.RespondedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const responderHistory = `-- name: ResponderHistory :many
 SELECT responder_id,
        count(*) FILTER (WHERE outcome <> 'pending')::int AS alerted,
@@ -679,6 +1208,22 @@ func (q *Queries) ResponderHistory(ctx context.Context) ([]ResponderHistoryRow, 
 		return nil, err
 	}
 	return items, nil
+}
+
+const responderPhone = `-- name: ResponderPhone :one
+SELECT phone_ct, phone_key_id FROM op.responders WHERE id = $1::uuid
+`
+
+type ResponderPhoneRow struct {
+	PhoneCt    []byte
+	PhoneKeyID string
+}
+
+func (q *Queries) ResponderPhone(ctx context.Context, id pgtype.UUID) (ResponderPhoneRow, error) {
+	row := q.db.QueryRow(ctx, responderPhone, id)
+	var i ResponderPhoneRow
+	err := row.Scan(&i.PhoneCt, &i.PhoneKeyID)
+	return i, err
 }
 
 const resumeDispatch = `-- name: ResumeDispatch :one

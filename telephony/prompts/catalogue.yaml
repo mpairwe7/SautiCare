@@ -21,6 +21,21 @@ sounds:
     - sauti/en/age_band-age_60_plus
     - sauti/en/age_band-under_5
     - sauti/en/age_band-unknown
+    - sauti/en/alert-accepted
+    - sauti/en/alert-already-assigned
+    - sauti/en/alert-already-taken
+    - sauti/en/alert-category-acute_medical
+    - sauti/en/alert-category-obstetric
+    - sauti/en/alert-category-other
+    - sauti/en/alert-category-poisoning
+    - sauti/en/alert-category-trauma
+    - sauti/en/alert-colour-green
+    - sauti/en/alert-colour-red
+    - sauti/en/alert-colour-yellow
+    - sauti/en/alert-declined
+    - sauti/en/alert-intro
+    - sauti/en/alert-no-longer-needed
+    - sauti/en/alert-options
     - sauti/en/callback
     - sauti/en/callback-same_number
     - sauti/en/callback-withheld
@@ -35,11 +50,32 @@ sounds:
     - sauti/en/danger-no
     - sauti/en/danger-unknown
     - sauti/en/danger-yes
+    - sauti/en/decline-reasons-transporter
+    - sauti/en/decline-reasons-vht
+    - sauti/en/escalation-acknowledged
+    - sauti/en/escalation-intro
+    - sauti/en/escalation-options
+    - sauti/en/escalation-reason-abandoned_after_danger_yes
+    - sauti/en/escalation-reason-abandoned_red_before_dispatch
+    - sauti/en/escalation-reason-dispatch_error
+    - sauti/en/escalation-reason-dispatch_stalled
+    - sauti/en/escalation-reason-dispatch_suspended
+    - sauti/en/escalation-reason-forwarded_to_facility
+    - sauti/en/escalation-reason-merged_call_escalated
+    - sauti/en/escalation-reason-no_eligible_responder
+    - sauti/en/escalation-reason-no_facility_acknowledged
+    - sauti/en/escalation-reason-no_responder_nearby
+    - sauti/en/escalation-reason-other
+    - sauti/en/escalation-reason-red_no_acceptance
+    - sauti/en/escalation-reason-triage_rule_error
     - sauti/en/first_aid-acute_medical
     - sauti/en/first_aid-obstetric
     - sauti/en/first_aid-other
     - sauti/en/first_aid-poisoning
     - sauti/en/first_aid-trauma
+    - sauti/en/forward-acknowledged
+    - sauti/en/forward-intro
+    - sauti/en/forward-options
     - sauti/en/invalid
     - sauti/en/landmark
     - sauti/en/landmark-other
@@ -96,6 +132,21 @@ sounds:
     - sauti/lg/age_band-age_60_plus
     - sauti/lg/age_band-under_5
     - sauti/lg/age_band-unknown
+    - sauti/lg/alert-accepted
+    - sauti/lg/alert-already-assigned
+    - sauti/lg/alert-already-taken
+    - sauti/lg/alert-category-acute_medical
+    - sauti/lg/alert-category-obstetric
+    - sauti/lg/alert-category-other
+    - sauti/lg/alert-category-poisoning
+    - sauti/lg/alert-category-trauma
+    - sauti/lg/alert-colour-green
+    - sauti/lg/alert-colour-red
+    - sauti/lg/alert-colour-yellow
+    - sauti/lg/alert-declined
+    - sauti/lg/alert-intro
+    - sauti/lg/alert-no-longer-needed
+    - sauti/lg/alert-options
     - sauti/lg/callback
     - sauti/lg/callback-same_number
     - sauti/lg/callback-withheld
@@ -110,11 +161,32 @@ sounds:
     - sauti/lg/danger-no
     - sauti/lg/danger-unknown
     - sauti/lg/danger-yes
+    - sauti/lg/decline-reasons-transporter
+    - sauti/lg/decline-reasons-vht
+    - sauti/lg/escalation-acknowledged
+    - sauti/lg/escalation-intro
+    - sauti/lg/escalation-options
+    - sauti/lg/escalation-reason-abandoned_after_danger_yes
+    - sauti/lg/escalation-reason-abandoned_red_before_dispatch
+    - sauti/lg/escalation-reason-dispatch_error
+    - sauti/lg/escalation-reason-dispatch_stalled
+    - sauti/lg/escalation-reason-dispatch_suspended
+    - sauti/lg/escalation-reason-forwarded_to_facility
+    - sauti/lg/escalation-reason-merged_call_escalated
+    - sauti/lg/escalation-reason-no_eligible_responder
+    - sauti/lg/escalation-reason-no_facility_acknowledged
+    - sauti/lg/escalation-reason-no_responder_nearby
+    - sauti/lg/escalation-reason-other
+    - sauti/lg/escalation-reason-red_no_acceptance
+    - sauti/lg/escalation-reason-triage_rule_error
     - sauti/lg/first_aid-acute_medical
     - sauti/lg/first_aid-obstetric
     - sauti/lg/first_aid-other
     - sauti/lg/first_aid-poisoning
     - sauti/lg/first_aid-trauma
+    - sauti/lg/forward-acknowledged
+    - sauti/lg/forward-intro
+    - sauti/lg/forward-options
     - sauti/lg/invalid
     - sauti/lg/landmark
     - sauti/lg/landmark-other

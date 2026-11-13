@@ -24,14 +24,18 @@ type OpAlert struct {
 }
 
 type OpAlertAttempt struct {
-	ID          pgtype.UUID
-	AlertID     pgtype.UUID
-	Purpose     string
-	Channel     string
-	Status      string
-	ProviderRef *string
-	ClaimedAt   pgtype.Timestamptz
-	SettledAt   pgtype.Timestamptz
+	ID              pgtype.UUID
+	AlertID         pgtype.UUID
+	Purpose         string
+	Channel         string
+	Status          string
+	ProviderRef     *string
+	ClaimedAt       pgtype.Timestamptz
+	SettledAt       pgtype.Timestamptz
+	DeliveryStatus  *string
+	DeliveryFailure *string
+	DeliveryFinal   bool
+	DeliveryAt      pgtype.Timestamptz
 }
 
 type OpAssignment struct {
@@ -64,6 +68,14 @@ type OpConfigVersion struct {
 	EffectiveFrom pgtype.Timestamptz
 	AmendmentRef  *string
 	AmendmentDate pgtype.Date
+}
+
+type OpCoordinatorCall struct {
+	IncidentID     pgtype.UUID
+	AckedSeq       int64
+	Calls          int32
+	LastCallAt     pgtype.Timestamptz
+	AcknowledgedAt pgtype.Timestamptz
 }
 
 type OpDispatchControl struct {
@@ -121,6 +133,21 @@ type OpForward struct {
 	SentAt           pgtype.Timestamptz
 	AcknowledgedAt   pgtype.Timestamptz
 	TimedOutAt       pgtype.Timestamptz
+}
+
+type OpForwardAttempt struct {
+	ID              pgtype.UUID
+	IncidentID      pgtype.UUID
+	FacilityID      string
+	Channel         string
+	Status          string
+	ProviderRef     *string
+	ClaimedAt       pgtype.Timestamptz
+	SettledAt       pgtype.Timestamptz
+	DeliveryStatus  *string
+	DeliveryFailure *string
+	DeliveryFinal   bool
+	DeliveryAt      pgtype.Timestamptz
 }
 
 type OpGazetteerVersion struct {
@@ -237,6 +264,21 @@ type OpLandmarkAlias struct {
 	AliasNorm  string
 }
 
+type OpNoticeAttempt struct {
+	ID              pgtype.UUID
+	IncidentID      pgtype.UUID
+	Kind            string
+	Channel         string
+	Status          string
+	ProviderRef     *string
+	ClaimedAt       pgtype.Timestamptz
+	SettledAt       pgtype.Timestamptz
+	DeliveryStatus  *string
+	DeliveryFailure *string
+	DeliveryFinal   bool
+	DeliveryAt      pgtype.Timestamptz
+}
+
 type OpOutbox struct {
 	ID          pgtype.UUID
 	Topic       string
@@ -263,6 +305,13 @@ type OpResponder struct {
 	Status          string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+}
+
+type OpResponderMenuPin struct {
+	SessionKey  []byte
+	ResponderID pgtype.UUID
+	AlertID     pgtype.UUID
+	PinnedAt    pgtype.Timestamptz
 }
 
 type OpSession struct {

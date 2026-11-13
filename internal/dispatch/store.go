@@ -88,3 +88,70 @@ type ControlEntry struct {
 	Failures int        // stopping_rule_breached only
 	Window   int
 }
+
+// Reminder is an availability period about to end (review focus 4: the
+// expiry reminder is sent once per period).
+type Reminder struct {
+	ResponderID uuid.UUID
+	Until       time.Time
+}
+
+// Notice is a caller notice to deliver (a recorded caller.notified).
+type Notice struct {
+	AttemptID, IncidentID uuid.UUID
+	Kind                  string
+	Channel               string
+}
+
+// MessageFacts are the coded facts a message may show about an incident
+// (hard constraint 6: never a name, a clinical answer or a number).
+type MessageFacts struct {
+	Reference incident.Reference
+	Severity  incident.Severity
+	Category  string // Tool 1 category code
+	Ward      string // gazetteer ward ID
+	Landmark  string // gazetteer landmark ID ("other": a free-text landmark, never sent)
+	Language  string // the caller's Tool 1 language
+}
+
+// ResponderAlert is a responder's own recent alert, as their menu shows it.
+type ResponderAlert struct {
+	AlertID, IncidentID uuid.UUID
+	Role                responder.Role
+	Outcome             string
+	Facts               MessageFacts
+	Assigned            bool // the responder holds the incident's open assignment
+}
+
+// AlertHistory is one line of a responder's history (scenario 10).
+type AlertHistory struct {
+	AlertID, IncidentID uuid.UUID
+	Role                responder.Role
+	SentAt              time.Time
+	Outcome             string
+	DeclineReason       string
+	RespondedAt         *time.Time
+}
+
+// VoiceAlert is an alert due a voice call (the ladder: SMS at once, voice
+// when still pending after voice_fallback_after).
+type VoiceAlert struct {
+	AlertID, ResponderID uuid.UUID
+}
+
+// ForwardCall is a forwarded facility to call (press 1 to acknowledge).
+type ForwardCall struct {
+	IncidentID uuid.UUID
+	FacilityID string
+}
+
+// CoordinatorCall is an escalation to ring the coordinator line about: the
+// incident's latest unacknowledged escalation; Calls counts the rings since
+// the last acknowledgement.
+type CoordinatorCall struct {
+	IncidentID uuid.UUID
+	Seq        int64
+	Reason     string
+	Reference  incident.Reference
+	Calls      int
+}

@@ -1,0 +1,46 @@
+# Responder menu (USSD pull on the responder service code; voice from M2
+# Part B Task 10) and decline reasons.
+#
+# Decline reasons are decision 6 (Build Prompt §10.5): after "2 Decline", a
+# closed list per role whose last option is Other, no free text. The lists
+# below are the Build Prompt's. Decision 6 sits behind the amendment gate:
+# until the amendment is approved (dispatch.mode: protocol) no reason is
+# asked. Luganda wording and the menu copy are placeholders:
+# "PENDING-TRANSLATION", "PENDING-RESPONDER" and status "placeholder" block
+# production until the PI approves them.
+status: placeholder
+languages: [en, lg]
+decline_reasons:
+  transporter:
+    - {code: carrying_passenger, label: {en: "Carrying a passenger", lg: "PENDING-TRANSLATION"}}
+    - {code: too_far, label: {en: "Too far", lg: "PENDING-TRANSLATION"}}
+    - {code: bike_or_fuel, label: {en: "Bike or fuel problem", lg: "PENDING-TRANSLATION"}}
+    - {code: unwell, label: {en: "Unwell", lg: "PENDING-TRANSLATION"}}
+    - {code: unsafe, label: {en: "Unsafe place or time", lg: "PENDING-TRANSLATION"}}
+    - {code: other, label: {en: "Other", lg: "PENDING-TRANSLATION"}}
+  vht:
+    - {code: with_another_patient, label: {en: "With another patient", lg: "PENDING-TRANSLATION"}}
+    - {code: too_far, label: {en: "Too far", lg: "PENDING-TRANSLATION"}}
+    - {code: kit_not_ready, label: {en: "Kit not ready", lg: "PENDING-TRANSLATION"}}
+    - {code: unwell, label: {en: "Unwell", lg: "PENDING-TRANSLATION"}}
+    - {code: unsafe, label: {en: "Unsafe place or time", lg: "PENDING-TRANSLATION"}}
+    - {code: other, label: {en: "Other", lg: "PENDING-TRANSLATION"}}
+menu:
+  not_registered: {en: "PENDING-RESPONDER This number is not registered as a Sauti responder.", lg: "PENDING-TRANSLATION"}
+  alert: {en: "PENDING-RESPONDER Sauti {ref}: {colour} {category}", lg: "PENDING-TRANSLATION {ref} {colour} {category}"}
+  accept: {en: "Accept", lg: "PENDING-TRANSLATION"}
+  decline: {en: "Decline", lg: "PENDING-TRANSLATION"}
+  availability: {en: "Availability", lg: "PENDING-TRANSLATION"}
+  no_alert: {en: "PENDING-RESPONDER Sauti: no active alert.", lg: "PENDING-TRANSLATION"}
+  accepted: {en: "PENDING-RESPONDER Accepted {ref}. Go to {landmark}, {ward}.", lg: "PENDING-TRANSLATION {ref} {landmark} {ward}"}
+  assigned: {en: "PENDING-RESPONDER You are on {ref}. Go to {landmark}, {ward}.", lg: "PENDING-TRANSLATION {ref} {landmark} {ward}"}
+  already_taken: {en: "PENDING-RESPONDER Already taken, thank you.", lg: "PENDING-TRANSLATION"}
+  already_assigned: {en: "PENDING-RESPONDER You are already on another incident.", lg: "PENDING-TRANSLATION"}
+  no_longer_needed: {en: "PENDING-RESPONDER No longer needed. Thank you.", lg: "PENDING-TRANSLATION"}
+  declined: {en: "PENDING-RESPONDER Declined {ref}. Thank you.", lg: "PENDING-TRANSLATION {ref}"}
+  decline_why: {en: "PENDING-RESPONDER Why can you not go?", lg: "PENDING-TRANSLATION"}
+  switch_on: {en: "Available for 8 hours", lg: "PENDING-TRANSLATION"}
+  switch_off: {en: "Off duty", lg: "PENDING-TRANSLATION"}
+  available_until: {en: "PENDING-RESPONDER You are available until {until}.", lg: "PENDING-TRANSLATION {until}"}
+  switched_off: {en: "PENDING-RESPONDER You are off duty.", lg: "PENDING-TRANSLATION"}
+  invalid: {en: "Choose a number from the list.", lg: "PENDING-TRANSLATION"}

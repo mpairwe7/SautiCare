@@ -32,3 +32,4 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0024](ADR-0024-dispatch-planners-and-postgresql-scheduler.md) | Dispatch as pure planners and a PostgreSQL scheduler (supersedes DBOS in spec §4.2, §14) | Accepted | 2026-11-13 |
 | [ADR-0025](ADR-0025-dispatch-store-and-first-accept-wins.md) | Dispatch facts through their own functions; first acceptance wins in the database | Accepted | 2026-11-13 |
 | [ADR-0026](ADR-0026-dispatch-suspension-and-stopping-rule.md) | Dispatch suspension and the stopping rule (O6) | Accepted | 2026-11-13 |
+| [ADR-0027](ADR-0027-channels-and-the-alert-ladder.md) | Responder, caller and facility channels (SMS, responder USSD menu, voice) and the alert ladder (O2: no USSD push) | Accepted | 2026-11-13 |

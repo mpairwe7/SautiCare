@@ -250,10 +250,10 @@ func TestDispatchLifecycleIsRecordedAndConsistent(t *testing.T) {
 	ctx := context.Background()
 	v1, v2, tr := r.responder(t, responder.RoleVHT), r.responder(t, responder.RoleVHT), r.responder(t, responder.RoleTransporter)
 	a1 := r.issue(t, r.incident, v1, responder.RoleVHT)
-	if out, err := r.intake.DeclineAlert(ctx, a1.AlertID, v1); err != nil || out != "declined" {
+	if out, err := r.intake.DeclineAlert(ctx, a1.AlertID, v1, ""); err != nil || out != "declined" {
 		t.Fatalf("decline: %s %v", out, err)
 	}
-	if out, _ := r.intake.DeclineAlert(ctx, a1.AlertID, v1); out != "declined" {
+	if out, _ := r.intake.DeclineAlert(ctx, a1.AlertID, v1, ""); out != "declined" {
 		t.Fatalf("decline retry: %s", out)
 	}
 	a2 := r.issue(t, r.incident, v2, responder.RoleVHT)

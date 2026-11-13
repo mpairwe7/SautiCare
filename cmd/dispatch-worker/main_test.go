@@ -8,28 +8,42 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
 	"sautihealth.com/sauti/internal/dispatch"
+	"sautihealth.com/sauti/internal/location"
 )
 
-// Until the SMS adapter exists (Part B), the worker can only simulate
-// delivery, which production refuses: a worker that cannot reach responders
-// must not run as if it could.
-func TestDelivererRefusesProductionWithoutChannels(t *testing.T) {
-	if _, err := deliverer("production", slog.Default()); err == nil {
-		t.Fatal("production accepted the simulated deliverer")
+// Production refuses to start until the key provider exists (P0): the
+// worker opens responders' numbers. With Africa's Talking credentials the
+// worker sends real SMS; without them, development and tests simulate
+// delivery, logging identifiers only.
+func TestPickMessenger(t *testing.T) {
+	built := false
+	real := func() (messenger, error) { built = true; return simMessenger{log: slog.Default()}, nil }
+	if _, err := pickMessenger("production", "key", real, slog.Default()); err == nil || built {
+		t.Fatal("production accepted")
+	}
+	if _, err := pickMessenger("dev", "key", real, slog.Default()); err != nil || !built {
+		t.Fatalf("credentials given: built=%v %v", built, err)
 	}
 	var buf bytes.Buffer
-	d, err := deliverer("dev", slog.New(slog.NewJSONHandler(&buf, nil)))
+	m, err := pickMessenger("dev", "", real, slog.New(slog.NewJSONHandler(&buf, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := d.Deliver(context.Background(), dispatch.Delivery{AttemptID: uuid.NewV7(), AlertID: uuid.NewV7(),
+	ref, err := m.Deliver(context.Background(), dispatch.Delivery{AttemptID: uuid.NewV7(), AlertID: uuid.NewV7(),
 		IncidentID: uuid.NewV7(), ResponderID: uuid.NewV7(), Role: "vht", Purpose: dispatch.PurposeAlert, Channel: dispatch.ChannelSMS})
 	if err != nil || !strings.HasPrefix(ref, "sim-") || !strings.Contains(buf.String(), `"purpose":"alert"`) {
 		t.Fatalf("simulated delivery: %q %v %s", ref, err, buf.String())
+	}
+	if _, err := m.Notify(context.Background(), dispatch.Notice{AttemptID: uuid.NewV7(), IncidentID: uuid.NewV7(), Kind: dispatch.CallerHelperOnTheWay}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Remind(context.Background(), dispatch.Reminder{ResponderID: uuid.NewV7(), Until: time.Now()}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -119,4 +133,24 @@ func TestAdminServerBoundsConnections(t *testing.T) {
 	if s.ReadHeaderTimeout <= 0 || s.ReadTimeout <= 0 || s.IdleTimeout <= 0 || s.WriteTimeout <= 2*time.Second {
 		t.Fatalf("timeouts: header %v read %v write %v idle %v", s.ReadHeaderTimeout, s.ReadTimeout, s.WriteTimeout, s.IdleTimeout)
 	}
+}
+
+// CodeRabbit PR #11 (4560453566): with Africa's Talking SMS on, the gazetteer
+// read runs before the health endpoints exist; a stalled database fails the
+// start after snapshotTimeout instead of holding it until a signal.
+func TestTheStartupGazetteerReadIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		_, err := gazetteerInForce(t.Context(), func(ctx context.Context) (location.File, error) {
+			<-ctx.Done()
+			return location.File{}, ctx.Err()
+		})
+		if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != snapshotTimeout {
+			t.Fatalf("stalled read: %v after %v, want the deadline after %v", err, time.Since(start), snapshotTimeout)
+		}
+		want := location.File{Version: "v1"}
+		if got, err := gazetteerInForce(t.Context(), func(context.Context) (location.File, error) { return want, nil }); err != nil || got.Version != "v1" {
+			t.Fatalf("read %+v %v", got, err)
+		}
+	})
 }

@@ -3,8 +3,10 @@ package sim
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -15,7 +17,8 @@ import (
 
 // FakeARI is an Asterisk REST Interface stand-in for tests: it serves the
 // REST calls Sauti makes (answer, play, stop a playback, continue in the
-// dialplan, hang up), records them, and pushes events (StasisStart,
+// dialplan, hang up, read a channel: 404 once it has ended), records them,
+// and pushes events (StasisStart,
 // ChannelDtmfReceived, PlaybackStarted, PlaybackFinished, StasisEnd) over the
 // /ari/events WebSocket. It answers 401 to wrong credentials and 404 to any
 // endpoint Sauti must never use (recording, snooping, bridges).
@@ -26,6 +29,7 @@ import (
 // with SetPlaybackDuration, when stopped (DELETE /ari/playbacks/{id}), or
 // when the test calls FinishPlayback.
 type FakeARI struct {
+	originated []url.Values
 	srv        *httptest.Server
 	user, pass string
 	mu         sync.Mutex
@@ -39,12 +43,14 @@ type FakeARI struct {
 	active     map[string]string   // channel → playback playing
 	queued     map[string][]string // channel → playbacks waiting
 	playbackCh map[string]string   // playback → channel (until it finishes)
+	live       map[string]bool     // channels that exist: placed or started, not yet ended
 }
 
 // NewFakeARI starts the fake.
 func NewFakeARI(user, pass string) *FakeARI {
 	f := &FakeARI{user: user, pass: pass, plays: map[string][][]string{}, hungUp: map[string]bool{}, continued: map[string]string{},
-		connected: make(chan struct{}, 16), active: map[string]string{}, queued: map[string][]string{}, playbackCh: map[string]string{}}
+		connected: make(chan struct{}, 16), active: map[string]string{}, queued: map[string][]string{}, playbackCh: map[string]string{},
+		live: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	return f
 }
@@ -150,6 +156,25 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		f.connected <- struct{}{}
 		_, _, _ = c.Read(r.Context()) // hold until the client goes away
+	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "channels":
+		f.mu.Lock()
+		f.originated = append(f.originated, r.URL.Query())
+		id := fmt.Sprintf("out-%d", len(f.originated))
+		f.live[id] = true
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":%q}`, id)
+		return
+	case r.Method == http.MethodGet && len(parts) == 3 && parts[1] == "channels":
+		f.mu.Lock()
+		live := f.live[parts[2]]
+		f.mu.Unlock()
+		if !live {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"Up"}`)) // Sauti reads only the status
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "channels" && parts[3] == "answer":
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "channels" && parts[3] == "continue":
@@ -190,6 +215,7 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && len(parts) == 3 && parts[1] == "channels":
 		f.mu.Lock()
 		f.hungUp[parts[2]] = true
+		delete(f.live, parts[2])
 		for pb, ch := range f.playbackCh {
 			if ch == parts[2] {
 				delete(f.playbackCh, pb)
@@ -219,6 +245,7 @@ func (f *FakeARI) Emit(ev map[string]any) {
 // StartCall delivers a call into the Stasis application. An empty caller
 // number is a withheld number.
 func (f *FakeARI) StartCall(channelID, callerNumber string) {
+	f.setLive(channelID, true)
 	f.Emit(event{"type": "StasisStart", "args": []string{},
 		"channel": map[string]any{"id": channelID, "state": "Ring", "caller": map[string]string{"number": callerNumber}}})
 }
@@ -230,8 +257,10 @@ func (f *FakeARI) Press(channelID, digits string) {
 	}
 }
 
-// Hangup simulates the caller hanging up.
+// Hangup simulates the far end hanging up: the channel ends, and its
+// StasisEnd goes to the streams connected now (none: the event is lost).
 func (f *FakeARI) Hangup(channelID string) {
+	f.setLive(channelID, false)
 	f.Emit(event{"type": "StasisEnd", "channel": map[string]any{"id": channelID}})
 }
 
@@ -279,4 +308,28 @@ func (f *FakeARI) Continued(channelID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.continued[channelID]
+}
+
+// Originated returns the originate requests' query parameters, in order.
+func (f *FakeARI) Originated() []url.Values {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.originated)
+}
+
+// Answered emits the StasisStart of an originated call the callee answered,
+// with the application arguments it was originated with.
+func (f *FakeARI) Answered(channelID string, args ...string) {
+	f.setLive(channelID, true)
+	f.Emit(map[string]any{"type": "StasisStart", "args": args, "channel": map[string]any{"id": channelID}})
+}
+
+func (f *FakeARI) setLive(channelID string, live bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if live {
+		f.live[channelID] = true
+	} else {
+		delete(f.live, channelID)
+	}
 }

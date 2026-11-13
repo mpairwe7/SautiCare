@@ -13,7 +13,9 @@
 //	SAUTI_HTTP_ADDR           callback listener (default :8080, behind HAProxy)
 //	SAUTI_ADMIN_ADDR          health and metrics (default 127.0.0.1:9100)
 //	SAUTI_AT_PATH_TOKEN       secret callback path token (>= 24 characters)
-//	SAUTI_USSD_SERVICE_CODES  comma-separated accepted service codes
+//	SAUTI_AT_DELIVERY_TOKEN   secret path token of the SMS delivery-report callback (>= 24 characters; unset: not served)
+//	SAUTI_USSD_SERVICE_CODES  comma-separated accepted service codes (Tool 1)
+//	SAUTI_USSD_RESPONDER_CODES comma-separated service codes of the responder menu
 //	SAUTI_DEVKEYS_DIR         development key directory (refused in production)
 //	SAUTI_CONFIG_DIR          configuration directory (config/)
 //	SAUTI_RULES_ROOT          directory holding triage-rules/ (default .)
@@ -23,14 +25,18 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
 	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/crypto"
+	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/platform/africastalking"
 	"sautihealth.com/sauti/internal/platform/devkeys"
@@ -41,6 +47,7 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/wiring"
+	"sautihealth.com/sauti/internal/respond"
 )
 
 // sweeperLeaderKey is the advisory-lock key for the abandonment sweeper
@@ -109,16 +116,39 @@ func run(log *slog.Logger) error {
 	svc := built.Service
 	// The error screen comes before the caller's language is known.
 	errorText := cfg.Screens.InternalError["en"]
+	// The responder menu (M2 Part B) answers on its own service code.
+	responderCodes := env.List("SAUTI_USSD_RESPONDER_CODES")
+	menu, err := respond.New(respond.Config{Store: store, Keys: crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)},
+		Copy: cfg.Responder, Tool1: cfg.Tool1, Gazetteer: built.Gazetteer, AskReasons: cfg.Dispatch.Mode == dispatch.ModeAmended,
+		ScreenLimit: cfg.Intake.DefaultScreenCharLimit})
+	if err != nil {
+		return err
+	}
+	codes, err := responderCodeSet(env.List("SAUTI_USSD_SERVICE_CODES"), responderCodes)
+	if err != nil {
+		return err
+	}
+	router := ussdRouter{tool1: svc, responders: menu, codes: codes}
 	ussd, err := africastalking.NewUSSDHandler(africastalking.USSDConfig{
-		Provider: "at", PathToken: token, ServiceCodes: env.List("SAUTI_USSD_SERVICE_CODES"),
+		Provider: "at", PathToken: token, ServiceCodes: append(env.List("SAUTI_USSD_SERVICE_CODES"), responderCodes...),
 		ErrorText: errorText,
-	}, svc, log)
+	}, router, log)
 	if err != nil {
 		return err
 	}
 
+	callbacks := http.NewServeMux()
+	callbacks.Handle("/v1/ussd/", ussd)
+	if tok := os.Getenv("SAUTI_AT_DELIVERY_TOKEN"); tok != "" {
+		dr, err := africastalking.NewDeliveryReportHandler(africastalking.DeliveryReportConfig{Provider: "at", PathToken: tok},
+			deliveryReports{store}, log)
+		if err != nil {
+			return err
+		}
+		callbacks.Handle("/v1/sms/delivery/", dr)
+	}
 	public := &http.Server{
-		Addr: env.Default("SAUTI_HTTP_ADDR", ":8080"), Handler: ussd,
+		Addr: env.Default("SAUTI_HTTP_ADDR", ":8080"), Handler: callbacks,
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
 	}
 	reg := metrics.NewRegistry()
@@ -160,4 +190,50 @@ func run(log *slog.Logger) error {
 	_ = public.Shutdown(sctx)
 	_ = adminSrv.Shutdown(sctx)
 	return nil
+}
+
+// deliveryRecorder stores delivery reports (the operational store, op_intake).
+type deliveryRecorder interface {
+	RecordDeliveryReport(ctx context.Context, r opstore.DeliveryReport) error
+}
+
+// deliveryReports bridges the provider's delivery-report callback to the
+// store: codes only; an unknown message is acknowledged.
+type deliveryReports struct{ store deliveryRecorder }
+
+func (d deliveryReports) RecordDeliveryReport(ctx context.Context, r africastalking.DeliveryReport) error {
+	err := d.store.RecordDeliveryReport(ctx, opstore.DeliveryReport{ProviderRef: r.MessageID, Status: r.Status,
+		FailureReason: r.FailureReason, Final: r.Final})
+	if errors.Is(err, opstore.ErrUnknownDelivery) {
+		return africastalking.ErrUnknownMessage
+	}
+	return err
+}
+
+// ussdRouter sends callbacks on a responder service code to the responder
+// menu and every other accepted code to Tool 1.
+type ussdRouter struct {
+	tool1, responders africastalking.USSDPort
+	codes             map[string]bool
+}
+
+func (r ussdRouter) HandleUSSD(ctx context.Context, req intake.USSDRequest) (intake.Screen, error) {
+	if r.codes[req.ServiceCode] {
+		return r.responders.HandleUSSD(ctx, req)
+	}
+	return r.tool1.HandleUSSD(ctx, req)
+}
+
+// responderCodeSet is the set of responder-menu service codes. A code that is
+// also a Tool 1 code is refused: the router would send those callers to the
+// responder menu, and nobody could report an incident on it.
+func responderCodeSet(tool1, responders []string) (map[string]bool, error) {
+	set := map[string]bool{}
+	for _, c := range responders {
+		if slices.Contains(tool1, c) {
+			return nil, fmt.Errorf("USSD service code %s is in both SAUTI_USSD_SERVICE_CODES and SAUTI_USSD_RESPONDER_CODES", c)
+		}
+		set[c] = true
+	}
+	return set, nil
 }

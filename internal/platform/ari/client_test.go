@@ -150,3 +150,64 @@ func TestNewValidatesConfig(t *testing.T) {
 		}
 	}
 }
+
+// Outbound alert calls (M2 Part B): originate dials an endpoint into this
+// Stasis application with arguments, and the answered call's StasisStart
+// carries them back. Nothing else (no recording) is asked of Asterisk.
+func TestClientOriginatesAndReadsStasisArgs(t *testing.T) {
+	f, c := newPair(t)
+	ch, _ := stream(t, c)
+	<-f.Connected()
+	id, err := c.Originate(context.Background(), "PJSIP/+256772000301@sauti-trunk", "+256000000099", []string{"alert", "att-1"}, 30*time.Second)
+	if err != nil || id == "" {
+		t.Fatalf("originate: %q %v", id, err)
+	}
+	o := f.Originated()
+	if len(o) != 1 || o[0].Get("endpoint") != "PJSIP/+256772000301@sauti-trunk" || o[0].Get("app") != "sauti-ivr" ||
+		o[0].Get("appArgs") != "alert,att-1" || o[0].Get("timeout") != "30" || o[0].Get("callerId") != "+256000000099" {
+		t.Fatalf("originate request %v", o)
+	}
+	f.Answered(id, "alert", "att-1")
+	if e := next(t, ch, EventStasisStart); e.ChannelID != id || !reflect.DeepEqual(e.Args, []string{"alert", "att-1"}) {
+		t.Fatalf("StasisStart %+v", e)
+	}
+	if _, err := c.Originate(context.Background(), "PJSIP/x", "", []string{"a,b"}, time.Second); err == nil {
+		t.Fatal("an argument with a comma was sent")
+	}
+}
+
+// CodeRabbit PR #11 (4560453637): a new outbound leader asks Asterisk whether
+// each channel it holds a coordinator line for still exists (GET
+// /ari/channels/{id}): 404 means gone; any other failure is an error, never
+// "gone" (a line in use must not be rung again).
+func TestClientChannelExists(t *testing.T) {
+	f, c := newPair(t)
+	ctx := context.Background()
+	id, err := c.Originate(ctx, "PJSIP/coordinators", "", []string{"escalation"}, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := c.ChannelExists(ctx, id); err != nil || !ok {
+		t.Fatalf("a placed call: %v %v", ok, err)
+	}
+	f.Answered("chan-9", "escalation")
+	f.Hangup("chan-9") // the far end hung up
+	if err := c.Hangup(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range []string{id, "chan-9", "never-seen"} {
+		if ok, err := c.ChannelExists(ctx, ch); err != nil || ok {
+			t.Fatalf("%s: %v %v, want gone", ch, ok, err)
+		}
+	}
+	if _, err := c.ChannelExists(ctx, "chan/../x"); err == nil {
+		t.Fatal("a channel ID with a path separator was sent")
+	}
+	wrong, err := New(Config{BaseURL: f.URL(), User: "sauti", Password: secret(t), App: "sauti-ivr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := wrong.ChannelExists(ctx, "chan-9"); err == nil || ok {
+		t.Fatalf("a refused request read as an answer: %v %v", ok, err)
+	}
+}

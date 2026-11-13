@@ -41,6 +41,8 @@ type Bundle struct {
 	Screens         Screens
 	Triage          Triage
 	Tool1           Tool1
+	SMS             SMS
+	Responder       Responder
 	Platform        Platform
 	// Fingerprint is "sha256:<hex>" over every gated file (path and content).
 	Fingerprint string
@@ -142,7 +144,7 @@ type Platform struct {
 // placeholderMarkers appear in copy that has not been signed off.
 // PENDING-MD-PI marks copy awaiting the Medical Director's and PI's sign-off
 // (O6: the message callers get while dispatch is suspended).
-var placeholderMarkers = []string{"PENDING-TRANSLATION", "PENDING-TOOL1", "PENDING-MD-PI", "XXX"}
+var placeholderMarkers = []string{"PENDING-TRANSLATION", "PENDING-TOOL1", "PENDING-MD-PI", "PENDING-SMS", "PENDING-RESPONDER", "XXX"}
 
 // SuspensionReady reports whether dispatch may be suspended in production
 // (O6): the message callers get while it is suspended must be approved by
@@ -181,7 +183,13 @@ func (b Bundle) ProductionReady() error {
 	if b.Tool1.Status != "approved" {
 		problems = append(problems, "tool1 status is "+b.Tool1.Status)
 	}
-	for _, e := range append(b.Screens.All(), b.Tool1.Texts()...) {
+	if b.SMS.Status != "approved" {
+		problems = append(problems, "sms status is "+b.SMS.Status)
+	}
+	if b.Responder.Status != "approved" {
+		problems = append(problems, "responder status is "+b.Responder.Status)
+	}
+	for _, e := range append(append(append(b.Screens.All(), b.Tool1.Texts()...), b.SMS.texts()...), b.Responder.texts()...) {
 		for _, m := range placeholderMarkers {
 			if strings.Contains(e[2], m) {
 				problems = append(problems, fmt.Sprintf("screen %s/%s contains placeholder %q", e[0], e[1], m))

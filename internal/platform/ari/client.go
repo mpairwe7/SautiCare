@@ -1,6 +1,7 @@
 // Package ari is Sauti's minimal Asterisk REST Interface client (ADR-0023):
 // answer a channel, play and stop prompts, hand a call back to the dialplan,
-// hang up, and receive the Stasis event stream. It deliberately has no recording, snooping or bridging call: the
+// hang up, ask whether a channel still exists, and receive the Stasis event
+// stream. It deliberately has no recording, snooping or bridging call: the
 // IVR records nothing (Build Prompt §10.2). REST goes through the egress
 // allowlist (the configured Asterisk host only); events arrive over one
 // WebSocket that reconnects with backoff.
@@ -12,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -43,6 +45,7 @@ type Event struct {
 	CallerNumber string
 	Digit        string
 	PlaybackID   string
+	Args         []string // StasisStart: the application arguments of an originated call
 }
 
 // Config configures the client.
@@ -82,23 +85,71 @@ func New(cfg Config) (*Client, error) {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values) error {
+	_, err := c.doBody(ctx, method, path, q)
+	return err
+}
+
+func (c *Client) doBody(ctx context.Context, method, path string, q url.Values) ([]byte, error) {
 	u := *c.base
 	u.Path = strings.TrimRight(u.Path, "/") + path
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("ari: %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("ari: %s %s: %w", method, path, err)
 	}
-	_ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil, fmt.Errorf("ari: %s %s: %w", method, path, err)
+	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("ari: %s %s: status %d", method, path, resp.StatusCode)
+		return nil, &statusError{method: method, path: path, code: resp.StatusCode}
 	}
-	return nil
+	return body, nil
+}
+
+// statusError is a request Asterisk answered with a status other than 2xx.
+type statusError struct {
+	method, path string
+	code         int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("ari: %s %s: status %d", e.method, e.path, e.code)
+}
+
+// Originate dials endpoint into this client's Stasis application with
+// args, for an outbound alert call (M2 Part B); it returns the new
+// channel's ID. When the callee answers, the channel's StasisStart carries
+// args. timeout is how long it rings.
+func (c *Client) Originate(ctx context.Context, endpoint, callerID string, args []string, timeout time.Duration) (string, error) {
+	if endpoint == "" || len(endpoint) > 256 || strings.ContainsAny(endpoint, "\r\n&") {
+		return "", errors.New("ari: invalid endpoint")
+	}
+	if err := ids(args...); err != nil {
+		return "", err
+	}
+	q := url.Values{"endpoint": {endpoint}, "app": {c.cfg.App}, "appArgs": {strings.Join(args, ",")},
+		"timeout": {strconv.Itoa(max(1, int(timeout.Seconds())))}}
+	if callerID != "" {
+		q.Set("callerId", callerID)
+	}
+	body, err := c.doBody(ctx, http.MethodPost, "/ari/channels", q)
+	if err != nil {
+		return "", err
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &ch); err != nil || !safeID.MatchString(ch.ID) {
+		return "", errors.New("ari: originate returned no channel")
+	}
+	return ch.ID, nil
 }
 
 func ids(xs ...string) error {
@@ -163,6 +214,21 @@ func (c *Client) Continue(ctx context.Context, channelID, dialContext, extension
 // call can be served (ivr-controller readiness).
 func (c *Client) EventsConnected() bool { return c.connected.Load() }
 
+// ChannelExists asks Asterisk whether the channel still exists (GET
+// /ari/channels/{id}): false only on 404. Any other failure is an error, so a
+// caller never mistakes an unreachable Asterisk for a call that has ended.
+func (c *Client) ChannelExists(ctx context.Context, channelID string) (bool, error) {
+	if err := ids(channelID); err != nil {
+		return false, err
+	}
+	_, err := c.doBody(ctx, http.MethodGet, "/ari/channels/"+channelID, nil)
+	var se *statusError
+	if errors.As(err, &se) && se.code == http.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Hangup ends the channel.
 func (c *Client) Hangup(ctx context.Context, channelID string) error {
 	if err := ids(channelID); err != nil {
@@ -172,8 +238,9 @@ func (c *Client) Hangup(ctx context.Context, channelID string) error {
 }
 
 type rawEvent struct {
-	Type    string `json:"type"`
-	Digit   string `json:"digit"`
+	Type    string   `json:"type"`
+	Digit   string   `json:"digit"`
+	Args    []string `json:"args"`
 	Channel *struct {
 		ID     string `json:"id"`
 		Caller struct {
@@ -191,7 +258,7 @@ func decodeEvent(b []byte) (Event, error) {
 	if err := json.Unmarshal(b, &r); err != nil {
 		return Event{}, err
 	}
-	e := Event{Type: r.Type, Digit: r.Digit}
+	e := Event{Type: r.Type, Digit: r.Digit, Args: r.Args}
 	if r.Channel != nil {
 		e.ChannelID, e.CallerNumber = r.Channel.ID, r.Channel.Caller.Number
 	}

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"testing"
 	"time"
+	"uuid"
 
 	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/dispatch"
@@ -97,13 +98,17 @@ func buildOptions(t *testing.T, gaz location.File, production bool) (DispatchOpt
 		t.Fatal(err)
 	}
 	st := &snapshotStore{gaz: gaz}
-	return DispatchOptions{Config: cfg, Store: st, Deliverer: nopDeliverer{}, Suspension: nopSuspension{},
+	return DispatchOptions{Config: cfg, Store: st, Deliverer: nopDeliverer{}, Notifier: nopDeliverer{}, Suspension: nopSuspension{},
 		Production: production}, st
 }
 
 type nopDeliverer struct{}
 
 func (nopDeliverer) Deliver(context.Context, dispatch.Delivery) (string, error) { return "", nil }
+func (nopDeliverer) Notify(context.Context, dispatch.Notice) (string, error)    { return "", nil }
+func (nopDeliverer) NotifyFacility(context.Context, uuid.UUID, string) (string, error) {
+	return "", nil
+}
 
 type nopSuspension struct{}
 

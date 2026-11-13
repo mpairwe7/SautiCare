@@ -1,0 +1,32 @@
+# SMS copy (Build Prompt §10.4, §16; hard constraint 6; decision 1).
+# An SMS carries the incident number, colour, category and — only in
+# alert_amended and facility_forward, once the amendment for decision 1 is
+# approved — ward and landmark. Never a patient name, a clinical answer or
+# the caller's number: the loader refuses any other placeholder, a number
+# written into the text, a non-GSM character, or more than one 160-character
+# segment with long values. All copy is a placeholder: "PENDING-SMS" and
+# status "placeholder" block production until the PI approves the wording.
+status: placeholder
+languages: [en, lg]
+templates:
+  alert:
+    en: "PENDING-SMS Sauti {ref}: {colour} {category}. Dial *384*2# to accept or decline."
+    lg: "PENDING-TRANSLATION Sauti {ref}: {colour} {category}."
+  alert_amended:
+    en: "PENDING-SMS Sauti {ref}: {colour} {category}, {landmark}, {ward}. Dial *384*2#."
+    lg: "PENDING-TRANSLATION Sauti {ref}: {colour} {category}, {landmark}, {ward}."
+  stand_down:
+    en: "PENDING-SMS Sauti {ref}: no longer needed. Thank you."
+    lg: "PENDING-TRANSLATION Sauti {ref}."
+  availability_expiring:
+    en: "PENDING-SMS Sauti: you are available until {time}. Dial *384*2# to stay available."
+    lg: "PENDING-TRANSLATION Sauti {time}."
+  helper_on_the_way:
+    en: "PENDING-SMS Sauti {ref}: help is on the way."
+    lg: "PENDING-TRANSLATION Sauti {ref}."
+  forwarded_to_facility:
+    en: "PENDING-SMS Sauti {ref}: {facility_name} has your request. Call {facility_phone}."
+    lg: "PENDING-TRANSLATION Sauti {ref}: {facility_name} {facility_phone}."
+  facility_forward:
+    en: "PENDING-SMS Sauti {ref}: {colour} {category}, {ward}, {landmark}. Answer the Sauti call: press 1."
+    lg: "PENDING-TRANSLATION Sauti {ref}: {colour} {category}, {ward}, {landmark}."

@@ -76,9 +76,25 @@ func (c *hooked) IssueAlert(ctx context.Context, p dispatch.IssueParams) (dispat
 // recorder is the Deliverer: it records every delivery; fail, if set,
 // decides the outcome of one.
 type recorder struct {
-	mu   sync.Mutex
-	sent []dispatch.Delivery
-	fail func(dispatch.Delivery) error
+	mu         sync.Mutex
+	sent       []dispatch.Delivery
+	notices    []dispatch.Notice
+	facilities []string
+	fail       func(dispatch.Delivery) error
+}
+
+func (r *recorder) NotifyFacility(_ context.Context, _ uuid.UUID, facility string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.facilities = append(r.facilities, facility)
+	return "sim-f-" + facility, nil
+}
+
+func (r *recorder) Notify(_ context.Context, n dispatch.Notice) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notices = append(r.notices, n)
+	return "sim-n-" + n.AttemptID.String()[:8], nil
 }
 
 func (r *recorder) Deliver(_ context.Context, d dispatch.Delivery) (string, error) {
@@ -120,6 +136,7 @@ type engineRig struct {
 	cfg        config.Bundle
 	ids        crypto.Identifiers
 	intake     *opstore.Store
+	ivr        *opstore.Store
 	console    *opstore.Store
 	store      *hooked
 	deliveries *recorder
@@ -159,7 +176,7 @@ func newEngineRig(t *testing.T, mutate func(*config.Bundle)) *engineRig {
 		return opstore.New(p)
 	}
 	r := &engineRig{ctx: ctx, c: c, cfg: cfg, ids: crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)},
-		intake: pool("op_intake"), console: pool("op_console"), deliveries: &recorder{}, suspension: &flag{}}
+		intake: pool("op_intake"), ivr: pool("op_ivr"), console: pool("op_console"), deliveries: &recorder{}, suspension: &flag{}}
 	r.store = &hooked{Store: pool("op_dispatch")}
 	r.rebuild(t)
 	return r
@@ -169,7 +186,7 @@ func newEngineRig(t *testing.T, mutate func(*config.Bundle)) *engineRig {
 func (r *engineRig) rebuild(t *testing.T) {
 	t.Helper()
 	e, err := wiring.BuildDispatch(r.ctx, wiring.DispatchOptions{Config: r.cfg, Store: r.store,
-		Deliverer: r.deliveries, Suspension: r.suspension})
+		Deliverer: r.deliveries, Notifier: r.deliveries, Suspension: r.suspension})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,6 +360,11 @@ func TestEngineYellowCascadeDepthThree(t *testing.T) {
 		if n := r.deliveries.count(a.ID, dispatch.PurposeAlert); n != 1 {
 			t.Fatalf("alert %v delivered %d times", a.ID, n)
 		}
+	}
+	// The caller's "helper on the way" SMS goes out once (Part B).
+	r.mustProcess(t, id)
+	if n := len(r.deliveries.notices); n != 1 || r.deliveries.notices[0].Kind != dispatch.CallerHelperOnTheWay {
+		t.Fatalf("caller notices delivered %+v", r.deliveries.notices)
 	}
 	if len(snap.Escalations) != 0 {
 		t.Fatalf("escalated: %v", snap.Escalations)

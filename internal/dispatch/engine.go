@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 	"uuid"
@@ -34,6 +35,11 @@ type Store interface {
 	BeginAttempt(ctx context.Context, alert uuid.UUID, purpose, channel string) (uuid.UUID, bool, error)
 	FinishAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
 
+	BeginNoticeAttempt(ctx context.Context, incidentID uuid.UUID, kind, channel string) (uuid.UUID, bool, error)
+	BeginForwardAttempt(ctx context.Context, incidentID uuid.UUID, facility, channel string) (uuid.UUID, bool, error)
+	FinishForwardAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
+	FinishNoticeAttempt(ctx context.Context, attempt uuid.UUID, status, providerRef string) (bool, error)
+
 	RedDispatchOutcomes(ctx context.Context, window int, redWindow time.Duration) ([]bool, error)
 	AutoSuspendDispatch(ctx context.Context, failures, window int) (bool, error)
 }
@@ -56,6 +62,13 @@ type Deliverer interface {
 // message (the attempt failed; nothing was sent).
 var ErrRejected = errors.New("dispatch: delivery rejected by the provider")
 
+// Notifier delivers caller notices and forwarded facilities' SMS (the SMS
+// channel); errors as Deliverer.
+type Notifier interface {
+	Notify(ctx context.Context, n Notice) (providerRef string, err error)
+	NotifyFacility(ctx context.Context, incidentID uuid.UUID, facilityID string) (providerRef string, err error)
+}
+
 // Suspension reports whether dispatch is suspended (O6); the operational
 // store implements it.
 type Suspension interface {
@@ -69,6 +82,7 @@ type Suspension interface {
 type Engine struct {
 	store      Store
 	deliverer  Deliverer
+	notifier   Notifier
 	suspension Suspension
 	params     Params
 	ranker     Ranker
@@ -79,11 +93,25 @@ type Engine struct {
 	// passTimeout bounds each incident's pass (below the lease), so a
 	// provider or lock that hangs cannot stall the leader (review I8).
 	passTimeout time.Duration
-	lastPass    atomic.Int64 // unix nanoseconds of the last successful RunOnce
+	sendTimeout time.Duration // each provider call (review I4)
+	workers     int           // provider calls in flight at once
+	lastPass    atomic.Int64  // unix nanoseconds of the last successful RunOnce
 }
 
 // DefaultPassTimeout bounds one incident's pass; it is below the 30 s lease.
 const DefaultPassTimeout = 20 * time.Second
+
+// DefaultSendTimeout bounds each provider call, well below the pass: a
+// provider that hangs costs one send timeout, not a pass (review I4).
+const DefaultSendTimeout = 5 * time.Second
+
+// DefaultDeliveryWorkers is how many provider calls run at once.
+const DefaultDeliveryWorkers = 16
+
+// settleTimeout bounds recording a send's result. It runs on a context of
+// its own, so a pass that ends while a send is in flight still settles the
+// attempt instead of leaving it claimed for ever.
+const settleTimeout = 5 * time.Second
 
 // LastPass is when the last RunOnce completed without a store error (zero:
 // never). dispatch-worker's readiness and metrics use it.
@@ -98,6 +126,7 @@ func (e *Engine) LastPass() time.Time {
 type EngineConfig struct {
 	Store        Store
 	Deliverer    Deliverer
+	Notifier     Notifier
 	Suspension   Suspension
 	Params       Params
 	Ranker       Ranker
@@ -105,12 +134,14 @@ type EngineConfig struct {
 	Gazetteer    location.File // stages, wards and facilities in force
 	StoppingRule StoppingRule  // Guide §14 (O6)
 	PassTimeout  time.Duration // default DefaultPassTimeout
+	SendTimeout  time.Duration // default DefaultSendTimeout
+	Workers      int           // provider calls at once; default DefaultDeliveryWorkers
 }
 
 // NewEngine validates the configuration.
 func NewEngine(c EngineConfig) (*Engine, error) {
-	if c.Store == nil || c.Deliverer == nil || c.Suspension == nil || c.LogicVersion == "" || c.Gazetteer.Version == "" {
-		return nil, errors.New("dispatch: engine needs a store, deliverer, suspension source, logic version and gazetteer")
+	if c.Store == nil || c.Deliverer == nil || c.Notifier == nil || c.Suspension == nil || c.LogicVersion == "" || c.Gazetteer.Version == "" {
+		return nil, errors.New("dispatch: engine needs a store, deliverer, notifier, suspension source, logic version and gazetteer")
 	}
 	if err := c.Params.Validate(); err != nil {
 		return nil, err
@@ -129,8 +160,9 @@ func NewEngine(c EngineConfig) (*Engine, error) {
 	if timeout <= 0 {
 		timeout = DefaultPassTimeout
 	}
-	return &Engine{store: c.Store, deliverer: c.Deliverer, suspension: c.Suspension, params: c.Params, ranker: c.Ranker,
-		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells, rule: c.StoppingRule, passTimeout: timeout}, nil
+	return &Engine{store: c.Store, deliverer: c.Deliverer, notifier: c.Notifier, suspension: c.Suspension, params: c.Params, ranker: c.Ranker,
+		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells, rule: c.StoppingRule, passTimeout: timeout,
+		sendTimeout: c.SendTimeout, workers: c.Workers}, nil
 }
 
 // maxRounds bounds re-planning within one wake; each round records facts,
@@ -140,6 +172,28 @@ const maxRounds = 32
 // Process plans one due incident until nothing more is due now, delivers,
 // and stores the next wake for the generation it was claimed at.
 func (e *Engine) Process(ctx context.Context, due Due) error {
+	p, err := e.plan(ctx, due)
+	if err != nil {
+		return err
+	}
+	if err := e.deliverAll(ctx, []Snapshot{p.snap})[due.IncidentID]; err != nil {
+		return err
+	}
+	return e.store.ScheduleDispatch(ctx, due.IncidentID, due.Gen, p.next)
+}
+
+// planned is an incident whose facts due now are recorded: its sends are
+// still to make and its next wake still to store. The wake is stored only
+// once the sends have been made, so a pass that fails while sending leaves
+// the incident leased and the next pass after the lease retries them.
+type planned struct {
+	due  Due
+	snap Snapshot
+	next *time.Time
+}
+
+// plan records every fact due now for one incident.
+func (e *Engine) plan(ctx context.Context, due Due) (planned, error) {
 	// Refused by the database this wake: a responder who lapsed since the
 	// read, a facility it would not take (a suspension committed since the
 	// read). The next round re-reads the facts without them.
@@ -147,39 +201,36 @@ func (e *Engine) Process(ctx context.Context, due Due) error {
 	for range maxRounds {
 		snap, err := e.store.DispatchSnapshot(ctx, due.IncidentID)
 		if err != nil {
-			return err
+			return planned{}, err
 		}
 		now, err := e.store.Now(ctx)
 		if err != nil {
-			return err
+			return planned{}, err
 		}
 		suspended, err := e.suspension.DispatchSuspended(ctx)
 		if err != nil {
-			return err
+			return planned{}, err
 		}
 		st, pool, err := e.state(ctx, snap, suspended, now, refused.responders)
 		if err != nil {
-			return err
+			return planned{}, err
 		}
 		facilities := slices.DeleteFunc(slices.Clone(e.gazetteer.Facilities), func(f location.Facility) bool { return refused.facilities[f.ID] })
 		acts, wake := Plan(st, pool, facilities, e.params, now)
 		if len(acts) == 0 {
-			if err := e.deliver(ctx, snap); err != nil {
-				return err
-			}
-			var next *time.Time
+			p := planned{due: due, snap: snap}
 			if !wake.IsZero() {
-				next = &wake
+				p.next = &wake
 			}
-			return e.store.ScheduleDispatch(ctx, due.IncidentID, due.Gen, next)
+			return p, nil
 		}
 		for _, a := range acts {
 			if err := e.execute(ctx, snap.IncidentID, a, refused); err != nil {
-				return fmt.Errorf("dispatch: %s for %s: %w", a.Kind, snap.IncidentID, err)
+				return planned{}, fmt.Errorf("dispatch: %s for %s: %w", a.Kind, snap.IncidentID, err)
 			}
 		}
 	}
-	return fmt.Errorf("dispatch: incident %s: the plan did not settle in %d rounds", due.IncidentID, maxRounds)
+	return planned{}, fmt.Errorf("dispatch: incident %s: the plan did not settle in %d rounds", due.IncidentID, maxRounds)
 }
 
 // state builds the planner's view: the stored facts, the pool of eligible
@@ -304,12 +355,15 @@ func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, re
 	return err
 }
 
-// deliver sends every alert still pending and every stand-down that has not
-// been attempted. An attempt is claimed in the store before the provider
-// call and only once, so neither a retry nor a crash sends it twice; one
-// whose result is unknown is never re-sent (the cascade's next rung covers
-// it). Channel: SMS (USSD push is disabled, O2; voice fallback is Part B).
-func (e *Engine) deliver(ctx context.Context, snap Snapshot) error {
+// sends lists one planned incident's sends: every alert still pending and
+// every stand-down not yet attempted, the caller notices and the forwarded
+// facilities' SMS. Each is claimed in the store before the provider call and
+// only once, so neither a retry nor a crash sends it twice; one whose result
+// is unknown is never re-sent (the next rung covers it). Each provider call
+// is bounded by the send timeout and its result settled on a context of its
+// own (review I4).
+func (e *Engine) sends(snap Snapshot) []func(context.Context) error {
+	var out []func(context.Context) error
 	for _, a := range snap.Alerts {
 		purpose := ""
 		switch a.Outcome {
@@ -320,27 +374,160 @@ func (e *Engine) deliver(ctx context.Context, snap Snapshot) error {
 		default:
 			continue
 		}
-		attempt, fresh, err := e.store.BeginAttempt(ctx, a.ID, purpose, ChannelSMS)
-		if err != nil {
-			return err
-		}
-		if !fresh {
-			continue
-		}
-		ref, derr := e.deliverer.Deliver(ctx, Delivery{AttemptID: attempt, AlertID: a.ID, IncidentID: snap.IncidentID,
-			ResponderID: a.ResponderID, Role: a.Role, Purpose: purpose, Channel: ChannelSMS})
-		status := "sent"
-		switch {
-		case errors.Is(derr, ErrRejected):
-			status = "failed"
-		case derr != nil:
-			status = "unknown"
-		}
-		if _, err := e.store.FinishAttempt(ctx, attempt, status, ref); err != nil {
-			return err
-		}
+		out = append(out, func(ctx context.Context) error {
+			attempt, fresh, err := e.store.BeginAttempt(ctx, a.ID, purpose, ChannelSMS)
+			if err != nil || !fresh {
+				return err
+			}
+			ref, derr := e.send(ctx, func(c context.Context) (string, error) {
+				return e.deliverer.Deliver(c, Delivery{AttemptID: attempt, AlertID: a.ID, IncidentID: snap.IncidentID,
+					ResponderID: a.ResponderID, Role: a.Role, Purpose: purpose, Channel: ChannelSMS})
+			})
+			return e.settle(ctx, func(c context.Context) error {
+				_, err := e.store.FinishAttempt(c, attempt, settlement(derr), ref)
+				return err
+			})
+		})
 	}
-	return nil
+	for _, kind := range snap.CallerNotified {
+		out = append(out, func(ctx context.Context) error {
+			attempt, fresh, err := e.store.BeginNoticeAttempt(ctx, snap.IncidentID, kind, ChannelSMS)
+			if err != nil || !fresh {
+				return err
+			}
+			ref, nerr := e.send(ctx, func(c context.Context) (string, error) {
+				return e.notifier.Notify(c, Notice{AttemptID: attempt, IncidentID: snap.IncidentID, Kind: kind, Channel: ChannelSMS})
+			})
+			return e.settle(ctx, func(c context.Context) error {
+				_, err := e.store.FinishNoticeAttempt(c, attempt, settlement(nerr), ref)
+				return err
+			})
+		})
+	}
+	// Each forwarded facility's SMS (scenario 7); its call is ivr-controller's.
+	for _, f := range snap.Forwards {
+		out = append(out, func(ctx context.Context) error {
+			attempt, fresh, err := e.store.BeginForwardAttempt(ctx, snap.IncidentID, f.FacilityID, ChannelSMS)
+			if err != nil || !fresh {
+				return err
+			}
+			ref, ferr := e.send(ctx, func(c context.Context) (string, error) {
+				return e.notifier.NotifyFacility(c, snap.IncidentID, f.FacilityID)
+			})
+			return e.settle(ctx, func(c context.Context) error {
+				_, err := e.store.FinishForwardAttempt(c, attempt, settlement(ferr), ref)
+				return err
+			})
+		})
+	}
+	return out
+}
+
+// pipeline makes planned incidents' sends on at most workers provider calls
+// at once, shared by a whole batch, in the order the incidents are added
+// (the most urgent first). An incident's sends start as soon as it is added,
+// while later incidents are still planning (CodeRabbit PR #11): neither a
+// slow provider nor a slow or failing plan delays an alert already issued.
+type pipeline struct {
+	ctx       context.Context
+	queue     chan func()
+	turn      chan struct{} // closed once the last added incident's sends are all queued
+	workers   sync.WaitGroup
+	incidents sync.WaitGroup
+}
+
+func (e *Engine) newPipeline(ctx context.Context) *pipeline {
+	n := e.workers
+	if n <= 0 {
+		n = DefaultDeliveryWorkers
+	}
+	p := &pipeline{ctx: ctx, queue: make(chan func()), turn: make(chan struct{})}
+	close(p.turn)
+	for range n {
+		p.workers.Go(func() {
+			for f := range p.queue {
+				f()
+			}
+		})
+	}
+	return p
+}
+
+// add queues an incident's sends behind those of the incidents added before
+// it and, once they have all been made, calls done with the first error (nil
+// when every send was made and settled). add never waits for a send.
+func (p *pipeline) add(sends []func(context.Context) error, done func(error)) {
+	prev, mine := p.turn, make(chan struct{})
+	p.turn = mine
+	p.incidents.Go(func() {
+		var made sync.WaitGroup
+		var mu sync.Mutex
+		var first error
+		<-prev
+		for _, send := range sends {
+			made.Add(1)
+			p.queue <- func() {
+				defer made.Done()
+				if err := send(p.ctx); err != nil {
+					mu.Lock()
+					if first == nil {
+						first = err
+					}
+					mu.Unlock()
+				}
+			}
+		}
+		close(mine)
+		made.Wait()
+		done(first)
+	})
+}
+
+// wait returns once every added incident's sends are made and its done has
+// returned; the workers then stop.
+func (p *pipeline) wait() {
+	p.incidents.Wait()
+	close(p.queue)
+	p.workers.Wait()
+}
+
+// deliverAll makes the sends of the given incidents (at most workers at
+// once, the first incident first) and returns each incident's first store
+// error.
+func (e *Engine) deliverAll(ctx context.Context, snaps []Snapshot) map[uuid.UUID]error {
+	errs := map[uuid.UUID]error{}
+	var mu sync.Mutex
+	p := e.newPipeline(ctx)
+	for _, snap := range snaps {
+		p.add(e.sends(snap), func(err error) {
+			if err != nil {
+				mu.Lock()
+				errs[snap.IncidentID] = err
+				mu.Unlock()
+			}
+		})
+	}
+	p.wait()
+	return errs
+}
+
+// send makes one provider call under the send timeout.
+func (e *Engine) send(ctx context.Context, call func(context.Context) (string, error)) (string, error) {
+	t := e.sendTimeout
+	if t <= 0 {
+		t = DefaultSendTimeout
+	}
+	c, cancel := context.WithTimeout(ctx, t)
+	defer cancel()
+	return call(c)
+}
+
+// settle records a send's result on a context of its own, so the end of the
+// pass does not leave the attempt claimed for ever.
+func (e *Engine) settle(ctx context.Context, f func(context.Context) error) error {
+	c, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancel()
+	return f(c)
 }
 
 // RunOnce claims due incidents (most urgent first) and processes each. A
@@ -350,22 +537,62 @@ func (e *Engine) RunOnce(ctx context.Context, batch int, lease time.Duration, on
 	if err != nil {
 		return 0, err
 	}
-	failed := false
-	for _, d := range due {
-		pctx, cancel := context.WithTimeout(ctx, e.passTimeout)
-		err := e.Process(pctx, d)
-		cancel()
-		if err != nil {
-			failed = true
-			if ctx.Err() != nil {
-				return len(due), ctx.Err()
-			}
-			onErr(d.IncidentID, err)
-			// Fail safe to a human (rule 3.14): the coordinator sees it now.
-			if _, eerr := e.store.DispatchEscalate(ctx, d.IncidentID, ReasonDispatchError, "", e.logic); eerr != nil {
-				onErr(d.IncidentID, eerr)
-			}
+	// Sends and their wakes finish on the pipeline's goroutines while the
+	// next incident plans: failures are reported one at a time.
+	var mu sync.Mutex
+	failed, interrupted := false, false
+	fail := func(id uuid.UUID, err error) {
+		mu.Lock()
+		failed = true
+		onErr(id, err)
+		mu.Unlock()
+		// Fail safe to a human (rule 3.14): the coordinator sees it now.
+		if _, eerr := e.store.DispatchEscalate(ctx, id, ReasonDispatchError, "", e.logic); eerr != nil {
+			mu.Lock()
+			onErr(id, eerr)
+			mu.Unlock()
 		}
+	}
+	if len(due) > 0 {
+		// Each incident is planned in turn (its alerts issued, T3 recorded),
+		// most urgent first, and its sends start at once on the batch's
+		// shared workers while the next one plans (review I4; CodeRabbit PR
+		// #11). Its next wake is stored only after its sends: a failure
+		// while sending leaves it leased, and the pass after the lease
+		// retries it.
+		p := e.newPipeline(ctx)
+		for _, d := range due {
+			pctx, cancel := context.WithTimeout(ctx, e.passTimeout)
+			pl, err := e.plan(pctx, d)
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					interrupted = true
+					break
+				}
+				fail(d.IncidentID, err)
+				continue
+			}
+			p.add(e.sends(pl.snap), func(err error) {
+				if err == nil {
+					err = e.store.ScheduleDispatch(ctx, pl.due.IncidentID, pl.due.Gen, pl.next)
+				}
+				if err == nil {
+					return
+				}
+				if ctx.Err() != nil {
+					mu.Lock()
+					interrupted = true
+					mu.Unlock()
+					return
+				}
+				fail(pl.due.IncidentID, err)
+			})
+		}
+		p.wait()
+	}
+	if interrupted {
+		return len(due), ctx.Err()
 	}
 	if !failed {
 		e.lastPass.Store(time.Now().UnixNano())
@@ -420,4 +647,16 @@ func (e *Engine) Run(ctx context.Context, poll time.Duration, batch int, lease t
 		case <-time.After(poll):
 		}
 	}
+}
+
+// settlement is how an attempt settles after the provider call: sent,
+// failed (the provider refused: nothing went out) or unknown (never re-sent).
+func settlement(err error) string {
+	switch {
+	case err == nil:
+		return "sent"
+	case errors.Is(err, ErrRejected):
+		return "failed"
+	}
+	return "unknown"
 }
