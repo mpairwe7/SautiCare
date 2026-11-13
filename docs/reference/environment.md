@@ -22,6 +22,7 @@ Processes read deployment settings from the environment (12-factor), so a later 
 | `SAUTI_ARI_CALLER_ID` | ivr-controller | the number responders see on an alert call (placeholder until P0) | — |
 | `SAUTI_COORDINATOR_DIAL` | ivr-controller (and the dialplan fallback) | the coordinator line rung about every escalation until a coordinator presses 1 (an endpoint; placeholder until P0); works with or without `SAUTI_ARI_DIAL`; unset: escalations are not rung | — |
 | `SAUTI_COORDINATOR_LINES` | ivr-controller | how many calls the coordinator line takes at once (1–50); never more are ringing or answered at once, the most severe escalation first | `1` |
+| `SAUTI_OUTBOUND_NO_INPUT` | ivr-controller | how long an answered forwarding or coordinator call may go without a key it offers before Sauti hangs up, freeing the line (a Go duration, `30s`–`10m`); the escalation, unacknowledged, rings again at its 2-minute interval | `2m` |
 | `SAUTI_AT_PATH_TOKEN` | intake-gw | secret callback path token, ≥ 24 characters | — (required) |
 | `SAUTI_AT_DELIVERY_TOKEN` | intake-gw | secret path token of the SMS delivery-report callback (`/v1/sms/delivery/at/<token>`), ≥ 24 characters; unset: not served | — |
 | `SAUTI_AT_API_KEY` | dispatch-worker | Africa's Talking API key (secret: OpenBao in production); unset: simulated delivery, development and tests only | — |

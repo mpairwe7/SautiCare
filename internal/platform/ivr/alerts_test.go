@@ -29,6 +29,11 @@ type alertARI struct {
 	hungUp     []string
 	stopped    []string
 	failPlay   bool
+	// onOriginate runs before Originate returns the new channel (an answer
+	// event handled before the caller stores it).
+	onOriginate func(channelID string)
+	gone        map[string]bool // channels that no longer exist (ChannelExists)
+	existsErr   error           // ChannelExists fails
 }
 
 func (a *alertARI) StopPlayback(_ context.Context, pb string) error {
@@ -38,10 +43,23 @@ func (a *alertARI) StopPlayback(_ context.Context, pb string) error {
 
 func (a *alertARI) Originate(_ context.Context, endpoint, _ string, args []string, _ time.Duration) (string, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.originated = append(a.originated, endpoint)
 	a.args = append(a.args, args)
-	return fmt.Sprintf("out-%d", len(a.originated)), nil
+	id := fmt.Sprintf("out-%d", len(a.originated))
+	hook := a.onOriginate
+	a.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	return id, nil
+}
+func (a *alertARI) ChannelExists(_ context.Context, ch string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.existsErr != nil {
+		return false, a.existsErr
+	}
+	return !a.gone[ch], nil
 }
 func (a *alertARI) Answer(_ context.Context, ch string) error {
 	a.answered = append(a.answered, ch)
@@ -62,8 +80,23 @@ func (a *alertARI) finish(t *testing.T, h interface{ Handle(context.Context, Eve
 	h.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: a.pbs[len(a.pbs)-1]})
 }
 func (a *alertARI) Hangup(_ context.Context, ch string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.hungUp = append(a.hungUp, ch)
 	return nil
+}
+
+// hangups counts the hang-ups of ch (timers hang up from their own goroutine).
+func (a *alertARI) hangups(ch string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, h := range a.hungUp {
+		if h == ch {
+			n++
+		}
+	}
+	return n
 }
 
 type alertStore struct {

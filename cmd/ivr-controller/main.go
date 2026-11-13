@@ -17,6 +17,7 @@
 //	SAUTI_ARI_CALLER_ID   the number responders see on an alert call (placeholder until P0)
 //	SAUTI_COORDINATOR_DIAL the coordinator line rung about every escalation (endpoint; placeholder until P0); unset: no escalation calls
 //	SAUTI_COORDINATOR_LINES calls the coordinator line takes at once (default 1): never rung twice at once
+//	SAUTI_OUTBOUND_NO_INPUT an answered forwarding or coordinator call with no key for this long is hung up (default 2m; 30s-10m)
 //	SAUTI_ADMIN_ADDR      health and metrics (default 127.0.0.1:9101)
 //	SAUTI_DEVKEYS_DIR     development key directory (refused in production)
 //	SAUTI_CONFIG_DIR      configuration directory (config/)
@@ -173,6 +174,10 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		callerID := os.Getenv("SAUTI_ARI_CALLER_ID")
+		noInput, err := noInputSetting(os.Getenv("SAUTI_OUTBOUND_NO_INPUT"))
+		if err != nil {
+			return err
+		}
 		onErr := func(err error) { log.Error("outbound calls failed", "err", err) }
 		out := ivr.Outbound{ARI: alertClient}
 		var loops []func(context.Context) error
@@ -185,7 +190,7 @@ func run(log *slog.Logger) error {
 			}
 			// Forwarded health centres are called (press 1 to acknowledge).
 			forwards, err := ivr.NewForwardCalls(ivr.ForwardCallsConfig{ARI: alertClient, Store: store, Dial: dial, CallerID: callerID,
-				Gazetteer: built.Gazetteer, Log: log})
+				Gazetteer: built.Gazetteer, Log: log, NoInput: noInput})
 			if err != nil {
 				return err
 			}
@@ -206,7 +211,7 @@ func run(log *slog.Logger) error {
 				}
 			}
 			if out.Coordinator, err = ivr.NewCoordinatorCalls(ivr.CoordinatorCallsConfig{ARI: alertClient, Store: store, Endpoint: line,
-				CallerID: callerID, Lines: lines, Log: log}); err != nil {
+				CallerID: callerID, Lines: lines, Log: log, NoInput: noInput}); err != nil {
 				return err
 			}
 			loops = append(loops, func(lctx context.Context) error { return out.Coordinator.Run(lctx, 5*time.Second, onErr) })
@@ -234,6 +239,21 @@ func run(log *slog.Logger) error {
 	defer cancel()
 	_ = adminSrv.Shutdown(sctx)
 	return nil
+}
+
+// noInputSetting reads SAUTI_OUTBOUND_NO_INPUT: how long an answered
+// forwarding or coordinator call may go without a key before Sauti hangs up,
+// freeing the line (unset: ivr.DefaultNoInput). Bounded so a prompt is
+// always heard in full and a line is never held for long.
+func noInputSetting(v string) (time.Duration, error) {
+	if v == "" {
+		return ivr.DefaultNoInput, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 30*time.Second || d > 10*time.Minute {
+		return 0, fmt.Errorf("SAUTI_OUTBOUND_NO_INPUT must be a duration from 30s to 10m, got %q", v)
+	}
+	return d, nil
 }
 
 // outboundPoll is how often the outbound leader checks its event stream.

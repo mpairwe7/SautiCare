@@ -141,3 +141,18 @@ func within[T any](t *testing.T, ch <-chan T, what string) T {
 	var zero T
 	return zero
 }
+
+// CodeRabbit PR #11 (4560453641): the no-input time of answered forwarding
+// and coordinator calls is configurable within bounds; unset, the default.
+func TestNoInputSetting(t *testing.T) {
+	for v, want := range map[string]time.Duration{"": ivr.DefaultNoInput, "90s": 90 * time.Second, "5m": 5 * time.Minute} {
+		if got, err := noInputSetting(v); err != nil || got != want {
+			t.Errorf("%q: %v %v, want %v", v, got, err, want)
+		}
+	}
+	for _, v := range []string{"10s", "1h", "two minutes", "-2m"} {
+		if _, err := noInputSetting(v); err == nil {
+			t.Errorf("%q accepted", v)
+		}
+	}
+}
