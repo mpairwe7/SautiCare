@@ -269,8 +269,9 @@ threats:
     mitigations:
       - Screen answers are codes only, enforced identically in Go and SQL; identifiers sealed to their own row and referenced by ID
       - USSD step keys are HMACs under a dedicated HKDF info, never sha256(text)
-      - Identifiers shredded with their key period
+      - "Planned (M6): identifiers shredded with their key period; until the retention agent destroys a key period, identifiers sealed under it stay decryptable"
     verified_by:
+      - "planned:M6 key-period destruction by the retention agent (crypto-shredding)"
       - internal/incident/tool1_test.go::TestApplyScreenAnsweredRejectsInvalidPayloads
       - internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRejectsWhatFoldRejects
       - internal/crypto/crypto_test.go::TestStepMACIsKeyedAndSeparated
