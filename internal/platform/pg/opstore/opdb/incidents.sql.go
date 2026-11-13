@@ -229,7 +229,7 @@ func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentR
 }
 
 const latestUSSDStep = `-- name: LatestUSSDStep :many
-SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text
 ORDER BY consumed_len DESC, created_at DESC
 LIMIT 1
@@ -241,13 +241,14 @@ type LatestUSSDStepParams struct {
 }
 
 type LatestUSSDStepRow struct {
-	Response    string
-	EndSession  bool
-	ConsumedLen int32
-	InputMac    []byte
-	MacKeyID    string
-	IncidentID  pgtype.UUID
-	PromptKind  string
+	Response        string
+	EndSession      bool
+	ConsumedLen     int32
+	InputMac        []byte
+	MacKeyID        string
+	IncidentID      pgtype.UUID
+	PromptKind      string
+	MatchedLandmark string
 }
 
 func (q *Queries) LatestUSSDStep(ctx context.Context, arg LatestUSSDStepParams) ([]LatestUSSDStepRow, error) {
@@ -267,6 +268,7 @@ func (q *Queries) LatestUSSDStep(ctx context.Context, arg LatestUSSDStepParams) 
 			&i.MacKeyID,
 			&i.IncidentID,
 			&i.PromptKind,
+			&i.MatchedLandmark,
 		); err != nil {
 			return nil, err
 		}
@@ -333,7 +335,8 @@ const listIdle = `-- name: ListIdle :many
 SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
 WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - $1::int * interval '1 second'
-  AND NOT ('abandoned' = ANY (flags))
+  AND (NOT ('abandoned' = ANY (flags))
+       OR (NOT escalated AND t2 IS NULL AND (danger = 'yes' OR severity = 'red')))
 ORDER BY updated_at
 LIMIT 500
 `
@@ -346,6 +349,11 @@ type ListIdleRow struct {
 	Dispatched bool
 }
 
+// An idle incident is listed until the sweeper flags it abandoned, and again
+// while an abandonment owes its escalation: a caller who resumed an
+// abandoned incident, answered danger yes (or was classified red) and
+// dropped again before T2. The flag is never cleared, and escalated is
+// sticky. The second condition is intake.escalation's rule.
 func (q *Queries) ListIdle(ctx context.Context, idleSeconds int32) ([]ListIdleRow, error) {
 	rows, err := q.db.Query(ctx, listIdle, idleSeconds)
 	if err != nil {
@@ -397,7 +405,7 @@ func (q *Queries) ListIncidentIDs(ctx context.Context) ([]pgtype.UUID, error) {
 }
 
 const lookupUSSDStep = `-- name: LookupUSSDStep :many
-SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text
   AND input_mac = ANY ($3::bytea[])
 `
@@ -409,13 +417,14 @@ type LookupUSSDStepParams struct {
 }
 
 type LookupUSSDStepRow struct {
-	Response    string
-	EndSession  bool
-	ConsumedLen int32
-	InputMac    []byte
-	MacKeyID    string
-	IncidentID  pgtype.UUID
-	PromptKind  string
+	Response        string
+	EndSession      bool
+	ConsumedLen     int32
+	InputMac        []byte
+	MacKeyID        string
+	IncidentID      pgtype.UUID
+	PromptKind      string
+	MatchedLandmark string
 }
 
 func (q *Queries) LookupUSSDStep(ctx context.Context, arg LookupUSSDStepParams) ([]LookupUSSDStepRow, error) {
@@ -435,6 +444,7 @@ func (q *Queries) LookupUSSDStep(ctx context.Context, arg LookupUSSDStepParams) 
 			&i.MacKeyID,
 			&i.IncidentID,
 			&i.PromptKind,
+			&i.MatchedLandmark,
 		); err != nil {
 			return nil, err
 		}
@@ -571,10 +581,11 @@ func (q *Queries) ResumeSession(ctx context.Context, arg ResumeSessionParams) (R
 
 const saveUSSDStep = `-- name: SaveUSSDStep :exec
 INSERT INTO op.ussd_steps (provider, provider_session_id, input_mac, mac_key_id, consumed_len, response, end_session,
-                           incident_id, prompt_kind)
+                           incident_id, prompt_kind, matched_landmark)
 VALUES ($1::text, $2::text, $3::bytea,
         $4::text, $5::int, $6::text,
-        $7::boolean, $8::uuid, $9::text)
+        $7::boolean, $8::uuid, $9::text,
+        $10::text)
 ON CONFLICT DO NOTHING
 `
 
@@ -588,6 +599,7 @@ type SaveUSSDStepParams struct {
 	EndSession        bool
 	IncidentID        pgtype.UUID
 	PromptKind        string
+	MatchedLandmark   string
 }
 
 func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) error {
@@ -601,6 +613,7 @@ func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) erro
 		arg.EndSession,
 		arg.IncidentID,
 		arg.PromptKind,
+		arg.MatchedLandmark,
 	)
 	return err
 }
