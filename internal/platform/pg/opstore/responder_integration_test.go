@@ -17,6 +17,7 @@ import (
 
 func registerOne(t *testing.T, c *pgtest.TestCluster, ids crypto.Identifiers, role responder.Role) (*responder.Service, responder.Registered) {
 	t.Helper()
+	gazetteerVersion(t, c) // a responder registers at a stage of the gazetteer in force
 	svc := responder.NewService(storeAs(t, c, "op_console"), ids)
 	phone, err := pii.ParsePhone("0772000123")
 	if err != nil {

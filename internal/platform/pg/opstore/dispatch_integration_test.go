@@ -37,6 +37,7 @@ type dispatchRig struct {
 func newDispatchRig(t *testing.T) *dispatchRig {
 	t.Helper()
 	c := pgtest.Cluster(t)
+	gazetteerVersion(t, c) // responders register at a stage of the gazetteer in force
 	r := &dispatchRig{c: c, ids: identifiers(t), intake: storeAs(t, c, "op_intake"), dispatcher: storeAs(t, c, "op_dispatch"),
 		ivr: storeAs(t, c, "op_ivr"), ro: storeAs(t, c, "op_readonly"), console: storeAs(t, c, "op_console")}
 	r.incident = dispatchedIncident(t, r.intake).IncidentID
