@@ -150,9 +150,10 @@ func run(log *slog.Logger) error {
 	go func() { errc <- adminSrv.ListenAndServe() }()
 	go func() { errc <- ctrl.Run(ctx, client) }()
 
-	// Outbound voice alerts (M2 Part B; scenario 9): an alert still pending
-	// after voice_fallback_after rings the responder. One leader places the
-	// calls; every instance serves the answered calls' events.
+	// Outbound calls (M2 Part B; scenarios 7–9, 11): an alert still pending
+	// after voice_fallback_after rings the responder; forwarded health centres
+	// and the coordinator line are called. One leader places the calls and
+	// alone holds the outbound application's websocket (outboundTerm).
 	if dial := os.Getenv("SAUTI_ARI_DIAL"); dial != "" {
 		alertClient, err := ari.New(ari.Config{
 			BaseURL: env.Default("SAUTI_ARI_URL", "http://127.0.0.1:8088"), User: env.Default("SAUTI_ARI_USER", "sauti"),
@@ -192,16 +193,16 @@ func run(log *slog.Logger) error {
 		} else {
 			log.Warn("SAUTI_COORDINATOR_DIAL is not set: escalations are not rung to coordinators")
 		}
-		go func() { errc <- alertClient.Events(ctx, func(e ari.Event) { out.Handle(ctx, e) }) }()
+		onErr := func(err error) { log.Error("outbound calls failed", "err", err) }
+		loops := []func(context.Context) error{
+			func(lctx context.Context) error { return calls.Run(lctx, 2*time.Second, onErr) },
+			func(lctx context.Context) error { return forwards.Run(lctx, 2*time.Second, onErr) },
+		}
+		if out.Coordinator != nil {
+			loops = append(loops, func(lctx context.Context) error { return out.Coordinator.Run(lctx, 5*time.Second, onErr) })
+		}
 		go func() {
-			_ = pg.RunAsLeader(ctx, pool, alertCallsLeaderKey, 5*time.Second, func(lctx context.Context) error {
-				onErr := func(err error) { log.Error("outbound calls failed", "err", err) }
-				go func() { _ = forwards.Run(lctx, 2*time.Second, onErr) }()
-				if out.Coordinator != nil {
-					go func() { _ = out.Coordinator.Run(lctx, 5*time.Second, onErr) }()
-				}
-				return calls.Run(lctx, 2*time.Second, onErr)
-			})
+			_ = pg.RunAsLeader(ctx, pool, alertCallsLeaderKey, 5*time.Second, outboundTerm(alertClient.Events, out, loops...))
 		}()
 	} else {
 		log.Warn("SAUTI_ARI_DIAL is not set: no voice alerts (SMS and the USSD menu only)")
@@ -220,4 +221,22 @@ func run(log *slog.Logger) error {
 	defer cancel()
 	_ = adminSrv.Shutdown(sctx)
 	return nil
+}
+
+// outboundTerm is the outbound side's leadership term. The leader alone takes
+// the outbound application's events, because Asterisk gives an application one
+// websocket and a newer connection takes it over (ApplicationReplaced): the
+// calls the leader places and the events of their answers then meet in one
+// process, which the coordinator line's busy tracking relies on. The
+// subscription and the loops end with the term; the first loop's return ends
+// it.
+func outboundTerm(events func(context.Context, func(ari.Event)) error, out ivr.Outbound,
+	loops ...func(context.Context) error) func(context.Context) error {
+	return func(lctx context.Context) error {
+		go func() { _ = events(lctx, func(e ari.Event) { out.Handle(lctx, e) }) }()
+		for _, l := range loops[1:] {
+			go func() { _ = l(lctx) }()
+		}
+		return loops[0](lctx)
+	}
 }

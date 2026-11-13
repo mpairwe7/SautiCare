@@ -12,9 +12,9 @@
 ivr-controller places three kinds of outbound call on the `sauti-alerts` Stasis application ([ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md)):
 - **Responder alerts:** an alert still pending at 20 s.
 - **Forwarding calls:** to a health centre.
-- **Coordinator calls:** every escalation, retried every 2 minutes until a coordinator presses 1.
+- **Coordinator calls:** every escalation, retried every 2 minutes until a coordinator presses 1. The line is never rung twice at once (`SAUTI_COORDINATOR_LINES`, default 1); the most severe escalation goes first, and a closed incident is not rung about.
 
-One leader places the calls (advisory lock 7347005); every instance serves the answered calls.
+One leader (advisory lock 7347005) places the calls and alone holds the `sauti-alerts` application's websocket. Asterisk gives an application one websocket, and a newer connection takes it over. A failover therefore moves both; a call answered on the old leader during the switch loses its keys and is rung again by its next rung.
 
 ## Triggers and detection
 - As `op_readonly`: `SELECT channel, status, count(*) FROM op.alert_attempts WHERE channel = 'voice' AND claimed_at > now() - interval '30 minutes' GROUP BY 1, 2;` (also `op.forward_attempts`).
