@@ -452,11 +452,14 @@ threats:
     mitigations:
       - Delivery reports arrive only on a secret path; only status and failure codes are kept and a final report is never overwritten; an unknown message ID changes nothing
       - The responder menu recognises a registered responder by the keyed hash of their number; a responder may answer only their own alert, and the first acceptance wins in the database
+      - A retried menu callback gets the answer the first one got (a repeated decline reads the stored outcome without writing); a responder with an open assignment sees it first
     verified_by:
       - internal/platform/africastalking/delivery_test.go::TestDeliveryReportsAreRecordedWithoutTheNumber
       - internal/platform/africastalking/delivery_test.go::TestDeliveryReportsRefuseBadInput
       - internal/platform/pg/opstore/sms_integration_test.go::TestNoticeAttemptsAndDeliveryReports
       - internal/respond/ussd_test.go::TestUnregisteredNumber
+      - internal/respond/ussd_test.go::TestARetriedDeclineGetsTheSameAnswer
+      - internal/platform/pg/opstore/respond_integration_test.go::TestResponderMenuReads
       - internal/platform/wiring/respond_integration_test.go::TestConcurrentAcceptsThroughTheMenu
   - id: T-028
     title: An alert, forward or escalation is sent twice, or never reaches a person (provider outage, crash between claim and send, unanswered coordinator line)
@@ -469,7 +472,15 @@ threats:
       - An alert is delivered only while its responder is still eligible (available, gates in force); a responder who switched off is not rung
       - SMS at 0 s, voice at 20 s, the responder menu at any time; the cascade moves on regardless of channel failures
       - Every escalation rings the coordinator line, retried every 2 minutes until a coordinator presses 1
+      - An incident's messages go out as soon as it is planned; a later incident's slow or failing plan never holds them back
+      - A coordinator line is held only while its call lasts; an early answer keeps it, an answered call with no key is hung up after the no-input time, and each new term frees lines whose channel Asterisk reports gone (never one it cannot be asked about)
+      - A closed or merged incident's forward is neither texted nor called (the claim is ordered against the closure)
     verified_by:
+      - internal/dispatch/deliver_test.go::TestAPlannedIncidentSendsWhileLaterOnesPlan
+      - internal/platform/ivr/outbound_test.go::TestAnEarlyAnswerKeepsTheLine
+      - internal/platform/ivr/outbound_test.go::TestANewTermFreesLinesWhoseCallsEnded
+      - internal/platform/ivr/outbound_test.go::TestAnAnsweredCallWithNoInputIsHungUp
+      - internal/platform/pg/opstore/forward_integration_test.go::TestNoForwardAttemptOnceTheIncidentCloses
       - internal/platform/pg/opstore/voice_integration_test.go::TestNoVoiceAlertOnceTheResponderIsNoLongerEligible
       - internal/platform/pg/opstore/forward_integration_test.go::TestForwardAttempts
       - internal/platform/pg/opstore/forward_integration_test.go::TestCoordinatorCalls
