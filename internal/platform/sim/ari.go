@@ -42,12 +42,16 @@ type FakeARI struct {
 	active     map[string]string   // channel → playback playing
 	queued     map[string][]string // channel → playbacks waiting
 	playbackCh map[string]string   // playback → channel (until it finishes)
+	bridges    map[string][]string // bridge → channels added
+	bridgeQ    map[string]url.Values
+	destroyed  map[string]bool
 }
 
 // NewFakeARI starts the fake.
 func NewFakeARI(user, pass string) *FakeARI {
 	f := &FakeARI{user: user, pass: pass, plays: map[string][][]string{}, hungUp: map[string]bool{}, continued: map[string]string{},
-		connected: make(chan struct{}, 16), active: map[string]string{}, queued: map[string][]string{}, playbackCh: map[string]string{}}
+		connected: make(chan struct{}, 16), active: map[string]string{}, queued: map[string][]string{}, playbackCh: map[string]string{},
+		bridges: map[string][]string{}, bridgeQ: map[string]url.Values{}, destroyed: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	return f
 }
@@ -198,6 +202,29 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 		f.emitAll(evs)
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[1] == "bridges":
+		f.mu.Lock()
+		f.bridges[parts[2]] = []string{}
+		f.bridgeQ[parts[2]] = r.URL.Query()
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "bridges" && parts[3] == "addChannel":
+		f.mu.Lock()
+		_, ok := f.bridges[parts[2]]
+		if ok {
+			f.bridges[parts[2]] = append(f.bridges[parts[2]], r.URL.Query().Get("channel"))
+		}
+		f.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodDelete && len(parts) == 3 && parts[1] == "bridges":
+		f.mu.Lock()
+		f.destroyed[parts[2]] = true
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodDelete && len(parts) == 3 && parts[1] == "channels":
 		f.mu.Lock()
 		f.hungUp[parts[2]] = true
@@ -275,6 +302,27 @@ func (f *FakeARI) Playing(channelID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.active[channelID]
+}
+
+// Bridged returns the channels added to a bridge, in order.
+func (f *FakeARI) Bridged(bridgeID string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.bridges[bridgeID])
+}
+
+// BridgeQuery returns the query a bridge was created with.
+func (f *FakeARI) BridgeQuery(bridgeID string) url.Values {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bridgeQ[bridgeID]
+}
+
+// BridgeDestroyed reports whether Sauti destroyed the bridge.
+func (f *FakeARI) BridgeDestroyed(bridgeID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.destroyed[bridgeID]
 }
 
 // HungUp reports whether Sauti hung the channel up.

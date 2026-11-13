@@ -199,6 +199,32 @@ func (c *Client) Continue(ctx context.Context, channelID, dialContext, extension
 		url.Values{"context": {dialContext}, "extension": {extension}, "priority": {strconv.Itoa(priority)}})
 }
 
+// CreateBridge creates a mixing bridge for the masked bridge (Build Prompt
+// §10.5, ADR-0028): the two legs hear each other, and nothing is recorded —
+// no recording option exists in this client.
+func (c *Client) CreateBridge(ctx context.Context, bridgeID string) error {
+	if err := ids(bridgeID); err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, "/ari/bridges/"+bridgeID, url.Values{"type": {"mixing"}})
+}
+
+// AddToBridge adds a channel to a bridge.
+func (c *Client) AddToBridge(ctx context.Context, bridgeID, channelID string) error {
+	if err := ids(bridgeID, channelID); err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, "/ari/bridges/"+bridgeID+"/addChannel", url.Values{"channel": {channelID}})
+}
+
+// DestroyBridge ends a bridge (its channels stay up until hung up).
+func (c *Client) DestroyBridge(ctx context.Context, bridgeID string) error {
+	if err := ids(bridgeID); err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodDelete, "/ari/bridges/"+bridgeID, nil)
+}
+
 // EventsConnected reports whether the event stream is up: without it no
 // call can be served (ivr-controller readiness).
 func (c *Client) EventsConnected() bool { return c.connected.Load() }
