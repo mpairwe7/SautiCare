@@ -192,3 +192,58 @@ func TestScenario1RedTraumaThroughTheChannels(t *testing.T) {
 	}
 	r.noDrift(t)
 }
+
+// Scenario 2 through the channels: a yellow obstetric call cascades one VHT
+// at a time — the first lets it time out (90 s), the second declines by the
+// menu, the third accepts by the menu — while the transporter accepts at
+// once; every alert is sent once and the caller is told help is on the way.
+func TestScenario2YellowObstetricThroughTheChannels(t *testing.T) {
+	r := newEngineRig(t, nil)
+	byID := map[uuid.UUID]pii.Phone{}
+	for range 3 {
+		byID[r.responder(t, responder.RoleVHT)] = phoneOf(t, r.phones)
+	}
+	r.responder(t, responder.RoleTransporter)
+	tr := phoneOf(t, r.phones)
+	caller, _ := pii.ParsePhone("+256772000778")
+	id := r.incidentFrom(t, incident.SevYellow, caller)
+	menu := r.menu(t, false)
+
+	snap := r.mustProcess(t, id)
+	if sc := dialMenu(t, menu, tr, "1"); !strings.Contains(sc.Text, "Accepted") {
+		t.Fatalf("transporter accepts at once: %q", sc.Text)
+	}
+	if len(alertsOf(snap, responder.RoleVHT)) != 1 {
+		t.Fatalf("yellow alerts one VHT at a time: %+v", snap.Alerts)
+	}
+	r.age(t, id, 90*time.Second) // the first VHT does not answer
+	snap = r.mustProcess(t, id)
+	second := alertsOf(snap, responder.RoleVHT)
+	if len(second) != 2 || second[0].Outcome != dispatch.OutcomeNoResponse {
+		t.Fatalf("after 90 s: %+v", second)
+	}
+	if sc := dialMenu(t, menu, byID[second[1].ResponderID], "2"); !sc.End || !strings.Contains(sc.Text, "Declined") {
+		t.Fatalf("second VHT declines: %q", sc.Text)
+	}
+	snap = r.mustProcess(t, id)
+	third := alertsOf(snap, responder.RoleVHT)
+	if len(third) != 3 || third[1].Outcome != dispatch.OutcomeDeclined {
+		t.Fatalf("after the decline: %+v", third)
+	}
+	if sc := dialMenu(t, menu, byID[third[2].ResponderID], "1"); !strings.Contains(sc.Text, "Accepted") {
+		t.Fatalf("third VHT accepts: %q", sc.Text)
+	}
+	snap = r.mustProcess(t, id)
+	if snap.State != incident.StateAssigned || len(snap.Assigned) != 2 {
+		t.Fatalf("both roles assigned: %+v", snap)
+	}
+	for _, a := range snap.Alerts {
+		if n := r.deliveries.count(a.ID, dispatch.PurposeAlert); n != 1 {
+			t.Fatalf("alert %v sent %d times", a.ID, n)
+		}
+	}
+	if !slices.ContainsFunc(r.deliveries.notices, func(n dispatch.Notice) bool { return n.Kind == dispatch.CallerHelperOnTheWay }) {
+		t.Fatal("caller not told help is on the way")
+	}
+	r.noDrift(t)
+}
