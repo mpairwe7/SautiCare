@@ -1,9 +1,12 @@
 package demo
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -125,6 +128,34 @@ func TestLedgerCheckCoversEveryFixtureNumber(t *testing.T) {
 		national := strings.TrimPrefix(n, "+256")
 		if !slices.Contains(patterns, "%"+national+"%") {
 			t.Errorf("number %s is not searched for (patterns %v)", n, patterns)
+		}
+	}
+}
+
+// CodeRabbit PR #4 (4563558537): with Keep the databases stay, so the work
+// directory stays too — it holds the keys that decrypt their ciphertext and
+// the witness that verifies their ledger — and its path is printed. Without
+// Keep it is removed.
+func TestWorkDirIsKeptWithTheDatabases(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	for _, keep := range []bool{false, true} {
+		var out bytes.Buffer
+		r := &runner{o: Options{Keep: keep, Out: &out}}
+		dir, done, err := r.workDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "note"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		done()
+		_, statErr := os.Stat(dir)
+		printed := strings.Contains(out.String(), dir)
+		if keep && (statErr != nil || !printed) {
+			t.Fatalf("Keep: stat = %v, path printed = %v (%q); want the directory kept and its path printed", statErr, printed, out.String())
+		}
+		if !keep && !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("no Keep: stat = %v; want the directory removed", statErr)
 		}
 	}
 }
