@@ -174,7 +174,7 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"id":%q,"state":"Up"}`, parts[2])
+		_, _ = w.Write([]byte(`{"state":"Up"}`)) // Sauti reads only the status
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "channels" && parts[3] == "answer":
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "channels" && parts[3] == "continue":
