@@ -330,3 +330,12 @@ func TestClientSetsCallerName(t *testing.T) {
 		}
 	}
 }
+
+// A recording Asterisk could not play finishes with state "failed" (F-03):
+// the controller must not take it as heard.
+func TestDecodePlaybackFailedState(t *testing.T) {
+	e, err := decodeEvent([]byte(`{"type":"PlaybackFinished","playback":{"id":"p","state":"failed","target_uri":"channel:ch1"}}`))
+	if err != nil || e.PlaybackID != "p" || e.ChannelID != "ch1" || e.PlaybackState != PlaybackFailed {
+		t.Fatalf("event %+v, err %v", e, err)
+	}
+}

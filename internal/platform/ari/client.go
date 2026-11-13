@@ -52,8 +52,14 @@ type Event struct {
 	CallerNumber string
 	Digit        string
 	PlaybackID   string
-	Args         []string // StasisStart: the application arguments of an originated call
+	// PlaybackState is a finished playback's state: "done", or
+	// PlaybackFailed when Asterisk could not play it (a missing recording).
+	PlaybackState string
+	Args          []string // StasisStart: the application arguments of an originated call
 }
+
+// PlaybackFailed is the state of a playback Asterisk could not play.
+const PlaybackFailed = "failed"
 
 // Config configures the client.
 type Config struct {
@@ -358,6 +364,7 @@ type rawEvent struct {
 	Playback *struct {
 		ID        string `json:"id"`
 		TargetURI string `json:"target_uri"`
+		State     string `json:"state"`
 	} `json:"playback"`
 }
 
@@ -371,7 +378,7 @@ func decodeEvent(b []byte) (Event, error) {
 		e.ChannelID, e.CallerNumber = r.Channel.ID, r.Channel.Caller.Number
 	}
 	if r.Playback != nil {
-		e.PlaybackID = r.Playback.ID
+		e.PlaybackID, e.PlaybackState = r.Playback.ID, r.Playback.State
 		if e.ChannelID == "" {
 			e.ChannelID = strings.TrimPrefix(r.Playback.TargetURI, "channel:")
 		}

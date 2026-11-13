@@ -280,10 +280,11 @@ func (f *ForwardCalls) Handle(ctx context.Context, e Event) {
 		if st == nil {
 			return
 		}
-		if st.current == e.PlaybackID {
+		current := st.current == e.PlaybackID
+		if current {
 			st.current = ""
 		}
-		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+		if (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)) {
 			f.hangup(op, e.ChannelID)
 		}
 	case EventStasisEnd, EventHangupRequest:
@@ -617,10 +618,11 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 		if st == nil {
 			return
 		}
-		if st.current == e.PlaybackID {
+		current := st.current == e.PlaybackID
+		if current {
 			st.current = ""
 		}
-		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+		if (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)) {
 			k.hangup(op, e.ChannelID)
 		}
 	case EventStasisEnd, EventHangupRequest:
@@ -678,6 +680,12 @@ func endAfter(ctx context.Context, a AlertARI, ch, pb string, sounds []string) s
 // 1 acknowledges, 3 repeats. Any other key is ignored, leaving the prompt
 // playing rather than cutting it to silence.
 func outboundKey(digit string) bool { return digit == "1" || digit == "3" }
+
+// failed reports a prompt Asterisk could not play (F-03). On an outbound
+// call nobody heard what to do: the call ends unanswered, and the alert,
+// forward or escalation goes on as for a call that was not picked up (its
+// attempt was settled when the call was placed).
+func failed(e Event) bool { return e.PlaybackState == playbackFailed }
 
 // cut stops the prompt being heard when a key the menu offers is pressed, so
 // the answer is spoken at once rather than queued behind it.

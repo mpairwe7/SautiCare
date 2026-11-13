@@ -679,3 +679,16 @@ func TestHandOverShowsSautiAndTheReference(t *testing.T) {
 		t.Fatalf("requests %v, want %v", a.seq, want)
 	}
 }
+
+// A question whose recording failed to play left the caller in silence: a
+// coordinator takes the call (F-03), instead of re-prompting into silence.
+func TestAFailedQuestionPromptHandsOver(t *testing.T) {
+	s := &scripted{prompts: prompts()}
+	c, a, _ := newController(t, s)
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	pb := started(t, c, a, "ch1")
+	send(t, c, Event{Type: EventPlaybackFinished, ChannelID: "ch1", PlaybackID: pb, PlaybackState: ari.PlaybackFailed})
+	if !slices.Equal(a.continues, []string{"ch1 sauti-ivr-fallback,s,1"}) || !slices.Equal(s.handedOver(), []string{"ch1 voice_handed_over"}) {
+		t.Fatalf("continues %v handovers %v", a.continues, s.handovers)
+	}
+}

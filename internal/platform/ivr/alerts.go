@@ -232,10 +232,11 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		if st == nil {
 			return
 		}
-		if st.current == e.PlaybackID {
+		current := st.current == e.PlaybackID
+		if current {
 			st.current = ""
 		}
-		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+		if (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)) {
 			_ = a.c.ARI.Hangup(op, e.ChannelID)
 		}
 	case EventStasisEnd, EventHangupRequest:

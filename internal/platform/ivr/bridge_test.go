@@ -733,3 +733,14 @@ func TestBridgeIsDestroyedAfterASlowLogWrite(t *testing.T) {
 	}
 	noNumbers(t, logs)
 }
+
+// A bridge choice whose recording failed to play leaves the caller without
+// instructions: a coordinator takes the call at once (F-03).
+func TestAFailedBridgePromptGoesToACoordinator(t *testing.T) {
+	b, a, logs := bridgeRig(t, twoAssignments(), 30*time.Second)
+	dialIn(b, "in-1", responderNum)
+	b.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: "in-1", PlaybackID: a.lastPlayback("in-1"), PlaybackState: ari.PlaybackFailed})
+	if !slices.Equal(a.handedOver(), []string{"in-1→" + FallbackContext}) || !strings.Contains(logs.String(), "bridge prompt not played; to a coordinator") {
+		t.Fatalf("handed over %v, logs %s", a.handedOver(), logs.String())
+	}
+}

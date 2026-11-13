@@ -170,7 +170,13 @@ func (b *Bridge) Handle(ctx context.Context, e Event) {
 		if st := b.calls[e.ChannelID]; st != nil {
 			if st.current == e.PlaybackID {
 				st.current = ""
-				if !st.done && st.choosing != "" {
+				switch {
+				case st.done || st.choosing == "":
+				case e.PlaybackState == ari.PlaybackFailed:
+					// The choice was never heard: no instructions (F-03).
+					b.c.Log.Error("bridge prompt not played; to a coordinator", "playback", e.PlaybackID)
+					b.toCoordinator(ctx, st)
+				default:
 					b.arm(ctx, st, b.c.NoInput) // the prompt was heard: the wait runs from its end
 				}
 			}

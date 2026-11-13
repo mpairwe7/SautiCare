@@ -28,6 +28,7 @@ const (
 	EventPlaybackFinished = ari.EventPlaybackFinished
 	EventStasisEnd        = ari.EventStasisEnd
 	EventHangupRequest    = ari.EventHangupRequest
+	playbackFailed        = ari.PlaybackFailed
 )
 
 // ARI is the subset of the Asterisk client the controller uses.
@@ -324,6 +325,10 @@ func (c *Controller) step(ctx context.Context, st *call, it item) {
 		switch {
 		case st.hangupOn == e.PlaybackID:
 			c.hangup(ctx, st)
+		case e.PlaybackState == ari.PlaybackFailed:
+			// The caller heard nothing: a failure, not silence (F-03).
+			c.log.Error("ivr prompt failed to play", "channel", st.ch, "playback", e.PlaybackID)
+			c.handOver(ctx, st)
 		case !st.turn.Prompt.End:
 			c.startTimer(st, c.opt.NoInput) // silence is counted from the end of the prompt
 		}

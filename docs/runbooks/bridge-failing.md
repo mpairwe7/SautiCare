@@ -25,7 +25,7 @@ Responders cannot ask callers for directions, and callers cannot reach their res
 2. `no_answer` results: the other party did not answer within the ring time. Normal in moderation.
 3. Nobody recognised ("nothing to connect" for everyone): as `op_readonly`, check that the responder is not retired (`op.responders.status`) and that the assignment is open (`op.assignments.released_at IS NULL`, the incident not closed). A registered number that changed must be re-registered. A caller is recognised through their own report, or through the incident it was merged into until a coordinator splits the merge.
 4. The bridge number goes straight to a coordinator: the outbound application is unreachable. Follow [voice-alerts-failing.md](voice-alerts-failing.md).
-5. Calls handed to a coordinator with "bridge prompt not played": the bridge recordings are missing on the Asterisk host, or Asterisk refuses playback. Check the prompt catalogue's files for the call's language.
+5. Calls handed to a coordinator with the log line `bridge prompt not played; to a coordinator`: Asterisk refused the playback, or reported it `failed` (the recording is missing on the Asterisk host). Check the prompt catalogue's files for the call's language. The toll-free line logs `ivr prompt failed to play` for the same fault.
 6. A "bridge not destroyed" warning: a mixing bridge may remain in Asterisk. `bridge show all` on the Asterisk console lists them; a `bridge-<bridge call ID>` bridge with no channels can be removed with `bridge destroy <id>`.
 
 ## Mitigation

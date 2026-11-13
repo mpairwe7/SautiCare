@@ -16,6 +16,7 @@ import (
 	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/platform/ari"
 	"sautihealth.com/sauti/internal/responder"
 )
 
@@ -311,5 +312,17 @@ func TestAnInvalidKeyDoesNotCutTheAlertPrompt(t *testing.T) {
 	}
 	if len(a.stopped) != 1 || len(st.declined) != 0 {
 		t.Fatalf("invalid keys during the reasons: stopped %v declined %v", a.stopped, st.declined)
+	}
+}
+
+// An alert whose recording failed to play was never heard: the call ends
+// rather than waiting for a key, and nothing is recorded as an answer; the
+// alert stays pending for the rest of the ladder (F-03).
+func TestAFailedAlertPromptHangsUp(t *testing.T) {
+	c, a, st := alertRig(t, false)
+	ch := answer(t, c, a, st)
+	c.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: a.pbs[0], PlaybackState: ari.PlaybackFailed})
+	if a.hangups(ch) != 1 || st.accepted != 0 || len(st.declined) != 0 {
+		t.Fatalf("hangups %d accepted %d declined %v", a.hangups(ch), st.accepted, st.declined)
 	}
 }
