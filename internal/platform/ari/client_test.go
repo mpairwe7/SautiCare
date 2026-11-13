@@ -175,3 +175,39 @@ func TestClientOriginatesAndReadsStasisArgs(t *testing.T) {
 		t.Fatal("an argument with a comma was sent")
 	}
 }
+
+// CodeRabbit PR #11 (4560453637): a new outbound leader asks Asterisk whether
+// each channel it holds a coordinator line for still exists (GET
+// /ari/channels/{id}): 404 means gone; any other failure is an error, never
+// "gone" (a line in use must not be rung again).
+func TestClientChannelExists(t *testing.T) {
+	f, c := newPair(t)
+	ctx := context.Background()
+	id, err := c.Originate(ctx, "PJSIP/coordinators", "", []string{"escalation"}, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := c.ChannelExists(ctx, id); err != nil || !ok {
+		t.Fatalf("a placed call: %v %v", ok, err)
+	}
+	f.Answered("chan-9", "escalation")
+	f.Hangup("chan-9") // the far end hung up
+	if err := c.Hangup(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range []string{id, "chan-9", "never-seen"} {
+		if ok, err := c.ChannelExists(ctx, ch); err != nil || ok {
+			t.Fatalf("%s: %v %v, want gone", ch, ok, err)
+		}
+	}
+	if _, err := c.ChannelExists(ctx, "chan/../x"); err == nil {
+		t.Fatal("a channel ID with a path separator was sent")
+	}
+	wrong, err := New(Config{BaseURL: f.URL(), User: "sauti", Password: secret(t), App: "sauti-ivr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := wrong.ChannelExists(ctx, "chan-9"); err == nil || ok {
+		t.Fatalf("a refused request read as an answer: %v %v", ok, err)
+	}
+}
