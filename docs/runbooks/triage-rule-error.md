@@ -5,7 +5,7 @@
 | Owner | Medical Director (clinical) with the on-call engineer |
 | Severity | SEV-2 |
 | Alert / trigger | an `incident.flagged` event with flag `triage_rule_error` (and its `incident.escalated`); intake-gw refusing to start with a triage bundle error |
-| Last reviewed: | 2026-11-12 |
+| Last reviewed: | 2026-11-13 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -23,7 +23,7 @@ The affected incident is dispatched as red, which may over-triage it. The dispat
 2. List the affected incidents (read-only role):
    `SELECT id, logic_version, category, age_band FROM op.incidents WHERE 'triage_rule_error' = ANY (flags) ORDER BY created_at DESC;`
 3. Re-run the clinical suite against the committed bundle: `go test ./internal/triage/ -run TestRepositoryBundleVerifies -v`.
-4. Compare the Tool 1 catalogue's option values with the bundle's `inputs:` (`go test ./internal/intake/ -run TestCatalogueMatchesTriageDomain`).
+4. Compare the Tool 1 catalogue's option values with the bundle's `inputs:` (`go test ./internal/intake/ -run TestCatalogueMatchesTriageDomain`). A bundle whose inputs give more than 9⁴ combinations is refused at load, before the totality check.
 
 ## Mitigation
 1. Never edit an incident's severity: it can only rise, and the classification stands in the record.

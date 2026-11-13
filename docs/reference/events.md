@@ -8,7 +8,7 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 |---|---|---|---|
 | `session.started` | **T1** | `reference`, `channel` | written only by `op.open_incident` |
 | `session.resumed` | — | `channel` | a redial within the resume window joined this incident (M1) |
-| `screen.answered` | — | exactly `screen` (1–8), `field`, `value` (a code), optional `identifier_id` | Tool 1 answers; validated identically in Go and SQL; see [tool1-flow.md](tool1-flow.md) |
+| `screen.answered` | — | exactly `screen` (1–8), `field`, `value` (a code), optional `identifier_id` | Tool 1 answers; validated identically in Go and SQL; a different value for a field already answered is refused in both; see [tool1-flow.md](tool1-flow.md) |
 | `incident.classified` | — | `severity` (`red`/`yellow`/`green`), `rule_id` | `logic_version` = signed bundle `<version>+sha256:<12 hex>`; severity can only rise |
 | `incident.dispatch_ready` | **T2** | `trigger_screen`, `zone {col,row}`, `location_quality` (`landmark`/`fuzzy`/`ward`), `gazetteer_version` | severity and location known (screen 7, D5); zone and quality go together |
 | `alert.issued` | **T3** (first) | `role`, `ring` | |

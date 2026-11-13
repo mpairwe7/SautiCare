@@ -5,7 +5,7 @@
 | Owner | Field Coordinator (content) with the technical operator (load) |
 | Severity | SEV-3 (planned change) |
 | Alert / trigger | new or corrected ward and landmark lists; intake-gw refusing to start with `opstore: no gazetteer loaded` |
-| Last reviewed: | 2026-11-12 |
+| Last reviewed: | 2026-11-13 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -24,10 +24,10 @@ No dispatch-path impact while the version in force stays loaded. A wrong landmar
 2. Validate the file without a database: `go test ./internal/location/ -run TestRepositoryGazetteer`.
 
 ## Mitigation
-1. Edit `config/gated/gazetteer.yaml` and give it a **new `version`**. Set `status: approved` only when the lists are agreed with ward leadership.
+1. Edit `config/gated/gazetteer.yaml` and give it a **new `version`**. Set `status: approved` only when the lists are agreed with ward leadership. At most eight wards: wards 1–8 and "Somewhere else" fill the single-digit ward menu, and a file with more is refused.
 2. Run `go test ./internal/intake/ -run TestEveryRenderedScreenFitsLimitAndGSM7`: every ward's landmark menu must fit the operator limit in both languages.
 3. During the study window: add the amendment record, and record a deviation for the correction.
-4. Load, as the operational store owner: `sautictl gazetteer load --file config/gated/gazetteer.yaml --dsn <owner DSN>`. Loading the same version again is a no-op; different content under a loaded version is refused.
+4. Load, as the operational store owner: `sautictl gazetteer load --file config/gated/gazetteer.yaml --dsn <owner DSN>`. Loading the same version again is a no-op; different content under a loaded version is refused, and so is any row inserted by hand under a published version (`gazetteer is frozen`).
 5. Restart intake-gw so it takes the new snapshot.
 
 ## Escalation

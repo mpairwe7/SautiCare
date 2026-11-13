@@ -27,8 +27,8 @@ Location comes from Sauti's own landmark lists mapped to 500 m zones, without Go
 
 Chosen option: **Go grid + versioned gazetteer tables + `pg_trgm`**.
 - `internal/location` converts WGS84 to EPSG:32636 with the Krüger series to sixth order (verified against PROJ to 1 mm) and takes cells as `floor(E/500), floor(N/500)`. EPSG:32636 has no false northing, so rows south of the equator are negative and are accepted everywhere.
-- `config/gated/gazetteer.yaml` is parsed and validated (code IDs, at most five menu landmarks per ward, reserved `elsewhere` and `other`). `sautictl gazetteer load` stores a version once, immutably: triggers refuse UPDATE, DELETE and TRUNCATE even for the owner. The version in force is recorded in `op.config_versions`.
-- Free text is normalised and matched by `op.match_landmark` within the ward. At or above `fuzzy_match_min_similarity` it gives the landmark's cell (quality `fuzzy`). Below it gives the ward centre plus the `needs_location_callback` flag, and dispatch proceeds on the ward's zones.
+- `config/gated/gazetteer.yaml` is parsed and validated (code IDs, at most eight wards so that "Somewhere else" stays a single digit, at most five menu landmarks per ward, reserved `elsewhere` and `other`). `sautictl gazetteer load` stores a version once, immutably: triggers refuse UPDATE, DELETE and TRUNCATE even for the owner, and refuse an INSERT under a version already published in `op.config_versions` (the loader inserts a version's rows before publishing it, in one transaction). The version in force is recorded in `op.config_versions`.
+- Free text is normalised and matched by `op.match_landmark` within the ward when it is typed (screen 7); with a screen-8 trigger the matched landmark ID is carried in the USSD step. At or above `fuzzy_match_min_similarity` it gives the landmark's cell (quality `fuzzy`). Below it gives the ward centre plus the `needs_location_callback` flag, and dispatch proceeds on the ward's zones.
 - `pg_trgm` is installed in its own schema `trgm` with no USAGE for runtime roles: a trusted extension's functions stay executable by PUBLIC and the store owner cannot revoke that.
 - The gazetteer is outside the dispatch-parameter fingerprint. It has its own version, carried on `incident.dispatch_ready`.
 
@@ -39,4 +39,4 @@ Chosen option: **Go grid + versioned gazetteer tables + `pg_trgm`**.
 
 ## Confirmation
 
-`internal/location/grid_test.go::TestToUTM36NMatchesReferenceVectors`; `internal/location/gazetteer_test.go::TestParseFileRejectsInvalidGazetteers`; `internal/platform/pg/opstore/gazetteer_integration_test.go::TestGazetteerIsFrozen`, `::TestMatchIsScopedToWard`, `::TestRuntimeRolesCannotReachTrigramFunctions`; `internal/intake/service_test.go::TestLowConfidenceFreeTextUsesWardAndFlags`.
+`internal/location/grid_test.go::TestToUTM36NMatchesReferenceVectors`; `internal/location/gazetteer_test.go::TestParseFileRejectsInvalidGazetteers`; `internal/platform/pg/opstore/gazetteer_integration_test.go::TestGazetteerIsFrozen`, `::TestMatchIsScopedToWard`, `::TestRuntimeRolesCannotReachTrigramFunctions`; `internal/intake/service_test.go::TestLowConfidenceFreeTextUsesWardAndFlags`; `internal/intake/atomicity_test.go::TestTypedLandmarkLocatesAtTriggerScreen8`.
