@@ -24,10 +24,10 @@ No dispatch-path impact while the version in force stays loaded. A wrong landmar
 2. Validate the file without a database: `go test ./internal/location/ -run TestRepositoryGazetteer`.
 
 ## Mitigation
-1. Edit `config/gated/gazetteer.yaml` and give it a **new `version`**. Set `status: approved` only when the lists are agreed with ward leadership.
+1. Edit `config/gated/gazetteer.yaml` and give it a **new `version`**. Set `status: approved` only when the lists are agreed with ward leadership. At most eight wards: wards 1–8 and "Somewhere else" fill the single-digit ward menu, and a file with more is refused.
 2. Run `go test ./internal/intake/ -run TestEveryRenderedScreenFitsLimitAndGSM7`: every ward's landmark menu must fit the operator limit in both languages.
 3. During the study window: add the amendment record, and record a deviation for the correction.
-4. Load, as the operational store owner: `sautictl gazetteer load --file config/gated/gazetteer.yaml --dsn <owner DSN>`. Loading the same version again is a no-op; different content under a loaded version is refused.
+4. Load, as the operational store owner: `sautictl gazetteer load --file config/gated/gazetteer.yaml --dsn <owner DSN>`. Loading the same version again is a no-op; different content under a loaded version is refused, and so is any row inserted by hand under a published version (`gazetteer is frozen`).
 5. Check that every active responder can still be placed: dispatch finds a responder by their stage's zone in the version in force, and new registrations are refused unless the stage is in the responder's ward in that version. As `op_readonly`, list the responders the new version cannot place. Each one is never alerted until re-registered at a stage of the new version, so tell the coordinator lead.
 
    ```sql

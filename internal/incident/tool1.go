@@ -203,25 +203,36 @@ func parseResumed(raw json.RawMessage) error {
 	return fmt.Errorf("%w: session.resumed needs a known channel", ErrIllegalTransition)
 }
 
-// set records an answer on the projection.
-func (p *Projection) set(a ScreenAnswer) {
+// set records an answer on the projection. An answered field never changes:
+// a different value is refused, the same value again is accepted. The SQL
+// write path applies the same rule (op.screen_answer_unchanged, migration
+// 0006).
+func (p *Projection) set(a ScreenAnswer) error {
+	var f *string
 	switch a.Field {
 	case FieldLanguage:
-		p.Language = a.Value
+		f = &p.Language
 	case FieldDanger:
-		p.Danger = a.Value
+		f = &p.Danger
 	case FieldCategory:
-		p.Category = a.Value
+		f = &p.Category
 	case FieldAgeBand:
-		p.AgeBand = a.Value
+		f = &p.AgeBand
 	case FieldSpecificDanger:
-		p.SpecificDanger = a.Value
+		f = &p.SpecificDanger
 	case FieldWard:
-		p.Ward = a.Value
+		f = &p.Ward
 	case FieldLandmark:
-		p.Landmark = a.Value
+		f = &p.Landmark
+	}
+	if f != nil {
+		if *f != "" && *f != a.Value {
+			return fmt.Errorf("%w: screen.answered: %s is already answered", ErrIllegalTransition, a.Field)
+		}
+		*f = a.Value
 	}
 	p.LastScreen = max(p.LastScreen, a.Screen)
+	return nil
 }
 
 // t1Text is the timestamp format of merge_absorbed (RFC 3339 with at most

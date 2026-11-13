@@ -302,6 +302,7 @@ type OpUssdStep struct {
 	MacKeyID          string
 	ConsumedLen       int32
 	PromptKind        string
+	MatchedLandmark   string
 }
 
 type OpWard struct {

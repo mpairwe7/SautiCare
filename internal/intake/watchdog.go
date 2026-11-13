@@ -26,16 +26,21 @@ type StalledReader interface {
 	ListStalledDispatch(ctx context.Context, after time.Duration) ([]uuid.UUID, error)
 }
 
+// EventAppender appends one incident event (incident.Service).
+type EventAppender interface {
+	Append(ctx context.Context, p incident.AppendParams) (incident.Appended, error)
+}
+
 // Watchdog escalates stalled dispatch. It runs in intake-gw, a process apart
 // from dispatch-worker, so a dead or stuck worker still reaches a person.
 type Watchdog struct {
 	r     StalledReader
-	a     Appender
+	a     EventAppender
 	after time.Duration
 }
 
 // NewWatchdog panics on a non-positive time (a configuration error).
-func NewWatchdog(r StalledReader, a Appender, after time.Duration) *Watchdog {
+func NewWatchdog(r StalledReader, a EventAppender, after time.Duration) *Watchdog {
 	if after <= 0 {
 		panic(fmt.Sprintf("intake: watchdog time %v must be positive", after))
 	}
