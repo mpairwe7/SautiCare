@@ -19,7 +19,7 @@ Processes read deployment settings from the environment (12-factor), so a later 
 | `SAUTI_ARI_APP` | ivr-controller | Stasis application the dialplan hands calls to | `sauti-ivr` |
 | `SAUTI_ARI_ALERT_APP` | ivr-controller | Stasis application of outbound alert calls | `sauti-alerts` |
 | `SAUTI_ARI_DIAL` | ivr-controller | endpoint template for alert calls with `{number}` (e.g. `PJSIP/{number}@sauti-trunk`; the trunk is provisioned in P0); unset: no voice alerts | — |
-| `SAUTI_ARI_CALLER_ID` | ivr-controller | the number responders see on an alert call (placeholder until P0) | — |
+| `SAUTI_ARI_CALLER_ID` | ivr-controller | Sauti's number: what responders see on an alert call, and what both parties of the masked bridge see (placeholder until P0); unset: no masked bridge | — |
 | `SAUTI_COORDINATOR_DIAL` | ivr-controller (and the dialplan fallback) | the coordinator line rung about every escalation until a coordinator presses 1 (an endpoint; placeholder until P0); works with or without `SAUTI_ARI_DIAL`; unset: escalations are not rung | — |
 | `SAUTI_COORDINATOR_LINES` | ivr-controller | how many calls the coordinator line takes at once (1–50); never more are ringing or answered at once, the most severe escalation first | `1` |
 | `SAUTI_AT_PATH_TOKEN` | intake-gw | secret callback path token, ≥ 24 characters | — (required) |

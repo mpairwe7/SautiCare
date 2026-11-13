@@ -41,7 +41,7 @@ Chosen option: **in-house ARI client** (`internal/platform/ari`).
 ## Consequences
 
 * Good: about 250 lines that are auditable and fuzzed; no recording capability in the client; resume across channels works because both channels open sessions the same way; a voice failure ends with a coordinator, not a hang-up.
-* Bad: Sauti maintains the client; any new ARI call (alerting in M2, the masked bridge, which bridges two calls without recording) is added deliberately and reviewed.
+* Bad: Sauti maintains the client; any new ARI call (alerting in M2, the masked bridge, which bridges two calls without recording) is added deliberately and reviewed. ADR-0027 added outbound calls, and [ADR-0028](ADR-0028-masked-bridge-and-surge.md) added plain mixing bridges; the client still cannot record, snoop or stream media.
 
 ## Confirmation
 
