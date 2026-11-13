@@ -205,9 +205,11 @@ func TestAppendRejectsFreeTextLogicVersion(t *testing.T) {
 	}
 }
 
-// CodeRabbit PR #3: an append carries its own deadline, pool wait included,
-// so a stalled audit store cannot block the relay without limit.
-func TestAppendHasItsOwnDeadline(t *testing.T) {
+// CodeRabbit PR #3: every ledger call carries its own deadline, pool wait
+// included (the statement timeout does not cover waiting for a connection),
+// so neither the relay nor a verifier can block without limit on a stalled
+// audit store, whatever context it passes. Range bounds each page query.
+func TestEveryLedgerCallHasItsOwnDeadline(t *testing.T) {
 	c := pgtest.Cluster(t)
 	ctx := pgtest.Context(t)
 	pool, err := pg.Connect(ctx, c.DSN(pg.StoreAudit, "audit_appender"), "test", 1)
@@ -220,20 +222,31 @@ func TestAppendHasItsOwnDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer held.Release()
-	defer auditstore.SetAppendTimeout(200 * time.Millisecond)()
-	done := make(chan error, 1)
-	go func() {
+	defer auditstore.SetCallTimeout(200 * time.Millisecond)()
+	s := auditstore.New(pool)
+	cp := audit.Checkpoint{Origin: "sauti-test", SignedAt: time.Now().UTC().Truncate(time.Microsecond), KeyID: "k1", Signature: []byte{1}}
+	for _, tc := range []struct {
+		name string
+		call func(context.Context) error
+	}{
+		{"Append", func(ctx context.Context) error { _, err := s.Append(ctx, req(1)); return err }},
+		{"Head", func(ctx context.Context) error { _, _, err := s.Head(ctx); return err }},
+		{"HashAt", func(ctx context.Context) error { _, _, err := s.HashAt(ctx, 1); return err }},
+		{"SaveCheckpoint", func(ctx context.Context) error { return s.SaveCheckpoint(ctx, cp) }},
+		{"Range", func(ctx context.Context) error { return s.Range(ctx, 1, func(audit.Entry) error { return nil }) }},
+		{"Checkpoints", func(ctx context.Context) error { _, err := s.Checkpoints(ctx); return err }},
+	} {
+		done := make(chan error, 1)
 		// Deliberately a caller without a deadline: the store must add one.
-		_, err := auditstore.New(pool).Append(context.Background(), req(1))
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Append on an exhausted pool: err = %v, want context.DeadlineExceeded", err)
+		go func() { done <- tc.call(context.Background()) }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("%s on an exhausted pool: err = %v, want context.DeadlineExceeded", tc.name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s waited on an exhausted pool with no deadline", tc.name)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Append waited on an exhausted pool with no deadline")
 	}
 }
 
