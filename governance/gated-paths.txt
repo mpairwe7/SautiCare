@@ -1,0 +1,9 @@
+# Paths frozen while study_window_active is true (Build Prompt rule 3.11).
+# One glob per line; "dir/**" matches everything below dir.
+# tools/amendgate also applies a built-in minimum and the list at the base
+# ref, so a change cannot shrink this list to unfreeze itself; the list file
+# is itself gated. config/platform.yaml is deliberately ungated operational
+# tuning, not a protocol parameter (ADR-0014).
+config/gated/**
+config/study.yaml
+triage-rules/**

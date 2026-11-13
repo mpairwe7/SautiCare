@@ -1,0 +1,4 @@
+# Study window switch (Build Prompt rule 3.11). While true, every path in
+# governance/gated-paths.txt is frozen: a change needs an amendment record in
+# governance/amendments.yaml. Changing this file needs PI approval (CODEOWNERS).
+study_window_active: false

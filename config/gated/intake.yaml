@@ -1,0 +1,5 @@
+# Tool 1 session parameters (spec §2 D4, D5; §3 O7).
+resume_window: 10m              # Engineering Guide §4; ADR-0009
+dispatch_trigger_screen: 7      # Build Prompt §10.1; T2 definition; ADR-0009
+default_screen_char_limit: 160  # until MTN/Airtel Uganda confirm in writing (O7)
+screen_char_limits: {}          # per network code, e.g. "64110": 182, once confirmed
