@@ -41,6 +41,7 @@ threats:
       - internal/platform/ivr/controller_test.go::TestControllerSlowCallDoesNotBlockOthers
       - cmd/ivr-controller/main_test.go::TestReadinessIncludesTheARIEventStream
       - internal/platform/pg/opstore/batch_integration_test.go::TestAppendBatchIsAllOrNothing
+      - internal/platform/pg/schemas_integration_test.go::TestStackMigratesAfterMainsHistory
       - "planned:M7 second-route failover scenario"
 
   - id: T-003
@@ -52,9 +53,12 @@ threats:
       - Severity ratchet in the Go reducer and in the SQL write path
       - Versioned, fingerprinted configuration behind the amendment gate
       - Signed CEL decision tables with clinical scenarios (M1)
+      - An answered Tool 1 field never changes (Go fold and an event-log trigger), so the answers a classification read cannot be rewritten
     verified_by:
       - internal/incident/fold_test.go::TestApplyRejectsSeverityLowering
       - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering
+      - internal/incident/tool1_test.go::TestApplyRefusesAChangedAnswer
+      - internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRefusesAChangedAnswer
       - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
       - "planned:M1 rule-signature verification test"
 
@@ -246,12 +250,13 @@ threats:
     hard_constraints: [3, 11, 14]
     mitigations:
       - ML-DSA-65 signature (context sauti-triage-rules/v1) against trusted keys held in gated, fingerprinted config
-      - Totality check over every input combination at load; catalogue and bundle domains must match
+      - Totality check over every input combination at load, after the domain is bounded at 9^4; catalogue and bundle domains must match
       - Runtime error or no match gives red, flagged and escalated; production refuses dev-signed or pending bundles
     verified_by:
       - internal/triage/triage_test.go::TestLoadRejectsBadSignature
       - internal/triage/triage_test.go::TestLoadRejectsUntrustedKey
       - internal/triage/triage_test.go::TestLoadRejectsNonTotalTable
+      - internal/triage/triage_test.go::TestLoadRejectsOversizedDomain
       - internal/crypto/crypto_test.go::TestSignatureContextsAreSeparated
       - internal/platform/wiring/intake_integration_test.go::TestBuildIntakeRefusesPlaceholdersInProduction
 
@@ -278,7 +283,7 @@ threats:
     asset: wards, landmarks and their cells
     hard_constraints: [11]
     mitigations:
-      - Versions immutable even for the owner (triggers refuse UPDATE, DELETE, TRUNCATE); new version plus deviation record
+      - Versions immutable even for the owner (triggers refuse UPDATE, DELETE, TRUNCATE, and INSERT under a published version); new version plus deviation record
       - The gazetteer file is gated by the amendment gate; production refuses a placeholder
     verified_by:
       - internal/platform/pg/opstore/gazetteer_integration_test.go::TestGazetteerIsFrozen

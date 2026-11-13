@@ -266,6 +266,34 @@ func TestRedialAfterLostT2WithFreeTextUsesTheWard(t *testing.T) {
 	}
 }
 
+// CodeRabbit PR #6: with dispatch_trigger_screen 8, the typed landmark is
+// matched at screen 7, where it is typed, and the match (a landmark ID,
+// never the text) rides in the USSD step to screen 8, through an invalid
+// answer there, so T2 locates the incident at the matched landmark as
+// trigger 7 does.
+func TestTypedLandmarkLocatesAtTriggerScreen8(t *testing.T) {
+	match := fakeMatcher{"mkt near taxi": {LandmarkID: "w01_market", Similarity: 0.8, Found: true}}
+	mem := newMemIncidents()
+	r := newRigWith(t, mem, mem, nil, match, 8)
+	c := r.dial(t, "S1", "0772123456")
+	c.send("")
+	for _, in := range []string{"1", "2", "1", "3", "2", "1", "6", "Mkt near taxi"} {
+		c.send(in)
+	}
+	if p := c.projection(); p.T[2] != nil {
+		t.Fatalf("T2 before the trigger screen: %+v", p)
+	}
+	c.send("12")
+	if sc := c.send("1"); !strings.Contains(sc.Text, "HELP IS COMING") {
+		t.Fatalf("closing screen = %q", sc.Text)
+	}
+	l, _ := repoGazetteer(t).Landmark("w01_market")
+	if p := c.projection(); p.LocationQuality != incident.QualityFuzzy || slices.Contains(p.Flags, FlagNeedsLocationCallback) ||
+		p.Zone == nil || *p.Zone != (incident.Zone{Col: l.Cell.Col, Row: l.Cell.Row}) {
+		t.Fatalf("projection = %+v", p)
+	}
+}
+
 // The closing screen is refused, not shown, for a finished Tool 1 without
 // T2 in the area.
 func TestCompleteWithoutT2IsAnError(t *testing.T) {

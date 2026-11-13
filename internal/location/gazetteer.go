@@ -22,6 +22,9 @@ const (
 	// MaxMenuLandmarks is the per-ward landmark menu size; option 6 is
 	// free text (Build Prompt §10.1).
 	MaxMenuLandmarks = 5
+	// MaxWards is the ward menu size; "Somewhere else" follows as option 9,
+	// the last single digit.
+	MaxWards = 8
 )
 
 // Gazetteer statuses. A placeholder gazetteer never runs in production.
@@ -144,8 +147,8 @@ func ParseFile(data []byte) (File, error) {
 	if raw.Status != StatusPlaceholder && raw.Status != StatusApproved {
 		return File{}, fmt.Errorf("location: gazetteer status %q (want placeholder or approved)", raw.Status)
 	}
-	if len(raw.Wards) == 0 {
-		return File{}, errors.New("location: gazetteer has no wards")
+	if len(raw.Wards) == 0 || len(raw.Wards) > MaxWards {
+		return File{}, fmt.Errorf("location: gazetteer has %d wards (want 1-%d: the ward menu and Somewhere else are single digits)", len(raw.Wards), MaxWards)
 	}
 	f := File{Version: raw.Version, Status: raw.Status}
 	wardIdx := map[string]int{}

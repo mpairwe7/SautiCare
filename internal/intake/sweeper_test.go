@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -21,11 +22,21 @@ func (r *idleReader) ListIdle(_ context.Context, idleFor time.Duration) ([]Idle,
 	return r.idle, nil
 }
 
-type appendLog struct{ calls []incident.AppendParams }
+// appendLog records batches; fail refuses every batch, as a store whose
+// transaction aborts stores none of it.
+type appendLog struct {
+	calls   []incident.AppendParams
+	batches int
+	fail    error
+}
 
-func (a *appendLog) Append(_ context.Context, p incident.AppendParams) (incident.Appended, error) {
-	a.calls = append(a.calls, p)
-	return incident.Appended{}, nil
+func (a *appendLog) AppendBatch(_ context.Context, ps []incident.AppendParams) ([]incident.Appended, error) {
+	if a.fail != nil {
+		return nil, a.fail
+	}
+	a.batches++
+	a.calls = append(a.calls, ps...)
+	return make([]incident.Appended, len(ps)), nil
 }
 
 func (a *appendLog) payloads(id uuid.UUID) []string {
@@ -129,6 +140,28 @@ func TestSweeperIsIdempotent(t *testing.T) {
 		if n != 2 {
 			t.Fatalf("key %s used %d times across two sweeps", k, n)
 		}
+	}
+}
+
+// CodeRabbit PR #6: an incident's abandonment flags and its escalation are
+// one batch. Were the flag stored and the escalation lost, the flag would
+// keep the incident off later sweeps with the coordinator never alerted; a
+// failed batch stores nothing, so the next sweep lists it again.
+func TestSweeperCommitsAbandonmentAndEscalationTogether(t *testing.T) {
+	id := uuid.NewV7()
+	r := &idleReader{idle: []Idle{{ID: id, Danger: "yes"}}}
+	failing := &appendLog{fail: errors.New("store unavailable")}
+	if _, err := NewSweeper(r, failing, time.Minute).RunOnce(context.Background()); err == nil || len(failing.calls) != 0 {
+		t.Fatalf("failed batch: err=%v, stored %v", err, failing.calls)
+	}
+	log := &appendLog{}
+	if _, err := NewSweeper(r, log, time.Minute).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`incident.flagged {"flag":"abandoned"}`, `incident.flagged {"flag":"abandoned_before_category"}`,
+		`incident.escalated {"reason":"abandoned_after_danger_yes"}`}
+	if got := log.payloads(id); log.batches != 1 || !slices.Equal(got, want) {
+		t.Fatalf("%d batches: %v, want one batch %v", log.batches, got, want)
 	}
 }
 

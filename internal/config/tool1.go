@@ -165,7 +165,7 @@ func values(opts []Option) []string {
 // Validate checks that the catalogue is complete and renderable: every text
 // in every language, coded and unique option values, the danger answers the
 // triage rule reads, a danger question and first-aid line per category, the
-// reference on the completion screen, 999 and 112 on the out-of-area screen,
+// reference and the first-aid line on the completion screen, 999 and 112 on the out-of-area screen,
 // and GSM 03.38 basic characters only.
 func (t Tool1) Validate() error {
 	var problems []string
@@ -241,8 +241,10 @@ func (t Tool1) Validate() error {
 		checkText(x.name, x.tx)
 	}
 	for _, lang := range t.Languages {
-		if !strings.Contains(t.Messages.HelpComing[lang], "{ref}") {
-			bad("messages.help_coming/%s must carry {ref}", lang)
+		for _, ph := range []string{"{ref}", "{first_aid}"} {
+			if !strings.Contains(t.Messages.HelpComing[lang], ph) {
+				bad("messages.help_coming/%s must carry %s", lang, ph)
+			}
 		}
 		if oa := t.Messages.OutOfArea[lang]; !strings.Contains(oa, "999") || !strings.Contains(oa, "112") {
 			bad("messages.out_of_area/%s must give 999 and 112", lang)

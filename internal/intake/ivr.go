@@ -54,7 +54,8 @@ func (s *Service) StartIVR(ctx context.Context, callID string, phone pii.Phone) 
 // the USSD flow with voice semantics: option 6 at screen 7 is "another
 // landmark" without free text (located at ward level, call-back flagged).
 func (s *Service) AnswerIVR(ctx context.Context, call IVRCall, input string) (IVRTurn, error) {
-	pr, err := s.answer(ctx, call.IncidentID, ivrSession(call), call.Shown, input, true)
+	sess := ivrSession(call)
+	pr, err := s.answer(ctx, call.IncidentID, &sess, call.Shown, input, true)
 	if err != nil {
 		return IVRTurn{}, err
 	}

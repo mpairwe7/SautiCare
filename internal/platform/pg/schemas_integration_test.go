@@ -5,16 +5,23 @@ package pg_test
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"net/url"
+	"path"
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"sautihealth.com/sauti/db"
 	"sautihealth.com/sauti/internal/platform/pg"
+	"sautihealth.com/sauti/internal/platform/pg/bootstrap"
+	"sautihealth.com/sauti/internal/platform/pg/migrate"
 	"sautihealth.com/sauti/internal/platform/pg/pgtest"
 )
 
@@ -484,8 +491,12 @@ func TestEveryStoreFunctionHasExplicitACL(t *testing.T) {
 // SELECT checks the privileges without needing a valid row.
 func TestIntakeCannotSupplyUSSDStepTimestamp(t *testing.T) {
 	c := pgtest.Cluster(t)
+	checkUSSDStepInserts(t, c.Owner(t, pg.StoreOperational), as(t, c, pg.StoreOperational, "op_intake"))
+}
+
+func checkUSSDStepInserts(t *testing.T, owner, intake *pgx.Conn) {
+	t.Helper()
 	ctx := pgtest.Context(t)
-	owner := c.Owner(t, pg.StoreOperational)
 	rows, err := owner.Query(ctx, `
 		SELECT quote_ident(attname) FROM pg_attribute
 		WHERE attrelid = 'op.ussd_steps'::regclass AND attnum > 0 AND NOT attisdropped AND attname <> 'created_at'
@@ -504,7 +515,6 @@ func TestIntakeCannotSupplyUSSDStepTimestamp(t *testing.T) {
 	if tableWide {
 		t.Error("op_intake holds table-wide INSERT on op.ussd_steps, which covers created_at")
 	}
-	intake := as(t, c, pg.StoreOperational, "op_intake")
 	data := strings.Join(cols, ", ")
 	if _, err := intake.Exec(ctx, "INSERT INTO op.ussd_steps ("+data+") SELECT "+data+" FROM op.ussd_steps WHERE false"); err != nil {
 		t.Errorf("op_intake insert of the data columns: %v", err)
@@ -512,4 +522,52 @@ func TestIntakeCannotSupplyUSSDStepTimestamp(t *testing.T) {
 	if _, err := intake.Exec(ctx, "INSERT INTO op.ussd_steps ("+data+", created_at) SELECT "+data+", created_at FROM op.ussd_steps WHERE false"); code(err) != "42501" {
 		t.Errorf("op_intake insert supplying created_at: err = %v, want 42501", err)
 	}
+}
+
+// CodeRabbit PR #6: the migrator applies every unrecorded file in order, so
+// a store that recorded main's history (0000-0005 and 0027) applies this
+// stack's migrations after 0027. 0027 granted op_intake INSERT only on the
+// columns it saw; each later migration that adds a column grants it (0008),
+// so the store ends with the same privileges as a fresh one.
+func TestStackMigratesAfterMainsHistory(t *testing.T) {
+	ctx := pgtest.Context(t)
+	dbs, err := bootstrap.Run(ctx, pgtest.AdminConn(t), bootstrap.Options{Suffix: pgtest.RandomSuffix(), Password: pgtest.RolePassword(t), Env: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pgtest.DropDatabases(t, dbs) })
+	dsn := func(role string) string {
+		u, err := url.Parse(pgtest.AdminURL(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		u.User, u.Path = url.UserPassword(role, pgtest.RolePassword(t)), "/"+dbs[pg.StoreOperational]
+		return u.String()
+	}
+	owner := pgtest.Connect(t, dsn(pg.StoreOperational.Owner()))
+	full, err := db.Migrations(string(pg.StoreOperational))
+	if err != nil {
+		t.Fatal(err)
+	}
+	onMain := fstest.MapFS{}
+	files, err := fs.Glob(full, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if v := path.Base(f)[:4]; v < "0006" || v == "0027" {
+			b, err := fs.ReadFile(full, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			onMain[f] = &fstest.MapFile{Data: b}
+		}
+	}
+	if got, err := migrate.Run(ctx, owner, string(pg.StoreOperational), onMain); err != nil || len(got) != 7 {
+		t.Fatalf("main's history: applied %v, %v", got, err)
+	}
+	if _, err := migrate.Run(ctx, owner, string(pg.StoreOperational), full); err != nil {
+		t.Fatalf("the stack after main's history: %v", err)
+	}
+	checkUSSDStepInserts(t, owner, pgtest.Connect(t, dsn("op_intake")))
 }
