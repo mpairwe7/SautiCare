@@ -316,7 +316,9 @@ func TestBridgeNoAnswerAndFailure(t *testing.T) {
 	b, a, _ := bridgeRig(t, st, 10*time.Millisecond)
 	dialIn(b, "in-1", responderNum)
 	deadline := time.Now().Add(2 * time.Second)
-	for len(st.results()) == 0 && time.Now().Before(deadline) {
+	// The no-answer timer logs the result, ends the leg, then tells the
+	// responder: wait for its last step.
+	for !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-no-answer") && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if !slices.Equal(st.results(), []string{dispatch.BridgeNoAnswer}) || !a.wasHungUp("leg-1") ||
