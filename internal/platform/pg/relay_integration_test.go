@@ -41,7 +41,7 @@ type env struct {
 func newEnv(t *testing.T) (*pgtest.TestCluster, env) {
 	t.Helper()
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	pool := func(s pg.Store, role string) *pgxpool.Pool {
 		p, err := pg.Connect(ctx, c.DSN(s, role), "test", 10)
 		if err != nil {
@@ -74,9 +74,10 @@ func newEnv(t *testing.T) (*pgtest.TestCluster, env) {
 
 func drain(t *testing.T, r *audit.Relay) int {
 	t.Helper()
+	ctx := pgtest.Context(t)
 	total := 0
 	for {
-		n, err := r.RunOnce(context.Background())
+		n, err := r.RunOnce(ctx)
 		if err != nil {
 			t.Fatalf("relay: %v", err)
 		}
@@ -89,7 +90,7 @@ func drain(t *testing.T, r *audit.Relay) int {
 
 func TestRelayEndToEndAgainstPostgres(t *testing.T) {
 	_, e := newEnv(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	events := 0
 	for i := range 3 {
 		phone, _ := pii.ParsePhone("0772123456")
@@ -130,7 +131,7 @@ func TestRelayEndToEndAgainstPostgres(t *testing.T) {
 // audit ledger; only its hash does.
 func TestAuditEntryNeverCarriesPayloadContent(t *testing.T) {
 	c, e := newEnv(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	phone, _ := pii.ParsePhone("0772123456")
 	o, err := e.svc.StartSession(ctx, incident.StartSession{Channel: incident.ChannelUSSDAT,
 		ProviderSessionID: "ATUid_x", Phone: phone, IdemKey: "start"})
@@ -167,7 +168,7 @@ func TestAuditEntryNeverCarriesPayloadContent(t *testing.T) {
 // Only one relay instance is active; a standby takes over when it stops.
 func TestSingleActiveRelayLeader(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	p, err := pg.Connect(ctx, c.DSN(pg.StoreOperational, "op_relay"), "test", 4)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +222,7 @@ func TestSingleActiveRelayLeader(t *testing.T) {
 // must campaign again and resume, never return while the process lives.
 func TestRelayLeaderRecampaignsAfterLockLoss(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pgtest.Context(t))
 	defer cancel()
 	p, err := pg.Connect(ctx, c.DSN(pg.StoreOperational, "op_relay"), "test", 4)
 	if err != nil {
@@ -262,8 +263,14 @@ func TestRelayLeaderRecampaignsAfterLockLoss(t *testing.T) {
 
 	super := c.Superuser(t, pg.StoreOperational)
 	var killed bool
-	if err := super.QueryRow(ctx, `SELECT pg_terminate_backend(pid) FROM pg_locks
-		WHERE locktype = 'advisory' AND objid = $1 AND objsubid = 1 AND granted`, key).Scan(&killed); err != nil || !killed {
+	qctx, qcancel := context.WithTimeout(ctx, 30*time.Second)
+	// Advisory locks are per database but pg_locks is server-wide: without
+	// the database filter this could kill another test run's lock holder.
+	err = super.QueryRow(qctx, `SELECT pg_terminate_backend(pid) FROM pg_locks
+		WHERE locktype = 'advisory' AND objid = $1 AND objsubid = 1 AND granted
+		  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`, key).Scan(&killed)
+	qcancel()
+	if err != nil || !killed {
 		t.Fatalf("terminate lock holder: %v (killed=%v)", err, killed)
 	}
 	waitFor("leadership regained after lock loss", func() bool { return runs.Load() == 2 })
@@ -284,7 +291,7 @@ func TestRelayLeaderRecampaignsAfterLockLoss(t *testing.T) {
 // must campaign again, not return while the process lives.
 func TestRelayLeaderRecampaignsWhenUnlockFails(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pgtest.Context(t))
 	p, err := pg.Connect(ctx, c.DSN(pg.StoreOperational, "op_relay"), "test", 4)
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +317,9 @@ func TestRelayLeaderRecampaignsWhenUnlockFails(t *testing.T) {
 				return lctx.Err()
 			}
 			var killed bool
-			if err := super.QueryRow(lctx, `SELECT pg_terminate_backend(pid, 5000) FROM pg_locks
+			qctx, qcancel := context.WithTimeout(lctx, 30*time.Second)
+			defer qcancel()
+			if err := super.QueryRow(qctx, `SELECT pg_terminate_backend(pid, 5000) FROM pg_locks
 				WHERE locktype = 'advisory' AND objid = $1 AND objsubid = 1 AND granted
 				  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`, key).Scan(&killed); err != nil || !killed {
 				return fmt.Errorf("terminate lock holder: %w (killed=%v)", err, killed)
