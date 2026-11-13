@@ -10,6 +10,7 @@ package respond
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"slices"
@@ -31,7 +32,7 @@ import (
 // op_ivr): only the caller's own responder record, alert and availability.
 type Store interface {
 	ResponderByPhone(ctx context.Context, macs []crypto.MAC) (uuid.UUID, bool, error)
-	RecentAlertFor(ctx context.Context, responderID uuid.UUID) (dispatch.ResponderAlert, bool, error)
+	MenuAlert(ctx context.Context, sessionKey []byte, responderID uuid.UUID) (dispatch.ResponderAlert, bool, error)
 	AvailableUntil(ctx context.Context, responderID uuid.UUID) (time.Time, bool, error)
 	SetAvailability(ctx context.Context, responderID uuid.UUID, on bool, source string) (responder.Period, error)
 	AcceptAlert(ctx context.Context, alert, responderID uuid.UUID) (dispatch.AcceptOutcome, error)
@@ -104,21 +105,24 @@ func (s *Service) HandleUSSD(ctx context.Context, r intake.USSDRequest) (intake.
 	if !ok {
 		return end("not_registered", nil)
 	}
-	alert, hasAlert, err := s.c.Store.RecentAlertFor(ctx, id)
+	// The session's alert, pinned at its first screen: a newer alert cannot
+	// redirect an answer already under way.
+	alert, hasAlert, err := s.c.Store.MenuAlert(ctx, sessionKey(r), id)
 	if err != nil {
 		return intake.Screen{}, err
 	}
+	pending := hasAlert && alert.Outcome == dispatch.OutcomePending
 	at, invalid := atTop, false
 	for _, in := range tokens(r.Text) {
 		invalid = false
 		switch at {
 		case atTop:
 			switch {
-			case in == "1" && hasAlert:
+			case in == "1" && pending:
 				return s.accept(ctx, id, alert)
-			case in == "2" && hasAlert && !s.c.AskReasons:
+			case in == "2" && pending && !s.c.AskReasons:
 				return s.decline(ctx, id, alert, "")
-			case in == "2" && hasAlert:
+			case in == "2" && pending:
 				at = atReasons
 			case in == "3":
 				at = atAvailability
@@ -159,7 +163,14 @@ func (s *Service) HandleUSSD(ctx context.Context, r intake.USSDRequest) (intake.
 		}
 		return intake.Screen{Text: s.availabilityScreen(until, on, invalid, lang)}, nil
 	}
-	return intake.Screen{Text: s.topScreen(alert, hasAlert && alert.Outcome == dispatch.OutcomePending, invalid, lang)}, nil
+	return intake.Screen{Text: s.topScreen(alert, pending, hasAlert && alert.Assigned, invalid, lang)}, nil
+}
+
+// sessionKey identifies a USSD session (provider and its session ID) without
+// storing the provider's identifier.
+func sessionKey(r intake.USSDRequest) []byte {
+	h := sha256.Sum256([]byte(r.Provider + "\x00" + r.SessionID))
+	return h[:]
 }
 
 func tokens(text string) []string {
@@ -192,7 +203,7 @@ func (s *Service) decline(ctx context.Context, id uuid.UUID, a dispatch.Responde
 	if out != dispatch.OutcomeDeclined {
 		name = "no_longer_needed"
 	}
-	return intake.Screen{Text: s.c.Copy.Text(name, s.c.Language), End: true}, nil
+	return intake.Screen{Text: s.fill(s.c.Copy.Text(name, s.c.Language), s.values(a.Facts, s.c.Language)), End: true}, nil
 }
 
 // values are what a screen may show about the alert.
@@ -238,15 +249,18 @@ func (s *Service) fill(t string, v map[string]string) string {
 	return t
 }
 
-func (s *Service) topScreen(a dispatch.ResponderAlert, pending, invalid bool, lang string) string {
+func (s *Service) topScreen(a dispatch.ResponderAlert, pending, assigned, invalid bool, lang string) string {
 	var b strings.Builder
 	if invalid {
 		b.WriteString(s.c.Copy.Text("invalid", lang) + "\n")
 	}
-	if pending {
+	switch {
+	case pending:
 		b.WriteString(s.fill(s.c.Copy.Text("alert", lang), s.values(a.Facts, lang)))
 		fmt.Fprintf(&b, "\n1 %s\n2 %s", s.c.Copy.Text("accept", lang), s.c.Copy.Text("decline", lang))
-	} else {
+	case assigned: // where to go, again (an accept by voice, or an earlier session)
+		b.WriteString(s.fill(s.c.Copy.Text("assigned", lang), s.values(a.Facts, lang)))
+	default:
 		b.WriteString(s.c.Copy.Text("no_alert", lang))
 	}
 	fmt.Fprintf(&b, "\n3 %s", s.c.Copy.Text("availability", lang))
@@ -305,14 +319,13 @@ func (s *Service) checkScreens() error {
 			"landmark": long(marks), "until": "23:59"}
 		screens := map[string]string{}
 		for _, invalid := range []bool{false, true} {
-			for _, pending := range []bool{false, true} {
-				f := s.fill(s.c.Copy.Text("alert", lang), v)
-				t := s.topScreen(dispatch.ResponderAlert{}, false, invalid, lang)
-				if pending {
-					t = strings.Replace(s.topScreen(dispatch.ResponderAlert{}, true, invalid, lang),
-						s.fill(s.c.Copy.Text("alert", lang), s.values(dispatch.MessageFacts{}, lang)), f, 1)
+			for _, kind := range []string{"none", "alert", "assigned"} {
+				t := s.topScreen(dispatch.ResponderAlert{}, kind == "alert", kind == "assigned", invalid, lang)
+				if kind != "none" {
+					t = strings.Replace(t, s.fill(s.c.Copy.Text(kind, lang), s.values(dispatch.MessageFacts{}, lang)),
+						s.fill(s.c.Copy.Text(kind, lang), v), 1)
 				}
-				screens[fmt.Sprintf("top/%v/%v", pending, invalid)] = t
+				screens[fmt.Sprintf("top/%s/%v", kind, invalid)] = t
 			}
 			for _, role := range responder.Roles() {
 				screens[fmt.Sprintf("reasons/%s/%v", role, invalid)] = s.reasonsScreen(role, invalid, lang)

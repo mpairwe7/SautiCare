@@ -120,6 +120,7 @@ type ResponderAlert struct {
 	Role                responder.Role
 	Outcome             string
 	Facts               MessageFacts
+	Assigned            bool // the responder holds the incident's open assignment
 }
 
 // AlertHistory is one line of a responder's history (scenario 10).

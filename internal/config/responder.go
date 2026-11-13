@@ -29,13 +29,13 @@ type DeclineReason struct {
 // may carry.
 var responderMenu = map[string][]string{
 	"not_registered": nil, "alert": {"ref", "colour", "category"}, "accept": nil, "decline": nil, "availability": nil,
-	"no_alert": nil, "accepted": {"ref", "landmark", "ward"}, "already_taken": nil, "already_assigned": nil,
-	"no_longer_needed": nil, "declined": nil, "decline_why": nil, "switch_on": nil, "switch_off": nil,
+	"no_alert": nil, "accepted": {"ref", "landmark", "ward"}, "assigned": {"ref", "landmark", "ward"}, "already_taken": nil,
+	"already_assigned": nil, "no_longer_needed": nil, "declined": {"ref"}, "decline_why": nil, "switch_on": nil, "switch_off": nil,
 	"available_until": {"until"}, "switched_off": nil, "invalid": nil,
 }
 
 // requiredPlaceholders must appear in every language of a menu text.
-var requiredPlaceholders = map[string][]string{"accepted": {"ref"}, "alert": {"ref"}, "available_until": {"until"}}
+var requiredPlaceholders = map[string][]string{"accepted": {"ref"}, "assigned": {"ref"}, "alert": {"ref"}, "available_until": {"until"}}
 
 // Validate checks the reasons and the menu.
 func (r Responder) Validate() error {

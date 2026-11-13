@@ -32,6 +32,7 @@ menu:
   availability: {en: "Availability", lg: "B"}
   no_alert: {en: "No active alert.", lg: "No"}
   accepted: {en: "Accepted {ref}. Go to {landmark}, {ward}.", lg: "{ref} {landmark} {ward}"}
+  assigned: {en: "On {ref}. Go to {landmark}, {ward}.", lg: "{ref} {landmark} {ward}"}
   already_taken: {en: "Already taken, thank you.", lg: "AT"}
   already_assigned: {en: "You are on another incident.", lg: "AA"}
   no_longer_needed: {en: "No longer needed. Thank you.", lg: "NL"}

@@ -29,12 +29,14 @@ type fakeStore struct {
 	accepted  []uuid.UUID
 	declined  map[uuid.UUID]string
 	available []bool
+	sessions  [][]byte
 }
 
 func (f *fakeStore) ResponderByPhone(context.Context, []crypto.MAC) (uuid.UUID, bool, error) {
 	return f.id, f.known, nil
 }
-func (f *fakeStore) RecentAlertFor(context.Context, uuid.UUID) (dispatch.ResponderAlert, bool, error) {
+func (f *fakeStore) MenuAlert(_ context.Context, session []byte, _ uuid.UUID) (dispatch.ResponderAlert, bool, error) {
+	f.sessions = append(f.sessions, session)
 	return f.alert, f.hasAlert, nil
 }
 func (f *fakeStore) AvailableUntil(context.Context, uuid.UUID) (time.Time, bool, error) {
@@ -88,8 +90,13 @@ func service(t *testing.T, f *fakeStore, askReasons bool) *Service {
 
 func dial(t *testing.T, s *Service, text string) intake.Screen {
 	t.Helper()
+	return dialIn(t, s, "S", text)
+}
+
+func dialIn(t *testing.T, s *Service, session, text string) intake.Screen {
+	t.Helper()
 	p, _ := pii.ParsePhone("0772000301")
-	sc, err := s.HandleUSSD(context.Background(), intake.USSDRequest{Provider: "at", SessionID: "S", ServiceCode: "*384*2#", Phone: p, Text: text})
+	sc, err := s.HandleUSSD(context.Background(), intake.USSDRequest{Provider: "at", SessionID: session, ServiceCode: "*384*2#", Phone: p, Text: text})
 	if err != nil {
 		t.Fatalf("%q: %v", text, err)
 	}
@@ -178,5 +185,53 @@ func TestAvailabilityFromTheMenu(t *testing.T) {
 	// "1" with no alert at all is invalid, not an accept.
 	if sc := dial(t, s, "1"); sc.End || len(f.accepted) != 0 {
 		t.Fatalf("accept with no alert %q", sc.Text)
+	}
+}
+
+// C1: a responder who accepted (by voice, or on an earlier session) dials
+// again and sees where to go — the incident number, ward and landmark — not
+// "no active alert".
+func TestMenuShowsTheActiveAssignment(t *testing.T) {
+	a := pending(responder.RoleVHT)
+	a.Outcome, a.Assigned = dispatch.OutcomeAccepted, true
+	f := &fakeStore{id: uuid.NewV7(), known: true, alert: a, hasAlert: true}
+	s := service(t, f, false)
+	_, g := repoConfig(t)
+	w, _ := g.Ward("w01")
+	top := dial(t, s, "")
+	if top.End || !strings.Contains(top.Text, "123 456 7894") || !strings.Contains(top.Text, w.Name.EN) ||
+		strings.Contains(top.Text, "1 Accept") || !strings.Contains(top.Text, "3 Availability") {
+		t.Fatalf("assigned menu %q", top.Text)
+	}
+	if sc := dial(t, s, "1"); sc.End || len(f.accepted) != 0 {
+		t.Fatalf("accept offered on an assignment %q", sc.Text)
+	}
+	// Accepted but no longer assigned (stood down after the incident closed): nothing to show.
+	a.Assigned = false
+	f.alert = a
+	if top := dial(t, s, ""); strings.Contains(top.Text, w.Name.EN) {
+		t.Fatalf("closed assignment shown %q", top.Text)
+	}
+}
+
+// I3: every callback of one USSD session reads the alert pinned to that
+// session (the same key each time); another session or provider has its own.
+func TestMenuSessionsAreKeyed(t *testing.T) {
+	f := &fakeStore{id: uuid.NewV7(), known: true, alert: pending(responder.RoleVHT), hasAlert: true}
+	s := service(t, f, true)
+	dialIn(t, s, "S1", "")
+	dialIn(t, s, "S1", "2")
+	dialIn(t, s, "S2", "")
+	if len(f.sessions) != 3 || len(f.sessions[0]) != 32 || string(f.sessions[0]) != string(f.sessions[1]) ||
+		string(f.sessions[0]) == string(f.sessions[2]) {
+		t.Fatalf("session keys %x", f.sessions)
+	}
+}
+
+// The decline result names the incident it declined.
+func TestDeclinedNamesTheIncident(t *testing.T) {
+	f := &fakeStore{id: uuid.NewV7(), known: true, alert: pending(responder.RoleVHT), hasAlert: true}
+	if sc := dial(t, service(t, f, false), "2"); !sc.End || !strings.Contains(sc.Text, "123 456 7894") {
+		t.Fatalf("declined %q", sc.Text)
 	}
 }

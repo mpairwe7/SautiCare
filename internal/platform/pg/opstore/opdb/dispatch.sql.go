@@ -879,6 +879,67 @@ func (q *Queries) IssueAlert(ctx context.Context, arg IssueAlertParams) (IssueAl
 	return i, err
 }
 
+const menuAlert = `-- name: MenuAlert :many
+SELECT m.alert_id::uuid AS id, m.incident_id::uuid AS incident_id, m.role::text AS role, m.outcome::text AS outcome,
+       m.reference::text AS reference, coalesce(m.severity, '')::text AS severity, coalesce(m.category, '')::text AS category,
+       coalesce(m.ward, '')::text AS ward, coalesce(m.landmark, '')::text AS landmark, coalesce(m.language, '')::text AS language,
+       m.assigned::boolean AS assigned
+FROM op.responder_menu_alert($1::bytea, $2::uuid)
+     AS m(alert_id, incident_id, role, outcome, reference, severity, category, ward, landmark, language, assigned)
+`
+
+type MenuAlertParams struct {
+	SessionKey  []byte
+	ResponderID pgtype.UUID
+}
+
+type MenuAlertRow struct {
+	ID         pgtype.UUID
+	IncidentID pgtype.UUID
+	Role       string
+	Outcome    string
+	Reference  string
+	Severity   string
+	Category   string
+	Ward       string
+	Landmark   string
+	Language   string
+	Assigned   bool
+}
+
+// The alert a responder's menu session is about (pinned at its first screen).
+func (q *Queries) MenuAlert(ctx context.Context, arg MenuAlertParams) ([]MenuAlertRow, error) {
+	rows, err := q.db.Query(ctx, menuAlert, arg.SessionKey, arg.ResponderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MenuAlertRow
+	for rows.Next() {
+		var i MenuAlertRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IncidentID,
+			&i.Role,
+			&i.Outcome,
+			&i.Reference,
+			&i.Severity,
+			&i.Category,
+			&i.Ward,
+			&i.Landmark,
+			&i.Language,
+			&i.Assigned,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const messageFacts = `-- name: MessageFacts :one
 SELECT reference, severity, category, ward, landmark, language FROM op.incidents WHERE id = $1::uuid
 `
@@ -952,60 +1013,6 @@ func (q *Queries) OldestOverdueDispatch(ctx context.Context) (float64, error) {
 	var seconds float64
 	err := row.Scan(&seconds)
 	return seconds, err
-}
-
-const recentAlertFor = `-- name: RecentAlertFor :many
-SELECT a.id, a.incident_id, a.role, a.outcome, i.reference, i.severity, i.category, i.ward, i.landmark, i.language
-FROM op.alerts a JOIN op.incidents i ON i.id = a.incident_id
-WHERE a.responder_id = $1::uuid AND a.sent_at > clock_timestamp() - interval '1 hour'
-ORDER BY a.sent_at DESC LIMIT 1
-`
-
-type RecentAlertForRow struct {
-	ID         pgtype.UUID
-	IncidentID pgtype.UUID
-	Role       string
-	Outcome    string
-	Reference  string
-	Severity   *string
-	Category   *string
-	Ward       *string
-	Landmark   *string
-	Language   *string
-}
-
-// The responder's own most recent alert of the last hour, whatever its
-// outcome (a retried USSD answer finds the alert it answered), with what the
-// menu may show.
-func (q *Queries) RecentAlertFor(ctx context.Context, responderID pgtype.UUID) ([]RecentAlertForRow, error) {
-	rows, err := q.db.Query(ctx, recentAlertFor, responderID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []RecentAlertForRow
-	for rows.Next() {
-		var i RecentAlertForRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.IncidentID,
-			&i.Role,
-			&i.Outcome,
-			&i.Reference,
-			&i.Severity,
-			&i.Category,
-			&i.Ward,
-			&i.Landmark,
-			&i.Language,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const recordDeliveryReport = `-- name: RecordDeliveryReport :one

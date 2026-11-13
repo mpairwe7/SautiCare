@@ -48,17 +48,19 @@ func (s *Store) DeclineAlert(ctx context.Context, alert, responderID uuid.UUID, 
 	return out, mapErr(err)
 }
 
-// RecentAlertFor returns the responder's own most recent alert of the last
-// hour, whatever its outcome (op_intake, op_ivr: the responder menu).
-func (s *Store) RecentAlertFor(ctx context.Context, responderID uuid.UUID) (dispatch.ResponderAlert, bool, error) {
-	rows, err := s.q.RecentAlertFor(ctx, pgID(responderID))
+// MenuAlert returns the alert a responder's menu session is about: pinned at
+// the session's first screen (sessionKey: SHA-256 of the provider and its
+// session ID) to the newest pending alert of the hour, else the responder's
+// active assignment, else the newest alert of the hour.
+func (s *Store) MenuAlert(ctx context.Context, sessionKey []byte, responderID uuid.UUID) (dispatch.ResponderAlert, bool, error) {
+	rows, err := s.q.MenuAlert(ctx, opdb.MenuAlertParams{SessionKey: sessionKey, ResponderID: pgID(responderID)})
 	if err != nil || len(rows) == 0 {
-		return dispatch.ResponderAlert{}, false, err
+		return dispatch.ResponderAlert{}, false, mapErr(err)
 	}
 	r := rows[0]
 	return dispatch.ResponderAlert{AlertID: uuid.UUID(r.ID.Bytes), IncidentID: uuid.UUID(r.IncidentID.Bytes), Role: responder.Role(r.Role),
-		Outcome: r.Outcome, Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference), Severity: incident.Severity(deref(r.Severity)),
-			Category: deref(r.Category), Ward: deref(r.Ward), Landmark: deref(r.Landmark), Language: deref(r.Language)}}, true, nil
+		Outcome: r.Outcome, Assigned: r.Assigned, Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference),
+			Severity: incident.Severity(r.Severity), Category: r.Category, Ward: r.Ward, Landmark: r.Landmark, Language: r.Language}}, true, nil
 }
 
 // AvailableUntil returns when the responder's current availability period

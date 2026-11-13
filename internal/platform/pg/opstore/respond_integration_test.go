@@ -38,30 +38,65 @@ func TestScenario10DeclineReasonStoredAndShown(t *testing.T) {
 	}
 }
 
-// The responder menu reads the responder's own most recent alert (within
-// the hour, whatever its outcome, so a retried answer finds the same alert)
-// and current availability (op_intake), nothing about other responders.
+// The responder menu reads the alert its session is about (op_intake): pinned
+// at the session's first screen, so a newer alert cannot redirect an answer
+// already under way (I3); at the first screen the newest pending alert of the
+// hour, else the responder's active assignment (C1: an accepted responder
+// sees where to go again), else the newest alert of the hour (a retried
+// answer finds it). Nothing about other responders.
 func TestResponderMenuReads(t *testing.T) {
 	r := newDispatchRig(t)
 	ctx := context.Background()
 	vht := r.responder(t, responder.RoleVHT)
-	if _, ok, err := r.intake.RecentAlertFor(ctx, vht); err != nil || ok {
+	key := func(n byte) []byte { b := make([]byte, 32); b[0] = n; return b }
+	if _, ok, err := r.intake.MenuAlert(ctx, key(1), vht); err != nil || ok {
 		t.Fatalf("no alert yet: %v %v", ok, err)
 	}
-	a := r.issue(t, r.incident, vht, responder.RoleVHT)
-	got, ok, err := r.intake.RecentAlertFor(ctx, vht)
-	if err != nil || !ok || got.AlertID != a.AlertID || got.IncidentID != r.incident || got.Outcome != dispatch.OutcomePending ||
-		got.Facts.Reference == "" || got.Facts.Severity != "red" || got.Role != responder.RoleVHT {
-		t.Fatalf("recent alert %+v %v %v", got, ok, err)
+	x := r.issue(t, r.incident, vht, responder.RoleVHT)
+	if _, ok, _ := r.intake.MenuAlert(ctx, key(1), vht); ok {
+		t.Fatal("a session pinned to no alert must stay so")
+	}
+	got, ok, err := r.intake.MenuAlert(ctx, key(2), vht)
+	if err != nil || !ok || got.AlertID != x.AlertID || got.IncidentID != r.incident || got.Outcome != dispatch.OutcomePending ||
+		got.Facts.Reference == "" || got.Facts.Severity != "red" || got.Role != responder.RoleVHT || got.Assigned {
+		t.Fatalf("pending alert %+v %v %v", got, ok, err)
+	}
+	// A newer alert on another incident, stood down: the pending one is shown.
+	other := dispatchedIncident(t, r.intake).IncidentID
+	y := r.issue(t, other, vht, responder.RoleVHT)
+	if _, err := r.dispatcher.CloseAlert(ctx, y.AlertID, dispatch.OutcomeStoodDown); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := r.intake.MenuAlert(ctx, key(3), vht); got.AlertID != x.AlertID {
+		t.Fatalf("newer stood-down alert shown instead of the pending one: %+v", got)
+	}
+	// A newer pending alert: a session under way keeps its alert, a new one sees the newer.
+	third := dispatchedIncident(t, r.intake).IncidentID
+	z := r.issue(t, third, vht, responder.RoleVHT)
+	if got, _, _ := r.intake.MenuAlert(ctx, key(2), vht); got.AlertID != x.AlertID {
+		t.Fatalf("pinned session redirected to %+v", got)
+	}
+	if got, _, _ := r.intake.MenuAlert(ctx, key(4), vht); got.AlertID != z.AlertID {
+		t.Fatalf("new session %+v", got)
+	}
+	// Accepted and nothing pending: the active assignment, flagged.
+	if _, err := r.intake.AcceptAlert(ctx, x.AlertID, vht); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.dispatcher.CloseAlert(ctx, z.AlertID, dispatch.OutcomeStoodDown); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, _ := r.intake.MenuAlert(ctx, key(5), vht); !ok || got.AlertID != x.AlertID || !got.Assigned ||
+		got.Outcome != dispatch.OutcomeAccepted {
+		t.Fatalf("after accepting: %+v %v", got, ok)
+	}
+	// Another responder's session key never reads this responder's pin.
+	other2 := r.responder(t, responder.RoleVHT)
+	if _, ok, _ := r.intake.MenuAlert(ctx, key(5), other2); ok {
+		t.Fatal("a pin read by another responder")
 	}
 	until, on, err := r.intake.AvailableUntil(ctx, vht)
 	if err != nil || !on || time.Until(until) < 7*time.Hour {
 		t.Fatalf("availability %v %v %v", until, on, err)
-	}
-	if _, err := r.intake.AcceptAlert(ctx, a.AlertID, vht); err != nil {
-		t.Fatal(err)
-	}
-	if got, ok, _ := r.intake.RecentAlertFor(ctx, vht); !ok || got.Outcome != dispatch.OutcomeAccepted {
-		t.Fatalf("after accepting: %+v %v", got, ok)
 	}
 }

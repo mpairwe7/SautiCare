@@ -303,6 +303,13 @@ type OpResponder struct {
 	UpdatedAt       pgtype.Timestamptz
 }
 
+type OpResponderMenuPin struct {
+	SessionKey  []byte
+	ResponderID pgtype.UUID
+	AlertID     pgtype.UUID
+	PinnedAt    pgtype.Timestamptz
+}
+
 type OpSession struct {
 	ID                pgtype.UUID
 	IncidentID        pgtype.UUID
