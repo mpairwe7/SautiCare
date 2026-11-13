@@ -2,8 +2,10 @@
 -- Build Prompt §10.4; scenarios 7, 8, 11; ADR-0027).
 --
 -- * A forwarded facility gets one SMS (dispatch-worker) and one call
---   (ivr-controller; press 1 to acknowledge), each attempt claimed once; a
---   facility that acknowledged or timed out is not called.
+--   (ivr-controller; press 1 to acknowledge), each attempt claimed once and
+--   only while the forward is open: a facility that acknowledged or timed
+--   out (the request has moved on) gets neither. The SMS's delivery report
+--   is recorded like an alert's.
 -- * Every escalation rings the coordinator line, durable and retried every
 --   retry interval until a coordinator presses 1; one acknowledgement covers
 --   the incident's escalations recorded so far, a later one rings again.
@@ -17,10 +19,16 @@ CREATE TABLE op.forward_attempts (
     provider_ref text        CHECK (provider_ref ~ '^[A-Za-z0-9_.:-]{1,128}$'),
     claimed_at   timestamptz NOT NULL DEFAULT clock_timestamp(),
     settled_at   timestamptz,
+    delivery_status  text    CHECK (delivery_status ~ '^[A-Za-z]{1,32}$'),
+    delivery_failure text    CHECK (delivery_failure ~ '^[A-Za-z]{1,64}$'),
+    delivery_final   boolean NOT NULL DEFAULT false,
+    delivery_at      timestamptz,
     UNIQUE (incident_id, facility_id, channel),
     FOREIGN KEY (incident_id, facility_id) REFERENCES op.forwards (incident_id, facility_id),
     CHECK ((status = 'claimed') = (settled_at IS NULL))
 );
+
+CREATE INDEX forward_attempts_provider_ref ON op.forward_attempts (provider_ref) WHERE provider_ref IS NOT NULL;
 
 CREATE FUNCTION op.begin_forward_attempt(p_incident uuid, p_facility text, p_channel text)
 RETURNS TABLE (attempt_id uuid, fresh boolean)
@@ -30,10 +38,11 @@ AS $$
 DECLARE
     v_id uuid;
 BEGIN
-    -- Only a recorded forward; a call only while it awaits acknowledgement.
+    -- Only a recorded forward that is still open (awaiting acknowledgement):
+    -- one that timed out has been handed to the next facility.
     IF NOT EXISTS (SELECT 1 FROM op.forwards f
                     WHERE f.incident_id = p_incident AND f.facility_id = p_facility
-                      AND (p_channel = 'sms' OR (f.acknowledged_at IS NULL AND f.timed_out_at IS NULL))) THEN
+                      AND f.acknowledged_at IS NULL AND f.timed_out_at IS NULL) THEN
         RETURN QUERY SELECT NULL::uuid, false;
         RETURN;
     END IF;
@@ -71,14 +80,16 @@ CREATE TABLE op.coordinator_calls (
     acknowledged_at timestamptz
 );
 
-CREATE INDEX incident_events_escalated ON op.incident_events (recorded_at) WHERE type = 'incident.escalated';
+CREATE INDEX incident_events_escalated ON op.incident_events (incident_id, seq DESC) WHERE type = 'incident.escalated';
+CREATE INDEX incidents_open ON op.incidents (id) WHERE state NOT IN ('closed', 'merged');
 
 -- Claim the coordinator calls due now: for each open incident, its latest
 -- escalation not yet acknowledged, rung when never rung since the last
--- acknowledgement or not for p_retry; the most severe first, then the
--- oldest; at most p_limit (ivr-controller passes the free lines, so one line
--- is never rung twice at once). Escalations of the last day (older ones are
--- on the console's list); a closed or merged incident is not rung about.
+-- acknowledgement or not for p_retry, however old it is (an unacknowledged
+-- escalation keeps ringing while the incident is open); the most severe
+-- first, then the oldest; at most p_limit (ivr-controller passes the free
+-- lines, so one line is never rung twice at once). A closed or merged
+-- incident is not rung about.
 CREATE FUNCTION op.claim_coordinator_calls(p_retry interval, p_limit int)
 RETURNS TABLE (incident_id uuid, seq bigint, reason text, reference text, calls int)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER
@@ -90,17 +101,16 @@ DECLARE
     v_calls int;
 BEGIN
     FOR r IN
-        SELECT l.incident_id AS inc, l.seq AS s, l.reason AS why, i.reference AS ref
-          FROM (SELECT DISTINCT ON (e.incident_id) e.incident_id, e.seq, e.payload ->> 'reason' AS reason, e.recorded_at
-                  FROM op.incident_events e
-                  LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
-                 WHERE e.type = 'incident.escalated' AND e.recorded_at > clock_timestamp() - interval '1 day'
-                   AND e.seq > coalesce(c.acked_seq, 0)
-                 ORDER BY e.incident_id, e.seq DESC) l
-          JOIN op.incidents i ON i.id = l.incident_id
-          LEFT JOIN op.coordinator_calls c ON c.incident_id = l.incident_id
-         WHERE (c.last_call_at IS NULL OR c.last_call_at < clock_timestamp() - p_retry)
-           AND i.state NOT IN ('closed', 'merged')
+        SELECT i.id AS inc, l.seq AS s, l.reason AS why, i.reference AS ref
+          FROM op.incidents i
+          CROSS JOIN LATERAL (SELECT e.seq, e.payload ->> 'reason' AS reason, e.recorded_at
+                                FROM op.incident_events e
+                               WHERE e.incident_id = i.id AND e.type = 'incident.escalated'
+                               ORDER BY e.seq DESC LIMIT 1) l
+          LEFT JOIN op.coordinator_calls c ON c.incident_id = i.id
+         WHERE i.state NOT IN ('closed', 'merged')
+           AND l.seq > coalesce(c.acked_seq, 0)
+           AND (c.last_call_at IS NULL OR c.last_call_at < clock_timestamp() - p_retry)
          ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, l.recorded_at
          LIMIT p_limit
     LOOP
@@ -126,6 +136,29 @@ AS $$
     UPDATE op.coordinator_calls c
        SET acked_seq = greatest(c.acked_seq, p_seq), calls = 0, last_call_at = NULL, acknowledged_at = clock_timestamp()
      WHERE c.incident_id = p_incident
+$$;
+
+-- Delivery reports now also match a forwarded facility's SMS (0019's
+-- function rebuilt here, after op.forward_attempts exists); only SMS
+-- attempts carry an Africa's Talking message ID.
+CREATE OR REPLACE FUNCTION op.record_delivery_report(p_provider_ref text, p_status text, p_failure text, p_final boolean) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path = op, pg_temp
+AS $$
+BEGIN
+    UPDATE op.alert_attempts x SET delivery_status = p_status, delivery_failure = p_failure, delivery_final = p_final,
+                                   delivery_at = clock_timestamp()
+     WHERE x.provider_ref = p_provider_ref AND x.channel = 'sms' AND NOT x.delivery_final;
+    UPDATE op.notice_attempts x SET delivery_status = p_status, delivery_failure = p_failure, delivery_final = p_final,
+                                    delivery_at = clock_timestamp()
+     WHERE x.provider_ref = p_provider_ref AND NOT x.delivery_final;
+    UPDATE op.forward_attempts x SET delivery_status = p_status, delivery_failure = p_failure, delivery_final = p_final,
+                                     delivery_at = clock_timestamp()
+     WHERE x.provider_ref = p_provider_ref AND x.channel = 'sms' AND NOT x.delivery_final;
+    RETURN EXISTS (SELECT 1 FROM op.alert_attempts x WHERE x.provider_ref = p_provider_ref AND x.channel = 'sms')
+        OR EXISTS (SELECT 1 FROM op.notice_attempts x WHERE x.provider_ref = p_provider_ref)
+        OR EXISTS (SELECT 1 FROM op.forward_attempts x WHERE x.provider_ref = p_provider_ref AND x.channel = 'sms');
+END
 $$;
 
 GRANT EXECUTE ON FUNCTION op.begin_forward_attempt(uuid, text, text), op.finish_forward_attempt(uuid, text, text)
