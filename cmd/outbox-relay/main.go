@@ -1,0 +1,209 @@
+// Command outbox-relay is the only process with audit-store credentials. It
+// relays the operational outbox into the hash-chained audit ledger, at least
+// once and in order, and signs a checkpoint of the chain head on a fixed
+// interval (spec §6.3, ADR-0004, ADR-0005). Exactly one instance is active
+// at a time (advisory-lock leadership); standbys stay live and take over.
+//
+// Environment:
+//
+//	SAUTI_ENV          dev | test | production
+//	SAUTI_OP_DSN       operational store, role op_relay
+//	SAUTI_AUDIT_DSN    audit store, role audit_appender
+//	SAUTI_DEVKEYS_DIR  development key directory (refused in production)
+//	SAUTI_WITNESS_DIR  write-once checkpoint witness directory
+//	SAUTI_CONFIG_DIR   configuration directory (config/)
+//	SAUTI_HTTP_ADDR    health and metrics listener (default 127.0.0.1:9101)
+//	SAUTI_ORIGIN       ledger origin name (default sauti-dispatch)
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"sautihealth.com/sauti/internal/audit"
+	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/platform/devkeys"
+	"sautihealth.com/sauti/internal/platform/env"
+	"sautihealth.com/sauti/internal/platform/health"
+	"sautihealth.com/sauti/internal/platform/logging"
+	"sautihealth.com/sauti/internal/platform/metrics"
+	"sautihealth.com/sauti/internal/platform/pg"
+	"sautihealth.com/sauti/internal/platform/pg/auditstore"
+	"sautihealth.com/sauti/internal/platform/pg/opstore"
+)
+
+const leaderKey = 7347002
+
+// partitionMonthsAhead is how far ahead the leader keeps monthly
+// incident_events partitions.
+const partitionMonthsAhead = 3
+
+type relayMetrics struct {
+	relayed  *metrics.Counter
+	lag      *metrics.Gauge
+	poison   *metrics.Counter
+	checkpts *metrics.Counter
+	diverged *metrics.Gauge
+}
+
+func newRelayMetrics(reg *metrics.Registry) relayMetrics {
+	return relayMetrics{
+		relayed:  reg.Counter("sauti_outbox_relayed_total", "Outbox rows delivered to the audit ledger."),
+		lag:      reg.Gauge("sauti_outbox_lag_seconds", "Age of the oldest undelivered audit outbox row."),
+		poison:   reg.Counter("sauti_outbox_poison_total", "Outbox rows that violated the audit payload contract."),
+		checkpts: reg.Counter("sauti_audit_checkpoints_total", "Signed audit checkpoints written."),
+		diverged: reg.Gauge("sauti_audit_chain_diverged", "1 when the ledger no longer matches the last witnessed checkpoint."),
+	}
+}
+
+func (m relayMetrics) Relayed(n int)       { m.relayed.Add(float64(n)) }
+func (m relayMetrics) Lag(d time.Duration) { m.lag.Set(d.Seconds()) }
+func (m relayMetrics) Poison()             { m.poison.Add(1) }
+
+// checkpointed records the outcome of one checkpoint attempt.
+func (m relayMetrics) checkpointed(log *slog.Logger, c audit.Checkpoint, err error) {
+	switch {
+	case errors.Is(err, audit.ErrChainDiverged):
+		m.diverged.Set(1)
+		log.Error("AUDIT LEDGER DIVERGED from the witnessed checkpoint; refusing to sign (runbook: docs/runbooks/audit-ledger-verification-failure.md)", "err", err)
+	case err != nil:
+		log.Error("audit checkpoint failed", "err", err)
+	default:
+		m.diverged.Set(0) // the witnessed history holds again
+		m.checkpts.Add(1)
+		log.Info("audit checkpoint signed", "seq", c.Seq)
+	}
+}
+
+func main() {
+	log := slog.New(logging.NewHandler(os.Stderr, slog.LevelInfo))
+	if err := run(log); err != nil && !errors.Is(err, context.Canceled) {
+		log.Error("outbox-relay stopped", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(log *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	senv, err := env.Environment()
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(os.DirFS(env.Default("SAUTI_CONFIG_DIR", "config")))
+	if err != nil {
+		return err
+	}
+	if senv == "production" {
+		if err := cfg.ProductionReady(); err != nil {
+			return err
+		}
+		return errors.New("outbox-relay: production key provider (OpenBao) arrives in P0; refusing to start")
+	}
+	opDSN, err := env.Required("SAUTI_OP_DSN")
+	if err != nil {
+		return err
+	}
+	auditDSN, err := env.Required("SAUTI_AUDIT_DSN")
+	if err != nil {
+		return err
+	}
+	keys, err := devkeys.Open(env.Default("SAUTI_DEVKEYS_DIR", ".devkeys"), senv)
+	if err != nil {
+		return err
+	}
+	opPool, err := pg.Connect(ctx, opDSN, "outbox-relay", 4)
+	if err != nil {
+		return err
+	}
+	defer opPool.Close()
+	auditPool, err := pg.Connect(ctx, auditDSN, "outbox-relay", 4)
+	if err != nil {
+		return err
+	}
+	defer auditPool.Close()
+
+	reg := metrics.NewRegistry()
+	m := newRelayMetrics(reg)
+	ledger := auditstore.New(auditPool)
+	ops := opstore.New(opPool)
+	relay := audit.NewRelay(ops, ledger, log, m, cfg.Platform.OutboxBatchSize)
+	witness := devkeys.NewFSWitness(env.Default("SAUTI_WITNESS_DIR", "var/witness"))
+	origin := env.Default("SAUTI_ORIGIN", "sauti-dispatch")
+	// Fail fast, even as a standby, on a witness store that does not verify.
+	// The anchor itself is read again at each leadership term.
+	if _, _, err := audit.NewAnchoredCheckpointer(ledger, keys.Signer(), witness, origin, time.Now); err != nil {
+		return fmt.Errorf("outbox-relay: witness store failed verification; refusing to start (runbook: docs/runbooks/audit-ledger-verification-failure.md): %w", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/livez", health.Handler(map[string]health.Check{}, nil))
+	// Readiness: the operational store only. An audit outage must not take
+	// the relay out of rotation; the outbox simply grows (rule 3.14).
+	mux.Handle("/readyz", health.Handler(nil, map[string]health.Check{"operational_db": opPool.Ping}))
+	mux.Handle("/metrics", reg.Handler())
+	srv := &http.Server{Addr: env.Default("SAUTI_HTTP_ADDR", "127.0.0.1:9101"), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("health listener", "err", err)
+			stop()
+		}
+	}()
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
+
+	log.Info("outbox-relay waiting for leadership", "env", senv, "config", cfg.Fingerprint)
+	return pg.RunAsLeader(ctx, opPool, leaderKey, 5*time.Second, func(lctx context.Context) error {
+		log.Info("outbox-relay is the active leader")
+		// Anchor on the last witnessed checkpoint so the relay never signs a
+		// head whose history was rewritten or truncated (review finding C1).
+		// Read it now, for this term: while this instance stood by, the
+		// previous leader may have witnessed newer history. The checkpointer
+		// also reads the witness again before every signature, because
+		// `sautictl checkpoint` writes to it during the term; the shared
+		// witness, not a lock, coordinates the two (CodeRabbit PR #4).
+		cp, anchor, err := audit.NewAnchoredCheckpointer(ledger, keys.Signer(), witness, origin, time.Now)
+		if err != nil {
+			return fmt.Errorf("outbox-relay: witness store failed verification; refusing to checkpoint (runbook: docs/runbooks/audit-ledger-verification-failure.md): %w", err)
+		}
+		if anchor != nil {
+			log.Info("checkpointer anchored on witness", "seq", anchor.Seq)
+		}
+		// Monthly event partitions three months ahead, so no event lands in
+		// the default partition (runbook: event-partition-maintenance.md).
+		go func() {
+			if err := ops.MaintainEventPartitions(lctx, partitionMonthsAhead, 24*time.Hour, log); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("event partition maintenance stopped", "err", err)
+			}
+		}()
+		go func() {
+			t := time.NewTicker(cfg.Platform.CheckpointInterval.Duration)
+			defer t.Stop()
+			for {
+				select {
+				case <-lctx.Done():
+					return
+				case <-t.C:
+					c, err := cp.Checkpoint(lctx)
+					m.checkpointed(log, c, err)
+				}
+			}
+		}()
+		err = relay.Run(lctx, cfg.Platform.RelayPollInterval.Duration)
+		if errors.Is(err, audit.ErrPoisonRow) {
+			return fmt.Errorf("outbox-relay halted on a poison row; see docs/runbooks/outbox-poison-row.md: %w", err)
+		}
+		return err
+	})
+}
