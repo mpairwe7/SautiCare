@@ -27,10 +27,16 @@ threats:
     mitigations:
       - The incident exists from the first screen; replies are idempotent per session and input
       - Internal errors still answer the caller and give the free voice line
+      - An answer and its consequences (classification, rule-error flag and escalation, out-of-area closure) are one transaction; a retried callback or a redial on either channel records a missing classification or T2 before anything else; the closing "help is coming" screen is never shown without T2
       - Second USSD route (UCC code) and second SIP carrier (M7)
     verified_by:
       - internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine
       - internal/platform/pg/intake_integration_test.go::TestRetriedCallbackReturnsSameScreenNoSecondEvent
+      - internal/intake/atomicity_test.go::TestEveryWriteFailureConverges
+      - internal/intake/atomicity_test.go::TestRedialAfterLostT2Dispatches
+      - internal/intake/atomicity_test.go::TestCompleteWithoutT2IsAnError
+      - internal/platform/pg/opstore/batch_integration_test.go::TestAppendBatchIsAllOrNothing
+      - internal/platform/pg/schemas_integration_test.go::TestStackMigratesAfterMainsHistory
       - "planned:M7 second-route failover scenario"
 
   - id: T-003
@@ -42,9 +48,12 @@ threats:
       - Severity ratchet in the Go reducer and in the SQL write path
       - Versioned, fingerprinted configuration behind the amendment gate
       - Signed CEL decision tables with clinical scenarios (M1)
+      - An answered Tool 1 field never changes (Go fold and an event-log trigger), so the answers a classification read cannot be rewritten
     verified_by:
       - internal/incident/fold_test.go::TestApplyRejectsSeverityLowering
       - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering
+      - internal/incident/tool1_test.go::TestApplyRefusesAChangedAnswer
+      - internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRefusesAChangedAnswer
       - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
       - "planned:M1 rule-signature verification test"
 
@@ -228,3 +237,77 @@ threats:
       - internal/platform/africastalking/ussd_test.go::TestATBadTokenIs404
       - internal/platform/africastalking/ussd_test.go::TestATUnknownServiceCodeIs403
       - "planned:P0 HAProxy source allowlist configuration test"
+
+  - id: T-016
+    title: Triage rules altered without clinical sign-off, or a table with gaps runs
+    stride: Tampering
+    asset: triage decision table
+    hard_constraints: [3, 11, 14]
+    mitigations:
+      - ML-DSA-65 signature (context sauti-triage-rules/v1) against trusted keys held in gated, fingerprinted config
+      - Totality check over every input combination at load, after the domain is bounded at 9^4; catalogue and bundle domains must match
+      - Runtime error or no match gives red, flagged and escalated; production refuses dev-signed or pending bundles
+    verified_by:
+      - internal/triage/triage_test.go::TestLoadRejectsBadSignature
+      - internal/triage/triage_test.go::TestLoadRejectsUntrustedKey
+      - internal/triage/triage_test.go::TestLoadRejectsNonTotalTable
+      - internal/triage/triage_test.go::TestLoadRejectsOversizedDomain
+      - internal/crypto/crypto_test.go::TestSignatureContextsAreSeparated
+      - internal/platform/wiring/intake_integration_test.go::TestBuildIntakeRefusesPlaceholdersInProduction
+
+  - id: T-017
+    title: A caller's number or typed landmark recovered from step keys, events or the audit hash
+    stride: Information disclosure
+    linddun: Identifiability
+    asset: callback number, free-text landmark
+    hard_constraints: [5, 8]
+    mitigations:
+      - Screen answers are codes only, enforced identically in Go and SQL; identifiers sealed to their own row and referenced by ID
+      - USSD step keys are HMACs under a dedicated HKDF info, never sha256(text)
+      - "Planned (M6): identifiers shredded with their key period; until the retention agent destroys a key period, identifiers sealed under it stay decryptable"
+    verified_by:
+      - "planned:M6 key-period destruction by the retention agent (crypto-shredding)"
+      - internal/incident/tool1_test.go::TestApplyScreenAnsweredRejectsInvalidPayloads
+      - internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRejectsWhatFoldRejects
+      - internal/crypto/crypto_test.go::TestStepMACIsKeyedAndSeparated
+      - internal/platform/pg/opstore/identifiers_integration_test.go::TestStoreIdentifierIsIdempotentAndBound
+      - tests/e2e/m1_intake_test.go::TestNoCallerNumberInLogs
+
+  - id: T-018
+    title: Gazetteer edited in place, sending responders to the wrong zone
+    stride: Tampering
+    asset: wards, landmarks and their cells
+    hard_constraints: [11]
+    mitigations:
+      - Versions immutable even for the owner (triggers refuse UPDATE, DELETE, TRUNCATE, and INSERT under a published version); new version plus deviation record
+      - The gazetteer file is gated by the amendment gate; production refuses a placeholder
+    verified_by:
+      - internal/platform/pg/opstore/gazetteer_integration_test.go::TestGazetteerIsFrozen
+      - internal/platform/pg/opstore/gazetteer_integration_test.go::TestGazetteerLoadIsIdempotentPerVersion
+      - internal/location/gazetteer_test.go::TestRepositoryGazetteer
+
+  - id: T-019
+    title: Free-text landmark used to reach other data or pull an incident across wards
+    stride: Elevation of privilege
+    asset: operational store
+    hard_constraints: [5, 14]
+    mitigations:
+      - Matching only through op.match_landmark, parameterised, scoped to the caller's ward; pg_trgm in a schema runtime roles cannot use
+      - Text limited to 20 GSM characters; never logged; sealed
+    verified_by:
+      - internal/platform/pg/opstore/gazetteer_integration_test.go::TestMatchIsScopedToWard
+      - internal/platform/pg/opstore/gazetteer_integration_test.go::TestRuntimeRolesCannotReachTrigramFunctions
+      - internal/intake/machine_test.go::TestFreeTextLandmark
+
+  - id: T-020
+    title: A redial resumes someone else's incident
+    stride: Spoofing
+    linddun: Linkability
+    asset: incident record
+    hard_constraints: [5]
+    mitigations:
+      - Resume only by keyed hash of the caller's own number, within the window, for an open unfinished incident; a withheld number never resumes
+    verified_by:
+      - internal/platform/pg/opstore/resume_integration_test.go::TestFindResumable
+      - internal/intake/service_test.go::TestUSSDWithheldNumberNeverResumes
+      - internal/intake/service_test.go::TestUSSDDoesNotResumeAfterWindow

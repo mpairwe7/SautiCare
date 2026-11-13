@@ -4,21 +4,30 @@
 
 Every state change is one row in `op.incident_events`, written only by `op.open_incident` or `op.append_incident_event`. The protocol timestamps are set by the database clock and are first-wins: a later event of the same type never moves them (Build Prompt §15.1).
 
-| Event type | Sets | Payload (M0) | Notes |
+| Event type | Sets | Payload | Notes |
 |---|---|---|---|
 | `session.started` | **T1** | `reference`, `channel` | written only by `op.open_incident` |
-| `screen.answered` | — | `screen`, `answer` | Tool 1 answers (M1) |
-| `incident.classified` | — | `severity` (`red`/`yellow`/`green`), `category` | logic version in the event's `logic_version` column; severity can only rise |
-| `incident.dispatch_ready` | **T2** | `trigger_screen` | severity and location known (screen 7, D5) |
+| `session.resumed` | — | `channel` | a redial within the resume window joined this incident (M1) |
+| `screen.answered` | — | exactly `screen` (1–8), `field`, `value` (a code), optional `identifier_id` | Tool 1 answers; validated identically in Go and SQL; a different value for a field already answered is refused in both; see [tool1-flow.md](tool1-flow.md) |
+| `incident.classified` | — | `severity` (`red`/`yellow`/`green`), `rule_id` | `logic_version` = signed bundle `<version>+sha256:<12 hex>`; severity can only rise |
+| `incident.dispatch_ready` | **T2** | `trigger_screen`, `zone {col,row}`, `location_quality` (`landmark`/`fuzzy`/`ward`), `gazetteer_version` | severity and location known (screen 7, D5); zone and quality go together |
 | `alert.issued` | **T3** (first) | `role`, `ring` | |
 | `responder.accepted` | **T4** (first) | `role` | per-role T4 lives in assignments (M2) |
 | `responder.arrived` | **T5** (first, attested) | `role` | verification in M3 |
 | `responder.departed` | **T6** | — | |
 | `responder.at_facility` | **T7** | `facility` | |
-| `incident.flagged` | — | `flag` (a non-empty JSON string, enforced by the database) | e.g. `out_of_area`, `needs_location_callback`, `test_call` |
-| `incident.escalated` | — | `reason` | sets `escalated` |
+| `incident.flagged` | — | `flag` (a non-empty JSON string, enforced by the database) | intake: `out_of_area`, `needs_location_callback`, `triage_rule_error`, `abandoned`, `abandoned_before_category` |
+| `incident.escalated` | — | `reason` | sets `escalated`; intake: `triage_rule_error`, `abandoned_after_danger_yes`, `abandoned_red_before_dispatch` |
 | `incident.merged` | — | `into` (incident UUID) | duplicates (M1) |
 | `incident.closed` | — | `reason` | terminal |
+
+## Idempotency keys and atomic batches
+
+Every append carries an idempotency key, unique per incident; a retry with the same key returns the stored event and writes nothing. `op.append_incident_event` can also run several times in one transaction (`incident.Service.AppendBatch`, `opstore.Store.AppendBatch`): all of the events are stored or none, and each sees the state the previous one left.
+
+Intake uses two kinds of key (see [tool1-flow.md](tool1-flow.md)):
+- **Session-scoped**, for what a caller said: `ussd:<provider>:<session>:s<screen>` or `ivr:<call>:s<screen>` for `screen.answered`, with a suffix for the sealed identifier it references.
+- **Incident-scoped**, for what the answers imply: `intake:<incident>:classify`, `:rule_error`, `:escalate`, `:out_of_area`, `:close`, `:needs_location_callback` and `:dispatch_ready`. Whichever session or channel records one first, every retry or redial converges on that one event.
 
 ## Lifecycle
 

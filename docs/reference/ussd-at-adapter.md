@@ -32,9 +32,9 @@ Once the token and service code show the request is ours, nothing else is answer
 
 ## Behaviour
 
-- **Idempotency.** The reply to each `(provider, sessionId, sha256(text))` is stored in `op.ussd_steps`, and the first stored reply wins. A retried or concurrent duplicate callback gets the identical screen and writes nothing new.
+- **Idempotency.** The reply to each callback is stored in `op.ussd_steps` under a keyed HMAC of `(provider, sessionId, text)` (never a plain hash: the text can hold a callback number; ADR-0021), and the first stored reply wins. A retried or concurrent duplicate callback gets the stored screen; event appends are idempotent on their keys.
 - **Budget.** Each callback has 800 ms end to end (spec §7.5, p99 under 1 s). No external call happens on this path.
 - **Fail safe.** Any internal error returns `END` with the internal-error copy, which gives the free voice line, and is logged with the session correlation value only.
 - **Logs.** The raw `sessionId` is never logged (it is caller-controlled text). Log lines carry `session`: a keyed HMAC-SHA-256 of it under a random key drawn when the handler starts, hex-truncated to 16 characters. It correlates the lines of one session within one process lifetime only. An invalid `networkCode` (not 5–6 digits) is dropped: passed to intake and logged as empty.
-- **M0 scope.** The first callback opens the incident (reference and database-set T1) and replies in test mode. The Tool 1 eight-screen flow arrives in M1.
+- **Scope (M1).** The first callback of a new incident opens it and shows screen 1. A redial within the resume window resumes the incident at its first unanswered screen ([tool1-flow.md](tool1-flow.md)). Later callbacks carry the remaining Tool 1 screens. The adapter only translates; `intake.Service` decides.
 - **Screen length.** Every catalogue screen, rendered, must fit the configured limit (160 by default). `internal/intake/service_test.go::TestScreensFitCharLimit` fails the build otherwise.

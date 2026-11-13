@@ -24,7 +24,7 @@ Add `--keep` to keep the databases for inspection. The run's work directory stay
 
 | Step | Proof |
 |---|---|
-| 1 | A simulated USSD dial opens the incident; the reply carries a Damm-valid 3-3-4 reference; T1 comes from the database clock |
+| 1 | A simulated caller completes Tool 1 on USSD (placeholder wording): the incident opens on the first callback with T1 from the database clock, is classified red by the signed triage table after screen 5, gets T2 after screen 7, and the closing screen carries the Damm-valid 3-3-4 reference |
 | 2 | Fixture events (classification, T2…T7, closure) pass the single write path |
 | 3 | outbox-relay delivers every outbox row to the audit ledger |
 | 4 | One ledger entry per event, and no phone number anywhere in the ledger |

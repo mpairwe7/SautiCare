@@ -1,6 +1,6 @@
 # Model Card: Sauti Dispatch decision logic
 
-**Type:** Reference · **Last updated:** 2026-11-12 (M0) · **Owner:** Medical Director (clinical lead of record) with the PI
+**Type:** Reference · **Last updated:** 2026-11-12 (M1 Part A) · **Owner:** Medical Director (clinical lead of record) with the PI
 **Format:** Model Cards for Model Reporting (Mitchell et al., 2019), adapted for deterministic clinical decision logic. Supports ISO/IEC 42001 §7.5, the NIST AI RMF MAP function, and EU AI Act Art. 11 documentation practice. Risk register: `governance/ai_risk_manifest.yaml`.
 
 ## 1. Summary
@@ -9,7 +9,7 @@ In the pilot, **no machine-learning model makes or influences a dispatch decisio
 
 | Component | Kind | Status (M0) |
 |---|---|---|
-| Tool 1 triage decision table | deterministic rules in CEL, signed and versioned (M1) | planned: protocol wording pending |
+| Tool 1 triage decision table | deterministic ordered table, CEL conditions, ML-DSA-65 signed, totality-checked (`triage-rules/tool1.yaml`, ADR-0019) | **built (M1)**; input lists are placeholders until Tool 1; dev-signed, `protocol_status: pending` (production refuses) |
 | Responder ranking | deterministic: zone distance, then response history, then least recently dispatched (decision 4 default) | planned (M2) |
 | Sunbird `asr-whisper-large-v3-salt` speech assist | machine-learning model, self-hosted in Uganda | **flagged off** (`speech_assist: false`) |
 | Reinforcement-learning dispatcher | machine-learning model | not built: post-study only |
@@ -29,12 +29,15 @@ In the pilot, **no machine-learning model makes or influences a dispatch decisio
 
 - **Severity can never be lowered.** This is enforced by the Go reducer and the SQL write path (`internal/incident/fold_test.go::TestApplyRejectsSeverityLowering`).
 - **Every incident records the logic version** that classified it, together with the configuration fingerprint ([ADR-0014](adr/ADR-0014-configuration-and-amendment-gate.md)).
-- **A rule error is treated as red and escalates to a coordinator by voice** (Build Prompt §14). Implemented in M1.
+- **A rule error is treated as red, flagged `triage_rule_error` and escalated** (Build Prompt §14): `internal/triage/triage_test.go::TestRuntimeErrorIsRed`, `internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`. The three events are one transaction with the screen 5 answer, so a failure cannot leave the red classification without its flag and escalation (`internal/intake/atomicity_test.go::TestRuleErrorFlagAndEscalationSurviveAFailure`). The coordinator voice call is the Escalate port (M2).
+- **Only a signed, total table runs.** A bundle loads only with a valid signature from a trusted key, only if every combination of its inputs reaches a row, and only if its inputs equal the Tool 1 catalogue's options (`internal/triage/triage_test.go::TestLoadRejectsNonTotalTable`, `internal/intake/machine_test.go::TestCatalogueMatchesTriageDomain`). The input domain is bounded at 9⁴ combinations before the totality check expands it (`internal/triage/triage_test.go::TestLoadRejectsOversizedDomain`).
+- **An answer it was classified on cannot change.** A later `screen.answered` with a different value for an answered field is refused in Go and SQL, so the stored severity always matches the stored answers (`internal/incident/tool1_test.go::TestApplyRefusesAChangedAnswer`, `internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRefusesAChangedAnswer`).
+- **Classification happens once, after screen 5**, with all four inputs, in the same transaction as the screen 5 answer; an incident that lacks it (an earlier failure) is classified when its caller redials, before any further question (`internal/intake/atomicity_test.go::TestResumeClassifiesAnIncidentThatLacksIt`). The logic version `<version>+sha256:<12 hex>` is stamped on the event.
 - **Rule changes during the study** need an ethics amendment record (amendment gate) and approval by the emergency-medicine co-investigator (CODEOWNERS).
 
 ## 4. Evaluation
 
-- **Clinical scenario suite.** It runs before every rule release (M1), and covers Build Prompt §16 scenarios 1–3 and 11, including "poisoning with screen 5 = no is yellow".
+- **Clinical scenario suite.** `triage-rules/scenarios.yaml` runs in CI against the signed bundle (`internal/triage/triage_test.go::TestRepositoryBundleVerifies`), with an independent oracle over every input combination (`::TestRuleTableFromBuildPrompt`). It includes scenario 3, "poisoning with screen 5 = no is yellow", proven end to end by `tests/e2e/m1_intake_test.go::TestScenario3PoisoningIsYellow`.
 - **Agreement measures.** Agreement between telephone triage and the responder's on-scene severity (Tool 2) is reported as a 3×3 cross-classification (Guide §13). It is a study output, never a training signal during the pilot.
 
 ## 5. Speech assist (flagged off)
