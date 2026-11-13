@@ -14,22 +14,26 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"sautihealth.com/sauti/internal/audit"
+	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/auditstore/auditdb"
 )
 
 const pageSize = 1000
 
-// appendTimeout bounds one Append, pool acquisition included: the statement
-// timeout does not cover waiting for a connection.
-var appendTimeout = 10 * time.Second
+// callTimeout bounds every ledger call — one statement, pool acquisition
+// included: the statement timeout does not cover waiting for a connection.
+// Range bounds each page query, not the whole scan.
+var callTimeout = 10 * time.Second
 
 // Store implements audit.Ledger and audit.LedgerReader.
 type Store struct {
 	q *auditdb.Queries
 }
 
-// New returns a Store over pool.
-func New(pool *pgxpool.Pool) *Store { return &Store{q: auditdb.New(pool)} }
+// New returns a Store over pool. Every call it makes has its own deadline
+// (callTimeout), so one stalled call cannot stop relay progress or a
+// verification even when the caller's context has none.
+func New(pool *pgxpool.Pool) *Store { return &Store{q: auditdb.New(pg.Bounded(pool, callTimeout))} }
 
 func pgUUID(u *uuid.UUID) pgtype.UUID {
 	if u == nil {
@@ -100,12 +104,8 @@ func toEntry(r row) (audit.Entry, error) {
 	return e, nil
 }
 
-// Append implements audit.Ledger. It is idempotent on EntryID. Each call
-// has its own deadline (appendTimeout), so one stalled append cannot stop
-// relay progress even when the caller's context has none.
+// Append implements audit.Ledger. It is idempotent on EntryID.
 func (s *Store) Append(ctx context.Context, r audit.AppendRequest) (audit.Entry, error) {
-	ctx, cancel := context.WithTimeout(ctx, appendTimeout)
-	defer cancel()
 	id := r.EntryID
 	got, err := s.q.AppendEntry(ctx, auditdb.AppendEntryParams{
 		EntryID:       pgUUID(&id),
@@ -152,6 +152,13 @@ func (s *Store) HashAt(ctx context.Context, seq int64) ([32]byte, bool, error) {
 func (s *Store) SaveCheckpoint(ctx context.Context, c audit.Checkpoint) error {
 	if c.Signature == nil {
 		return errors.New("auditstore: refusing to store an unsigned checkpoint")
+	}
+	// timestamptz keeps microseconds, and Checkpoints rebuilds the body from
+	// the stored signed_at: a finer timestamp would no longer match what was
+	// signed. Truncating here would break the signature, so refuse instead
+	// (the checkpointer truncates before it signs).
+	if c.SignedAt.Nanosecond()%int(time.Microsecond) != 0 {
+		return errors.New("auditstore: checkpoint signed_at is finer than a microsecond; its signed body could not be rebuilt")
 	}
 	_, err := s.q.SaveCheckpoint(ctx, auditdb.SaveCheckpointParams{
 		Origin:    c.Origin,

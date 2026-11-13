@@ -22,12 +22,7 @@ func TestMain(m *testing.M) { pgtest.Main(m) }
 
 func as(t *testing.T, c *pgtest.TestCluster, s pg.Store, role string) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(context.Background(), c.DSN(s, role))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close(context.Background()) })
-	return conn
+	return pgtest.Connect(t, c.DSN(s, role))
 }
 
 func code(err error) string {
@@ -43,14 +38,16 @@ func TestAllStoresMigrateFromZero(t *testing.T) {
 	want := map[pg.Store][]string{
 		pg.StoreOperational: {"0000_schema", "0001_core", "0002_write_path", "0003_grants", "0004_default_privileges", "0005_salted_payload_hash",
 			"0006_tool1_projection", "0007_gazetteer",
-			"0008_identifiers_and_steps", "0009_resume", "0010_merge_split", "0011_severity_raised", "0017_review_pr8"},
+			"0008_identifiers_and_steps", "0009_resume", "0010_merge_split", "0011_severity_raised", "0017_review_pr8",
+			"0027_review_pr3_coderabbit"},
 		pg.StoreAudit:    {"0000_schema", "0001_ledger", "0002_default_privileges", "0003_hash_at"},
 		pg.StoreAnalytic: {"0000_schema", "0001_meds", "0002_default_privileges"},
 		pg.StoreLinkage:  {"0000_schema", "0001_vault", "0002_default_privileges"},
 		pg.StoreMedia:    {"0000_schema", "0001_media", "0002_default_privileges"},
 	}
+	ctx := pgtest.Context(t)
 	for s, versions := range want {
-		rows, err := c.Owner(t, s).Query(context.Background(), "SELECT version FROM public.schema_migrations ORDER BY version")
+		rows, err := c.Owner(t, s).Query(ctx, "SELECT version FROM public.schema_migrations ORDER BY version")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +76,7 @@ const insertWaiver = `INSERT INTO analytic.meds_records
 func TestAnalyticRejectsUnconsentedRecord(t *testing.T) {
 	c := pgtest.Cluster(t)
 	w := as(t, c, pg.StoreAnalytic, "an_writer")
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	for _, status := range []string{"pending", "declined", "withdrawn", "late_contact"} {
 		if _, err := w.Exec(ctx, insertMEDS, uuid.NewV4(), status); code(err) != "23514" {
 			t.Errorf("consent_status %q: err = %v, want check violation 23514", status, err)
@@ -106,7 +103,7 @@ func TestAnalyticRejectsUnconsentedRecord(t *testing.T) {
 // attempt — granted or not — is logged (ISP §5.5, Build Prompt §13).
 func TestLinkageResolveRequiresAllowedReason(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	study, inc := uuid.NewV4(), uuid.NewV7()
 	if _, err := as(t, c, pg.StoreLinkage, "lk_writer").Exec(ctx,
 		"INSERT INTO linkage.pairs (study_id, incident_id) VALUES ($1, $2)", study, inc); err != nil {
@@ -140,7 +137,7 @@ func TestLinkageResolveRequiresAllowedReason(t *testing.T) {
 
 func TestLinkageRolesAreNarrow(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	if _, err := as(t, c, pg.StoreLinkage, "lk_reader").Exec(ctx, "SELECT * FROM linkage.pairs"); code(err) != "42501" {
 		t.Errorf("lk_reader direct SELECT: %v, want 42501", err)
 	}
@@ -156,7 +153,7 @@ func TestLinkageRolesAreNarrow(t *testing.T) {
 // after every analytic restore (Build Prompt §13).
 func TestSuppressionLedgerAppendOnly(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	w := as(t, c, pg.StoreAnalytic, "an_writer")
 	id := uuid.NewV4()
 	if _, err := w.Exec(ctx, "INSERT INTO analytic.suppression_ledger (study_id, reason) VALUES ($1, 'withdrawal')", id); err != nil {
@@ -172,7 +169,7 @@ func TestSuppressionLedgerAppendOnly(t *testing.T) {
 
 func TestAnalyticReaderIsReadOnly(t *testing.T) {
 	c := pgtest.Cluster(t)
-	if _, err := as(t, c, pg.StoreAnalytic, "an_reader").Exec(context.Background(), insertMEDS, uuid.NewV4(), "consented"); code(err) != "42501" {
+	if _, err := as(t, c, pg.StoreAnalytic, "an_reader").Exec(pgtest.Context(t), insertMEDS, uuid.NewV4(), "consented"); code(err) != "42501" {
 		t.Fatalf("an_reader insert: %v, want 42501", err)
 	}
 }
@@ -182,7 +179,7 @@ func TestAnalyticReaderIsReadOnly(t *testing.T) {
 func TestMediaRecordingsRequireDestroyByAndKey(t *testing.T) {
 	c := pgtest.Cluster(t)
 	w := as(t, c, pg.StoreMedia, "md_writer")
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	if _, err := w.Exec(ctx, "INSERT INTO media.recordings (key_id, consent_ref) VALUES ('k1', 'C-1')"); code(err) != "23502" {
 		t.Errorf("recording without destroy_by: %v, want 23502", err)
 	}
@@ -199,7 +196,7 @@ func TestMediaRecordingsRequireDestroyByAndKey(t *testing.T) {
 func TestMediaRetentionIsTwelveCalendarMonths(t *testing.T) {
 	c := pgtest.Cluster(t)
 	owner := c.Owner(t, pg.StoreMedia) // only the owner may set created_at
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	const q = "INSERT INTO media.recordings (key_id, consent_ref, created_at, destroy_by) VALUES ('k1', 'C-1', $1, $2)"
 	for _, tc := range []struct {
 		created, destroyBy string
@@ -227,7 +224,7 @@ func TestMediaRetentionIsTwelveCalendarMonths(t *testing.T) {
 // recording's retention clock.
 func TestWritersCannotSupplyDatabaseTimestamps(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	an := as(t, c, pg.StoreAnalytic, "an_writer")
 	lk := as(t, c, pg.StoreLinkage, "lk_writer")
 	md := as(t, c, pg.StoreMedia, "md_writer")
@@ -268,7 +265,7 @@ func TestWritersCannotSupplyDatabaseTimestamps(t *testing.T) {
 func TestAnalyticCodedFieldsRejectFreeText(t *testing.T) {
 	c := pgtest.Cluster(t)
 	w := as(t, c, pg.StoreAnalytic, "an_writer")
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	for _, col := range []string{"destination", "first_action_code", "status_24_48h"} {
 		q := `INSERT INTO analytic.meds_records (study_id, parish, time_of_call, logic_version, zone_set_version,
 			consent_status, ` + col + `) VALUES ($1, 'Bwaise I', now(), 'tr-test+sha256:0123456789ab', 'zs-1', 'consented', $2)`
@@ -285,10 +282,10 @@ func TestAnalyticCodedFieldsRejectFreeText(t *testing.T) {
 	}
 }
 
-func medsCount(t *testing.T, c *pgtest.TestCluster, id uuid.UUID) int {
+func medsCount(ctx context.Context, t *testing.T, c *pgtest.TestCluster, id uuid.UUID) int {
 	t.Helper()
 	var n int
-	if err := as(t, c, pg.StoreAnalytic, "an_reader").QueryRow(context.Background(),
+	if err := as(t, c, pg.StoreAnalytic, "an_reader").QueryRow(ctx,
 		"SELECT count(*) FROM analytic.meds_records WHERE study_id = $1", id).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +298,7 @@ func medsCount(t *testing.T, c *pgtest.TestCluster, id uuid.UUID) int {
 func TestSuppressionDeletesAndBlocksMEDSRecord(t *testing.T) {
 	c := pgtest.Cluster(t)
 	w := as(t, c, pg.StoreAnalytic, "an_writer")
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	id, other := uuid.NewV4(), uuid.NewV4()
 	for _, s := range []uuid.UUID{id, other} {
 		if _, err := w.Exec(ctx, insertMEDS, s, "consented"); err != nil {
@@ -311,10 +308,10 @@ func TestSuppressionDeletesAndBlocksMEDSRecord(t *testing.T) {
 	if _, err := w.Exec(ctx, "INSERT INTO analytic.suppression_ledger (study_id, reason) VALUES ($1, 'withdrawal')", id); err != nil {
 		t.Fatal(err)
 	}
-	if n := medsCount(t, c, id); n != 0 {
+	if n := medsCount(ctx, t, c, id); n != 0 {
 		t.Fatalf("withdrawn study ID still has %d MEDS record(s)", n)
 	}
-	if n := medsCount(t, c, other); n != 1 {
+	if n := medsCount(ctx, t, c, other); n != 1 {
 		t.Fatalf("suppression removed another study ID's record (count %d)", n)
 	}
 	if _, err := w.Exec(ctx, insertMEDS, id, "consented"); code(err) != "SA403" {
@@ -329,7 +326,7 @@ func TestSuppressionDeletesAndBlocksMEDSRecord(t *testing.T) {
 	if _, err := owner.Exec(ctx, "INSERT INTO analytic.suppression_ledger (study_id, reason) VALUES ($1, 'dsr_deletion')", restored); err != nil {
 		t.Fatal(err)
 	}
-	if n := medsCount(t, c, restored); n != 0 {
+	if n := medsCount(ctx, t, c, restored); n != 0 {
 		t.Fatalf("replayed suppression left %d record(s)", n)
 	}
 }
@@ -338,7 +335,7 @@ func TestSuppressionDeletesAndBlocksMEDSRecord(t *testing.T) {
 // must not survive it: the two serialise on the study ID.
 func TestSuppressionWinsOverConcurrentInsert(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	writer := as(t, c, pg.StoreAnalytic, "an_writer")
 	withdrawer := as(t, c, pg.StoreAnalytic, "an_writer")
 	id := uuid.NewV4()
@@ -346,7 +343,12 @@ func TestSuppressionWinsOverConcurrentInsert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() {
+		// A fresh bounded context: ctx may have expired by now.
+		rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rctx)
+	}()
 	if _, err := tx.Exec(ctx, insertMEDS, id, "consented"); err != nil {
 		t.Fatal(err)
 	}
@@ -359,10 +361,15 @@ func TestSuppressionWinsOverConcurrentInsert(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("withdrawal did not finish: %v", ctx.Err())
 	}
-	if n := medsCount(t, c, id); n != 0 {
+	if n := medsCount(ctx, t, c, id); n != 0 {
 		t.Fatalf("MEDS record committed concurrently with its withdrawal survived (count %d)", n)
 	}
 }
@@ -373,7 +380,7 @@ func TestSuppressionWinsOverConcurrentInsert(t *testing.T) {
 // is denied and never stored, nor is a reason outside the lawful list.
 func TestLinkageDeniedAttemptsAreAlwaysLoggedWithoutFreeText(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	study, inc := uuid.NewV4(), uuid.NewV7()
 	if _, err := as(t, c, pg.StoreLinkage, "lk_writer").Exec(ctx,
 		"INSERT INTO linkage.pairs (study_id, incident_id) VALUES ($1, $2)", study, inc); err != nil {
@@ -411,7 +418,7 @@ func TestLinkageDeniedAttemptsAreAlwaysLoggedWithoutFreeText(t *testing.T) {
 // CodeRabbit PR #3: the access log is append-only against TRUNCATE too.
 func TestLinkageAccessLogCannotBeTruncated(t *testing.T) {
 	c := pgtest.Cluster(t)
-	if _, err := c.Owner(t, pg.StoreLinkage).Exec(context.Background(), "TRUNCATE linkage.access_log"); code(err) != "SA403" {
+	if _, err := c.Owner(t, pg.StoreLinkage).Exec(pgtest.Context(t), "TRUNCATE linkage.access_log"); code(err) != "SA403" {
 		t.Fatalf("owner TRUNCATE access_log: err = %v, want SA403", err)
 	}
 }
@@ -426,7 +433,7 @@ var schemaOf = map[pg.Store]string{
 // PUBLIC by default; the owner's default privileges must revoke it.
 func TestNewFunctionsAreNotExecutableByRuntimeRoles(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	for _, s := range pg.Stores() {
 		owner := c.Owner(t, s)
 		fn := schemaOf[s] + ".probe_new_function()"
@@ -449,7 +456,7 @@ func TestNewFunctionsAreNotExecutableByRuntimeRoles(t *testing.T) {
 // PUBLIC grant.
 func TestEveryStoreFunctionHasExplicitACL(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	for _, s := range pg.Stores() {
 		rows, err := c.Owner(t, s).Query(ctx, `
 			SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -465,5 +472,44 @@ func TestEveryStoreFunctionHasExplicitACL(t *testing.T) {
 		if len(open) > 0 {
 			t.Errorf("%s: functions executable by PUBLIC: %v", s, open)
 		}
+	}
+}
+
+// CodeRabbit PR #3 (review of ead62cf), finding 2: op.ussd_steps.created_at
+// is set by the database (clock_timestamp()). op_intake may insert only the
+// data columns, so it cannot backdate or future-date a cached reply.
+//
+// The data columns differ along the migration history (0008 rekeys steps by
+// a keyed MAC), so they are read from the catalogue. A zero-row INSERT …
+// SELECT checks the privileges without needing a valid row.
+func TestIntakeCannotSupplyUSSDStepTimestamp(t *testing.T) {
+	c := pgtest.Cluster(t)
+	ctx := pgtest.Context(t)
+	owner := c.Owner(t, pg.StoreOperational)
+	rows, err := owner.Query(ctx, `
+		SELECT quote_ident(attname) FROM pg_attribute
+		WHERE attrelid = 'op.ussd_steps'::regclass AND attnum > 0 AND NOT attisdropped AND attname <> 'created_at'
+		ORDER BY attnum`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cols, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(cols) == 0 {
+		t.Fatalf("op.ussd_steps data columns = %v, %v", cols, err)
+	}
+	var tableWide bool
+	if err := owner.QueryRow(ctx, "SELECT has_table_privilege('op_intake', 'op.ussd_steps', 'INSERT')").Scan(&tableWide); err != nil {
+		t.Fatal(err)
+	}
+	if tableWide {
+		t.Error("op_intake holds table-wide INSERT on op.ussd_steps, which covers created_at")
+	}
+	intake := as(t, c, pg.StoreOperational, "op_intake")
+	data := strings.Join(cols, ", ")
+	if _, err := intake.Exec(ctx, "INSERT INTO op.ussd_steps ("+data+") SELECT "+data+" FROM op.ussd_steps WHERE false"); err != nil {
+		t.Errorf("op_intake insert of the data columns: %v", err)
+	}
+	if _, err := intake.Exec(ctx, "INSERT INTO op.ussd_steps ("+data+", created_at) SELECT "+data+", created_at FROM op.ussd_steps WHERE false"); code(err) != "42501" {
+		t.Errorf("op_intake insert supplying created_at: err = %v, want 42501", err)
 	}
 }
