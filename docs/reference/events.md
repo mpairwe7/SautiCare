@@ -16,7 +16,7 @@ Every state change is one row in `op.incident_events`, written only by `op.open_
 | `alert.declined` | — | exactly `alert`, `responder`, optional `reason` (a code) | `op.decline_alert`; no reason until decision 6's list is approved (amendment gate) |
 | `alert.no_response` | — | exactly `alert` | `op.close_alert` at the cascade timeout; a later acceptance still counts while the role is open |
 | `alert.stood_down` | — | exactly `alert` | `op.close_alert` after the role is taken or the incident ends; an incident cannot close while an alert is pending |
-| `incident.forwarded` | — | exactly `facility` (gazetteer ID) | `op.record_forward`: a forwarding-enabled facility of the given gazetteer version (amended mode) |
+| `incident.forwarded` | — | exactly `facility` (gazetteer ID) | `op.record_forward`: a forwarding-enabled facility of the given gazetteer version (amended mode); refused while dispatch is suspended |
 | `incident.forward_acknowledged` | — | exactly `facility` | `op.acknowledge_forward` (op_ivr: the facility pressed 1); a late acknowledgement counts |
 | `incident.forward_timed_out` | — | exactly `facility` | `op.time_out_forward` after 60 s without acknowledgement |
 | `caller.notified` | — | exactly `kind` (`helper_on_the_way`, or `forwarded_to_facility` with `facility`) | `op.notify_caller`, once per kind |

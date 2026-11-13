@@ -611,6 +611,11 @@ func cmdResponder(ctx context.Context, args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if *off {
+			// The database returns an empty period: the responder is off now.
+			fmt.Fprintf(out, "responder %s switched off at %s\n", id, p.From.Format(time.RFC3339))
+			return nil
+		}
 		fmt.Fprintf(out, "responder %s available until %s\n", id, p.Until.Format(time.RFC3339))
 		return nil
 	}

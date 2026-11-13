@@ -37,6 +37,7 @@ type dispatchRig struct {
 func newDispatchRig(t *testing.T) *dispatchRig {
 	t.Helper()
 	c := pgtest.Cluster(t)
+	gazetteerVersion(t, c) // responders register at a stage of the gazetteer in force
 	r := &dispatchRig{c: c, ids: identifiers(t), intake: storeAs(t, c, "op_intake"), dispatcher: storeAs(t, c, "op_dispatch"),
 		ivr: storeAs(t, c, "op_ivr"), ro: storeAs(t, c, "op_readonly"), console: storeAs(t, c, "op_console")}
 	r.incident = dispatchedIncident(t, r.intake).IncidentID
@@ -240,7 +241,10 @@ func TestDispatchFactsOnlyThroughTheirFunctions(t *testing.T) {
 
 // Every dispatch fact lands in its table and the log in one transaction,
 // the projection still equals the fold, and closing with a responder on the
-// way is refused.
+// way is refused. The dispatch logic version is on every fact the planner
+// decides and on none that follows from one (acknowledgement, forward
+// timeout, caller notice): exactly what governance/ai_risk_manifest.yaml
+// claims (CodeRabbit PR #10).
 func TestDispatchLifecycleIsRecordedAndConsistent(t *testing.T) {
 	r := newDispatchRig(t)
 	ctx := context.Background()
@@ -316,6 +320,31 @@ func TestDispatchLifecycleIsRecordedAndConsistent(t *testing.T) {
 	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(ctx, "SELECT count(*) FROM op.incident_events WHERE incident_id = $1 AND type = 'caller.notified'",
 		r.incident).Scan(&events); err != nil || events != 2 {
 		t.Fatalf("caller.notified events = %d, %v", events, err)
+	}
+	rows, err := r.c.Owner(t, pg.StoreOperational).Query(ctx, `SELECT type, bool_and(logic_version IS NOT DISTINCT FROM $2), bool_and(logic_version IS NULL)
+		FROM op.incident_events WHERE incident_id = $1 AND (type LIKE 'alert.%' OR type IN ('responder.accepted', 'incident.forwarded',
+		     'incident.forward_acknowledged', 'incident.forward_timed_out', 'caller.notified', 'incident.escalated'))
+		GROUP BY type`, r.incident, dispatchLogic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versioned := map[string]bool{"alert.issued": true, "responder.accepted": true, "alert.declined": true, "alert.no_response": true,
+		"alert.stood_down": true, "incident.forwarded": true, "incident.escalated": true,
+		"incident.forward_acknowledged": false, "incident.forward_timed_out": false, "caller.notified": false}
+	seen := 0
+	for rows.Next() {
+		var typ string
+		var all, none bool
+		if err := rows.Scan(&typ, &all, &none); err != nil {
+			t.Fatal(err)
+		}
+		if want, ok := versioned[typ]; !ok || (want && !all) || (!want && !none) {
+			t.Errorf("%s: logic version on all %v, on none %v", typ, all, none)
+		}
+		seen++
+	}
+	if rows.Err() != nil || seen != len(versioned) {
+		t.Fatalf("fact types seen %d of %d: %v", seen, len(versioned), rows.Err())
 	}
 	r.noDrift(t)
 }

@@ -5,7 +5,7 @@
 | Owner | Field Coordinator (content) with the technical operator (load) |
 | Severity | SEV-3 (planned change) |
 | Alert / trigger | new or corrected ward and landmark lists; intake-gw refusing to start with `opstore: no gazetteer loaded` |
-| Last reviewed: | 2026-11-12 |
+| Last reviewed: | 2026-11-13 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -28,13 +28,20 @@ No dispatch-path impact while the version in force stays loaded. A wrong landmar
 2. Run `go test ./internal/intake/ -run TestEveryRenderedScreenFitsLimitAndGSM7`: every ward's landmark menu must fit the operator limit in both languages.
 3. During the study window: add the amendment record, and record a deviation for the correction.
 4. Load, as the operational store owner: `sautictl gazetteer load --file config/gated/gazetteer.yaml --dsn <owner DSN>`. Loading the same version again is a no-op; different content under a loaded version is refused.
-5. Restart intake-gw so it takes the new snapshot.
+5. Check that every active responder can still be placed: dispatch finds a responder by their stage's zone in the version in force, and new registrations are refused unless the stage is in the responder's ward in that version. As `op_readonly`, list the responders the new version cannot place. Each one is never alerted until re-registered at a stage of the new version, so tell the coordinator lead.
+
+   ```sql
+   SELECT r.id, r.role, r.ward, r.stage FROM op.responders r
+    WHERE r.status = 'active' AND NOT EXISTS (
+          SELECT 1 FROM op.stages s WHERE s.version = '<new version>' AND s.id = r.stage AND s.ward_id = r.ward);
+   ```
+6. Restart intake-gw and dispatch-worker so they take the new snapshot. In production both refuse a gazetteer whose status is not `approved`.
 
 ## Escalation
 Field Coordinator and PI for any correction during the window (deviation record).
 
 ## Verification
-intake-gw's start-up log shows `gazetteer=<new version>`; a test call shows the corrected menu.
+intake-gw's and dispatch-worker's start-up logs show `gazetteer=<new version>`; a test call shows the corrected menu; the query in Mitigation step 5 returns no row.
 
 ## References
 ADR-0020; `docs/reference/tool1-flow.md`; Build Prompt §9, §12.

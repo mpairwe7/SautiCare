@@ -273,11 +273,14 @@ threats:
     hard_constraints: [11]
     mitigations:
       - Versions immutable even for the owner (triggers refuse UPDATE, DELETE, TRUNCATE); new version plus deviation record
-      - The gazetteer file is gated by the amendment gate; production refuses a placeholder
+      - The gazetteer file is gated by the amendment gate; production refuses a placeholder (intake and dispatch-worker)
+      - A responder registers only at a stage of their ward in the gazetteer in force, so dispatch can place them
     verified_by:
       - internal/platform/pg/opstore/gazetteer_integration_test.go::TestGazetteerIsFrozen
       - internal/platform/pg/opstore/gazetteer_integration_test.go::TestGazetteerLoadIsIdempotentPerVersion
       - internal/location/gazetteer_test.go::TestRepositoryGazetteer
+      - internal/platform/wiring/dispatch_test.go::TestBuildDispatchRefusesAPlaceholderGazetteerInProduction
+      - internal/platform/pg/opstore/review10cr_integration_test.go::TestRegistrationNeedsAStageOfTheGazetteerInForce
 
   - id: T-019
     title: Free-text landmark used to reach other data or pull an incident across wards
@@ -364,15 +367,17 @@ threats:
     asset: dispatch decisions (alerts, assignments, deliveries)
     hard_constraints: [3, 14]
     mitigations:
-      - First acceptance per role is a partial unique index; accepts serialise on the incident row
+      - First acceptance per role is a partial unique index; accepts serialise on the incident row, then on the responder row (one open assignment per responder)
       - One alert per responder per incident (UNIQUE); every dispatch fact and its event in one function
-      - Each delivery attempt is claimed in the store before the provider call and never sent again
-      - The worker keeps no dispatch state; leases and a generation guard make every pass retry-safe
+      - Each delivery attempt is claimed in the store before the provider call and never sent again (at most once; an unfinished claim lapses to the next rung)
+      - The worker keeps no dispatch state; leases and a generation guard make every pass retry-safe; a restarted worker reclaims a failed pass when its lease expires
     verified_by:
       - internal/platform/pg/opstore/dispatch_integration_test.go::TestConcurrentAcceptsOneAssignment
+      - internal/platform/pg/opstore/review10cr_integration_test.go::TestAcceptsSerialisePerResponder
       - internal/platform/pg/opstore/dispatch_integration_test.go::TestAttemptsAreClaimedOnce
       - internal/platform/pg/opstore/dispatch_integration_test.go::TestDispatchTimers
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineCrashBetweenRecordAndDelivery
+      - internal/platform/wiring/dispatch_integration_test.go::TestEngineCrashAfterTheAttemptClaim
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineFailoverMidCascade
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineDoesNotDeliverAfterADatabaseSuspension
       - internal/platform/pg/opstore/review10_integration_test.go::TestCloseAndMergeWakeDispatch
@@ -402,7 +407,8 @@ threats:
       - Suspending and resuming need the console role and a staff identity; the leader may only suspend on a stopping-rule breach
       - The control log is append-only (SA403); every change is an audit-ledger entry
       - While suspended every incident is escalated to a coordinator; production refuses the unapproved suspended message
-      - A pass the worker cannot process is escalated (dispatch_error)
+      - While suspended the database refuses alerts, forwards and alert attempts under a lock a committing suspension holds
+      - A pass the worker cannot process is escalated (dispatch_error); a stopping-rule rate that is not a number strictly between 0 and 1 is refused at start-up
     verified_by:
       - internal/platform/pg/opstore/control_integration_test.go::TestSuspensionControl
       - internal/platform/pg/opstore/control_integration_test.go::TestAutoSuspendRegistersTheBreach
@@ -412,6 +418,9 @@ threats:
       - internal/platform/wiring/dispatch_integration_test.go::TestEngineRunOnceEscalatesAnUnprocessableIncident
       - internal/platform/pg/opstore/control_integration_test.go::TestRedDispatchOutcomes
       - internal/platform/pg/opstore/review10_integration_test.go::TestNoAlertOrAttemptWhileSuspended
+      - internal/platform/pg/opstore/review10cr_integration_test.go::TestNoForwardOrAlertOnceASuspensionCommits
+      - internal/platform/wiring/dispatch_integration_test.go::TestEngineDoesNotForwardAfterADatabaseSuspension
+      - internal/dispatch/stopping_test.go::TestStoppingRuleRefusesANaNRate
       - internal/intake/watchdog_test.go::TestWatchdogEscalatesStalledDispatch
       - cmd/dispatch-worker/main_test.go::TestReadinessFailsWhenTheLeaderStalls
   - id: T-026

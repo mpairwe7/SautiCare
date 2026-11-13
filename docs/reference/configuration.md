@@ -18,7 +18,7 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `dedup_window` / `dedup_max_zone_distance` | `15m` / `1` | Build Prompt §10.3: same category, within one zone, 15 minutes (ADR-0022) |
 | `config/gated/tool1.yaml` | the eight screens' copy, options, danger questions, first-aid lines, messages | **placeholder** (`status: placeholder`, `PENDING-TOOL1`) | Tool 1 not received; [tool1-flow.md](tool1-flow.md); blocks production |
 | `config/gated/triage.yaml` | `rules_file`, `trusted_keys` | `triage-rules/tool1.yaml`; one `dev-` key | ADR-0019: who may sign clinical rules; a `dev-` key blocks production |
-| `config/gated/gazetteer.yaml` | wards, landmarks, aliases, stages, facilities (versioned) | synthetic `placeholder-2026-11-13b` | ADR-0020; separately versioned (not in the fingerprint); `sautictl gazetteer load` |
+| `config/gated/gazetteer.yaml` | wards, landmarks, aliases, stages, facilities (versioned) | synthetic `placeholder-2026-11-13` | ADR-0020; separately versioned (not in the fingerprint); `sautictl gazetteer load`; blocks production (intake and dispatch) |
 | `triage-rules/tool1.yaml` (+ `.sig`, `scenarios.yaml`) | signed decision table | `tool1-placeholder-0.1`, `protocol_status: pending` | ADR-0019; gated |
 | `config/gated/sms.yaml` | `templates` (alert, alert_amended, stand_down, availability_expiring, helper_on_the_way, forwarded_to_facility, facility_forward; en, lg) | `PENDING-SMS` placeholders, `status: placeholder` | hard constraint 6, decision 1: only the incident number, colour, category, and — in the amended templates — ward and landmark; one GSM-7 segment; production refuses placeholders |
 | `config/gated/dispatch.yaml` | `mode` | `protocol` | ring 1 only until the decisions 1, 2, 6 amendment |
@@ -29,7 +29,7 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | | `forward_ack_timeout` | `60s` | decision 2 |
 | | `voice_fallback_after` | `20s` | decision 8 |
 | | `red_escalation_after` | `3m` | decision 2 (protocol answer): coordinator alerted for red with a role unaccepted, both modes |
-| | `stopping_rule` | `{window: 30, max_failure_rate: 0.15}` | Guide §14, O6: red dispatch failure above 15% across 30 consecutive red incidents suspends dispatch automatically |
+| | `stopping_rule` | `{window: 30, max_failure_rate: 0.15}` | Guide §14, O6: red dispatch failure above 15% across 30 consecutive red incidents suspends dispatch automatically; the worker refuses a window below 1 or a rate that is not a number strictly between 0 and 1 (`.nan` included) |
 | | `ranking_order` | `zone_distance, response_history, least_recently_dispatched` | decision 4 **open**: safe default |
 | | `ranking_version` | `default-2026-11-12` | stamped on incidents (M2) |
 | `config/gated/flags.yaml` | `android_app`, `caller_link`, `speech_assist`, `app_api` | all `false` | decision 10 |
@@ -37,7 +37,7 @@ Behavioural configuration is versioned YAML in Git, loaded by `internal/config/l
 | `config/platform.yaml` (ungated) | `checkpoint_interval` | `5m` | Build Prompt §4 |
 | | `outbox_batch_size` / `relay_poll_interval` | `100` / `1s` | tuning |
 
-`Bundle.ProductionReady()` refuses to start with `SAUTI_ENV=production` while `protocol_status` or the Tool 1 catalogue's `status` is not `approved`, or while any screen contains `XXX`, `PENDING-TOOL1` or `PENDING-TRANSLATION`. `wiring.BuildIntake` also refuses a placeholder gazetteer and a pending or `dev-`signed triage bundle. `config.Load` fails on any file under `config/gated/` it does not use.
+`Bundle.ProductionReady()` refuses to start with `SAUTI_ENV=production` while `protocol_status` or the Tool 1 catalogue's `status` is not `approved`, or while any screen contains `XXX`, `PENDING-TOOL1` or `PENDING-TRANSLATION`. `wiring.BuildIntake` also refuses a placeholder gazetteer and a pending or `dev-`signed triage bundle, and `wiring.BuildDispatch` (dispatch-worker) refuses a placeholder gazetteer: its synthetic facilities' numbers reach nobody. `config.Load` fails on any file under `config/gated/` it does not use.
 
 **What is gated.** The gated paths are `config/gated/**`, `config/study.yaml`, `triage-rules/**` and the gate list `governance/gated-paths.txt` itself. The effective gate is the union of this built-in minimum, the list at the base ref and the list in the change, so a change can only widen it. Gated paths must be regular files, not symlinks, and are hashed as tracked at HEAD. `config/platform.yaml` is ungated operational tuning by design.
 

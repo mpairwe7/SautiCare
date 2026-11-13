@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -50,7 +51,9 @@ var facilities = []location.Facility{
 }
 
 // sim drives Plan the way dispatch-worker does: apply the actions to the
-// state, then wake at the next wake time.
+// state, then wake at the next wake time. Each alert gets an ID, as the store
+// gives it, and an expiry or stand-down closes the alert its AlertID names:
+// a planner naming the wrong alert fails the test (CodeRabbit PR #10).
 type sim struct {
 	t     *testing.T
 	s     State
@@ -68,13 +71,14 @@ func newSim(t *testing.T, sev incident.Severity, p pool, par Params) *sim {
 func (m *sim) apply(a Action) {
 	switch a.Kind {
 	case ActAlert:
-		m.s.Alerts = append(m.s.Alerts, Alert{ResponderID: a.ResponderID, Role: a.Role, Ring: a.Ring, Wave: a.Wave, SentAt: m.now, Outcome: OutcomePending})
+		m.s.Alerts = append(m.s.Alerts, Alert{ID: uuid.NewV7(), ResponderID: a.ResponderID, Role: a.Role, Ring: a.Ring, Wave: a.Wave,
+			SentAt: m.now, Outcome: OutcomePending})
 	case ActExpire, ActStandDown:
-		for i := range m.s.Alerts {
-			if m.s.Alerts[i].ResponderID == a.ResponderID {
-				m.s.Alerts[i].Outcome = map[ActionKind]string{ActExpire: OutcomeNoResponse, ActStandDown: OutcomeStoodDown}[a.Kind]
-			}
+		i := slices.IndexFunc(m.s.Alerts, func(x Alert) bool { return x.ID == a.AlertID })
+		if i < 0 || m.s.Alerts[i].ResponderID != a.ResponderID || m.s.Alerts[i].Outcome != OutcomePending {
+			m.t.Fatalf("%s names alert %v, which is not the pending alert of responder %v", a.Kind, a.AlertID, a.ResponderID)
 		}
+		m.s.Alerts[i].Outcome = map[ActionKind]string{ActExpire: OutcomeNoResponse, ActStandDown: OutcomeStoodDown}[a.Kind]
 	case ActEscalate:
 		m.s.Escalations = append(m.s.Escalations, incident.EscalationKey(a.Reason, string(a.Role)))
 	case ActForward:
@@ -531,5 +535,46 @@ func TestRaisedToRedSendsAFullWave(t *testing.T) {
 	m.run(m.now)
 	if n := len(m.alerts(responder.RoleVHT)); n != 4 {
 		t.Fatalf("VHT alerts after the raise = %d, want the yellow one plus 3 red", n)
+	}
+}
+
+// CodeRabbit PR #10 (4557205968): forwards already made are kept up when
+// both roles are taken or dispatch is suspended — an unacknowledged one
+// times out on schedule, an acknowledgement still tells the caller which
+// centre expects them — but no new forward starts. (A closed or merged
+// incident accepts no fact, so its forwards stay as they were.)
+func TestForwardsSettleWhenDispatchStopsSearching(t *testing.T) {
+	for _, stop := range []string{"both roles taken", "suspended"} {
+		for _, acked := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/acked=%v", stop, acked), func(t *testing.T) {
+				m := newSim(t, incident.SevYellow, makePool(map[int]int{}), amended)
+				m.run(t0.Add(5 * time.Minute)) // 2.5 km at 5 min: forwarded to the nearest
+				if got := m.forwarded(); !slices.Equal(got, []string{"hc_near"}) {
+					t.Fatalf("forwards %v", got)
+				}
+				if stop == "suspended" {
+					m.s.Suspended = true
+				} else {
+					m.s.Assigned[responder.RoleVHT], m.s.Assigned[responder.RoleTransporter] = uuid.NewV7(), uuid.NewV7()
+				}
+				if acked {
+					m.ack("hc_near")
+				}
+				m.run(t0.Add(15 * time.Minute))
+				if got := m.forwarded(); !slices.Equal(got, []string{"hc_near"}) {
+					t.Fatalf("a new forward started: %v", got)
+				}
+				f := m.s.Forwards[0]
+				if acked {
+					if f.TimedOut || !slices.Contains(m.s.CallerNotified, CallerForwarded) {
+						t.Fatalf("acknowledged: %+v, caller %v", f, m.s.CallerNotified)
+					}
+					return
+				}
+				if !f.TimedOut || m.now.Before(t0.Add(6*time.Minute)) || slices.Contains(m.s.CallerNotified, CallerForwarded) {
+					t.Fatalf("unacknowledged forward not timed out at 6 min: %+v at %v, caller %v", f, m.now, m.s.CallerNotified)
+				}
+			})
+		}
 	}
 }

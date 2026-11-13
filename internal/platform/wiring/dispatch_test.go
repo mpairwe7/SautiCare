@@ -1,6 +1,8 @@
 package wiring
 
 import (
+	"context"
+	"errors"
 	"os"
 	"regexp"
 	"testing"
@@ -9,11 +11,13 @@ import (
 	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/intake"
+	"sautihealth.com/sauti/internal/location"
 )
 
-// Every dispatch fact carries the ranking version and the fingerprint of
-// the gated configuration it ran under (Build Prompt §10.4: stamp the
-// version on each incident), in the format the audit ledger accepts.
+// Every fact the planner decides carries the ranking version and the
+// fingerprint of the gated configuration it ran under (Build Prompt §10.4:
+// stamp the version on each incident), in the format the audit ledger
+// accepts.
 func TestDispatchLogicVersion(t *testing.T) {
 	b := config.Bundle{Dispatch: config.Dispatch{RankingVersion: "default-2026-11-12"},
 		Fingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
@@ -69,5 +73,75 @@ func TestDispatchParamsFromConfig(t *testing.T) {
 func TestSuspensionReasonIsShared(t *testing.T) {
 	if intake.ReasonDispatchSuspended != dispatch.ReasonSuspended {
 		t.Fatalf("intake %q, dispatch %q", intake.ReasonDispatchSuspended, dispatch.ReasonSuspended)
+	}
+}
+
+// snapshotStore is a dispatch store that only serves the gazetteer: it
+// records the context it was called with.
+type snapshotStore struct {
+	dispatch.Store
+	gaz      location.File
+	deadline time.Time
+	bounded  bool
+}
+
+func (s *snapshotStore) Snapshot(ctx context.Context) (location.File, error) {
+	s.deadline, s.bounded = ctx.Deadline()
+	return s.gaz, nil
+}
+
+func buildOptions(t *testing.T, gaz location.File, production bool) (DispatchOptions, *snapshotStore) {
+	t.Helper()
+	cfg, err := config.Load(os.DirFS("../../../config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &snapshotStore{gaz: gaz}
+	return DispatchOptions{Config: cfg, Store: st, Deliverer: nopDeliverer{}, Suspension: nopSuspension{},
+		Production: production}, st
+}
+
+type nopDeliverer struct{}
+
+func (nopDeliverer) Deliver(context.Context, dispatch.Delivery) (string, error) { return "", nil }
+
+type nopSuspension struct{}
+
+func (nopSuspension) DispatchSuspended(context.Context) (bool, error) { return false, nil }
+
+// CodeRabbit PR #10 (4557205830): a placeholder gazetteer — synthetic
+// stages and facilities whose numbers reach nobody — never runs dispatch in
+// production, as it never runs intake (BuildIntake); dev and test keep it.
+func TestBuildDispatchRefusesAPlaceholderGazetteerInProduction(t *testing.T) {
+	placeholder := location.File{Version: "placeholder-2026-11-13", Status: location.StatusPlaceholder}
+	approved := location.File{Version: "kawempe-2027-01", Status: location.StatusApproved}
+	for _, tc := range []struct {
+		gaz        location.File
+		production bool
+		refused    bool
+	}{
+		{placeholder, true, true},
+		{placeholder, false, false},
+		{approved, true, false},
+	} {
+		o, _ := buildOptions(t, tc.gaz, tc.production)
+		_, err := BuildDispatch(context.Background(), o)
+		if refused := errors.Is(err, location.ErrNotProductionReady); refused != tc.refused || (!tc.refused && err != nil) {
+			t.Errorf("%s production=%v: %v", tc.gaz.Status, tc.production, err)
+		}
+	}
+}
+
+// CodeRabbit PR #10 (4557206033): the gazetteer read at startup has its own
+// deadline, so a database that stops answering during connection setup
+// cannot hold the worker before its health endpoints exist.
+func TestBuildDispatchBoundsTheGazetteerRead(t *testing.T) {
+	o, st := buildOptions(t, location.File{Version: "it-1", Status: location.StatusPlaceholder}, false)
+	start := time.Now()
+	if _, err := BuildDispatch(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	if !st.bounded || st.deadline.Sub(start) > time.Minute {
+		t.Fatalf("snapshot context: deadline %v (bounded %v)", st.deadline, st.bounded)
 	}
 }

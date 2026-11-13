@@ -17,7 +17,9 @@ While dispatch is suspended, intake continues and records are kept, but no respo
 - Check with `sautictl dispatch status --dsn <op_readonly DSN>`. It shows the state and the last ten register rows, each dated, with the staff identity or "automatic".
 
 ## Impact
-**The dispatch path is deliberately stopped.** Callers hear the suspended message with their incident number (pending the Medical Director's and PI's approval of its wording) instead of "help is coming". Every incident is escalated (`dispatch_suspended`). Coordinators must handle each one: call the caller back, call a responder or a health centre. Alerts sent before the suspension may still be accepted.
+**The dispatch path is deliberately stopped.** Callers hear the suspended message with their incident number (pending the Medical Director's and PI's approval of its wording) instead of "help is coming". Every incident is escalated (`dispatch_suspended`). Coordinators must handle each one: call the caller back, call a responder or a health centre. Alerts sent before the suspension may still be accepted. Nothing new is forwarded to a health centre (the database refuses it); a forward already made still times out, and a centre's acknowledgement still reaches the caller.
+
+A caller whose call ended while the suspension was being committed may have heard "help is coming": their closing screen was decided before the suspension. Their incident is in dispatch, so it is escalated like every other incident in flight, and the call-back covers them. Until M2 Part B adds the coordinator's voice call, an escalation is only a recorded event: list them with the query in [no-eligible-responders.md](no-eligible-responders.md).
 
 ## Diagnosis
 1. `sautictl dispatch status --dsn <op_readonly DSN>`: who suspended dispatch, when, and why.

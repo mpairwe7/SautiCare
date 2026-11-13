@@ -1,6 +1,9 @@
 package dispatch
 
-import "errors"
+import (
+	"errors"
+	"math"
+)
 
 // StoppingRule is the study's stopping rule computed from system data
 // (Guide §14): red dispatch failure above MaxFailureRate across Window
@@ -12,9 +15,11 @@ type StoppingRule struct {
 	MaxFailureRate float64
 }
 
-// Validate refuses a rule that could never, or would always, fire.
+// Validate refuses a rule that could never, or would always, fire. A NaN
+// rate compares false both ways, so it is refused by name (YAML decodes
+// ".nan" as a float).
 func (r StoppingRule) Validate() error {
-	if r.Window < 1 || r.MaxFailureRate <= 0 || r.MaxFailureRate >= 1 {
+	if r.Window < 1 || math.IsNaN(r.MaxFailureRate) || r.MaxFailureRate <= 0 || r.MaxFailureRate >= 1 {
 		return errors.New("dispatch: stopping rule needs a window of at least 1 and a rate strictly between 0 and 1")
 	}
 	return nil

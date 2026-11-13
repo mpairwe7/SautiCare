@@ -38,13 +38,15 @@ No runtime role holds UPDATE or DELETE on events, audit entries or consent rows.
 ## Database-enforced invariants
 
 - **Dispatch (M2, ADR-0025):**
-  - availability periods of one responder never overlap (PostgreSQL 18 `PRIMARY KEY (responder_id, period WITHOUT OVERLAPS)`, which needs the contrib extension `btree_gist`; like `pg_trgm` it lives in its own schema, `gist`, with no USAGE for runtime roles), half-open, 8 hours on the database clock;
+  - availability periods of one responder never overlap (PostgreSQL 18 `PRIMARY KEY (responder_id, period WITHOUT OVERLAPS)`, which needs the contrib extension `btree_gist`; like `pg_trgm` it lives in its own schema, `gist`, with no USAGE for runtime roles), half-open, 8 hours on the database clock read after the responder's lock;
+  - a responder registers only at a stage of their ward in the gazetteer in force (`op.register_responder`, migration 0023);
   - one alert per responder per incident (`UNIQUE (incident_id, responder_id)`); the database refuses an alert to a responder who is not active, certified, insured, kit OK and available now, who is assigned to another open incident, or whose role is taken, and an alert on a merged or closed incident;
-  - first acceptance per role wins: a partial unique index on `assignments (incident_id, role) WHERE released_at IS NULL`;
+  - first acceptance per role wins: a partial unique index on `assignments (incident_id, role) WHERE released_at IS NULL`; a responder holds at most one open assignment (`op.accept_alert` locks the incident, then the responder, before its checks);
+  - `op.claim_due_dispatch` returns the claimed batch most urgent first (severity, then wake time);
   - each delivery attempt is claimed once (`UNIQUE (alert_id, purpose, channel)`) before the provider call;
   - an incident cannot close or merge while an alert is pending; closure and merge wake dispatch so stand-downs are delivered;
-  - while dispatch is suspended no alert is issued and no alert attempt is claimed (both share-lock the control row a suspension locks exclusively); an alert attempt is claimed only for a pending alert;
-  - every dispatch fact and its event are written together by one function; the generic append refuses dispatch event types;
+  - while dispatch is suspended no alert is issued, no forward recorded and no alert attempt claimed (each share-locks the control row a suspension locks exclusively); an alert attempt is claimed only for a pending alert;
+  - every dispatch fact and its event are written together by one function; the generic append refuses dispatch event types; the dispatch logic version is on alerts, acceptances, declines, lapses, stand-downs, forwards and dispatch escalations, not on acknowledgements, forward timeouts or caller notices;
   - one dispatch control row; the control log (the reportable-events register) is append-only (`SA403` even for the owner); resuming always carries a staff identity; every change is an audit entry without an incident (ADR-0026).
 - **Operational:**
   - 10-digit reference with a `CHECK` and `UNIQUE`.

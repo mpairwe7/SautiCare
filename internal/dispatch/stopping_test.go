@@ -1,6 +1,11 @@
 package dispatch
 
-import "testing"
+import (
+	"math"
+	"testing"
+
+	"go.yaml.in/yaml/v4"
+)
 
 func outcomes(n, failures int) []bool {
 	out := make([]bool, n)
@@ -41,6 +46,23 @@ func TestStoppingRuleBoundaries(t *testing.T) {
 	for _, bad := range []StoppingRule{{Window: 0, MaxFailureRate: 0.15}, {Window: 30, MaxFailureRate: 0}, {Window: 30, MaxFailureRate: 1}} {
 		if bad.Validate() == nil {
 			t.Errorf("%+v accepted", bad)
+		}
+	}
+}
+
+// CodeRabbit PR #10 (4557205976): YAML decodes ".nan" as a float64, and a
+// NaN rate compares false both ways, so Validate passed it and Breached
+// never fired. A NaN (or infinite) rate is refused before the engine runs.
+func TestStoppingRuleRefusesANaNRate(t *testing.T) {
+	var cfg struct {
+		Rate float64 `yaml:"max_failure_rate"`
+	}
+	if err := yaml.Unmarshal([]byte("max_failure_rate: .nan"), &cfg); err != nil || !math.IsNaN(cfg.Rate) {
+		t.Fatalf("the decoder no longer yields NaN (%v, %v): revisit this test", cfg.Rate, err)
+	}
+	for _, rate := range []float64{cfg.Rate, math.Inf(1), math.Inf(-1)} {
+		if err := (StoppingRule{Window: 30, MaxFailureRate: rate}).Validate(); err == nil {
+			t.Errorf("rate %v accepted", rate)
 		}
 	}
 }

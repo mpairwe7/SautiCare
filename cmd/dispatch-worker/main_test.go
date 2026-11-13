@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -61,5 +63,72 @@ func TestReadinessFailsWhenTheLeaderStalls(t *testing.T) {
 		if err := dispatchLoopReady(tc.leading, tc.last, now); (err == nil) != tc.ok {
 			t.Errorf("leading=%v last=%v: %v", tc.leading, tc.last, err)
 		}
+	}
+}
+
+// CodeRabbit PR #10 (4557205801): whatever ends the run — a signal, the
+// admin listener failing, or the leader returning — the leader is cancelled
+// and has returned before run's deferred pool.Close, which waits for the
+// leader's lock connection while the leader waits for a cancellation.
+func TestAwaitStopsTheLeaderBeforeThePoolCloses(t *testing.T) {
+	listen := errors.New("listen tcp 127.0.0.1:9102: bind: address already in use")
+	poison := errors.New("leader stopped on its own")
+	for name, tc := range map[string]struct {
+		signal         bool
+		admin, leader  error
+		want           error
+		leaderOnItsOwn bool
+	}{
+		"admin listener fails": {admin: listen, want: listen},
+		"signal":               {signal: true},
+		"leader returns":       {leader: poison, want: poison, leaderOnItsOwn: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, stop := context.WithCancel(context.Background())
+			defer stop()
+			adminErr, leaderErr := make(chan error, 1), make(chan error, 1)
+			leaderReturned := make(chan struct{})
+			go func() { // RunAsLeader: holds its lock connection until ctx ends
+				if tc.leaderOnItsOwn {
+					close(leaderReturned)
+					leaderErr <- tc.leader
+					return
+				}
+				<-ctx.Done()
+				close(leaderReturned)
+				leaderErr <- ctx.Err()
+			}()
+			switch {
+			case tc.admin != nil:
+				adminErr <- tc.admin
+			case tc.signal:
+				stop()
+			}
+			done := make(chan error, 1)
+			go func() { done <- await(ctx, stop, adminErr, leaderErr) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+					t.Fatalf("await = %v, want %v", err, tc.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("await hung")
+			}
+			select {
+			case <-leaderReturned:
+			default:
+				t.Fatal("await returned while the leader still holds its lock connection: pool.Close would hang")
+			}
+		})
+	}
+}
+
+// CodeRabbit PR #10 (4557205811): the admin listener bounds header reads,
+// whole requests, responses (above the 2 s health checks) and idle
+// keep-alive connections, wherever SAUTI_ADMIN_ADDR exposes it.
+func TestAdminServerBoundsConnections(t *testing.T) {
+	s := adminServer("127.0.0.1:0", http.NewServeMux())
+	if s.ReadHeaderTimeout <= 0 || s.ReadTimeout <= 0 || s.IdleTimeout <= 0 || s.WriteTimeout <= 2*time.Second {
+		t.Fatalf("timeouts: header %v read %v write %v idle %v", s.ReadHeaderTimeout, s.ReadTimeout, s.WriteTimeout, s.IdleTimeout)
 	}
 }
