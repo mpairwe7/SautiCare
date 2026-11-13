@@ -19,12 +19,7 @@ func TestMain(m *testing.M) { pgtest.Main(m) }
 
 func conn(t *testing.T, dsn string) *pgx.Conn {
 	t.Helper()
-	c, err := pgx.Connect(context.Background(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { c.Close(context.Background()) })
-	return c
+	return pgtest.Connect(t, dsn)
 }
 
 func files() fstest.MapFS {
@@ -36,7 +31,7 @@ func files() fstest.MapFS {
 
 func TestMigrateAppliesInOrderOnce(t *testing.T) {
 	c := conn(t, pgtest.EmptyDB(t))
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	got, err := migrate.Run(ctx, c, "test", files())
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +49,7 @@ func TestMigrateAppliesInOrderOnce(t *testing.T) {
 // migrator rather than silently diverge from what production ran.
 func TestMigrateRefusesChangedChecksum(t *testing.T) {
 	c := conn(t, pgtest.EmptyDB(t))
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	if _, err := migrate.Run(ctx, c, "test", files()); err != nil {
 		t.Fatal(err)
 	}
@@ -65,9 +60,9 @@ func TestMigrateRefusesChangedChecksum(t *testing.T) {
 	}
 }
 
-func ledgerVersions(t *testing.T, c *pgx.Conn) []string {
+func ledgerVersions(ctx context.Context, t *testing.T, c *pgx.Conn) []string {
 	t.Helper()
-	rows, err := c.Query(context.Background(), "SELECT version FROM public.schema_migrations ORDER BY version")
+	rows, err := c.Query(ctx, "SELECT version FROM public.schema_migrations ORDER BY version")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,10 +73,10 @@ func ledgerVersions(t *testing.T, c *pgx.Conn) []string {
 	return v
 }
 
-func tableExists(t *testing.T, c *pgx.Conn, name string) bool {
+func tableExists(ctx context.Context, t *testing.T, c *pgx.Conn, name string) bool {
 	t.Helper()
 	var ok bool
-	if err := c.QueryRow(context.Background(), "SELECT to_regclass($1) IS NOT NULL", name).Scan(&ok); err != nil {
+	if err := c.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", name).Scan(&ok); err != nil {
 		t.Fatal(err)
 	}
 	return ok
@@ -92,7 +87,7 @@ func tableExists(t *testing.T, c *pgx.Conn, name string) bool {
 // nothing, rather than report success.
 func TestMigrateRefusesMissingAppliedFile(t *testing.T) {
 	c := conn(t, pgtest.EmptyDB(t))
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	if _, err := migrate.Run(ctx, c, "test", files()); err != nil {
 		t.Fatal(err)
 	}
@@ -103,8 +98,8 @@ func TestMigrateRefusesMissingAppliedFile(t *testing.T) {
 	if !errors.Is(err, migrate.ErrMissingMigration) {
 		t.Fatalf("err = %v, want ErrMissingMigration", err)
 	}
-	if len(applied) != 0 || tableExists(t, c, "c") {
-		t.Fatalf("applied %v (table c exists: %v) despite the missing file", applied, tableExists(t, c, "c"))
+	if len(applied) != 0 || tableExists(ctx, t, c, "c") {
+		t.Fatalf("applied %v (table c exists: %v) despite the missing file", applied, tableExists(ctx, t, c, "c"))
 	}
 }
 
@@ -113,7 +108,7 @@ func TestMigrateRefusesMissingAppliedFile(t *testing.T) {
 // been edited.
 func TestMigrateValidatesHistoryBeforeApplying(t *testing.T) {
 	c := conn(t, pgtest.EmptyDB(t))
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	if _, err := migrate.Run(ctx, c, "test", files()); err != nil {
 		t.Fatal(err)
 	}
@@ -124,17 +119,17 @@ func TestMigrateValidatesHistoryBeforeApplying(t *testing.T) {
 	if !errors.Is(err, migrate.ErrChecksumMismatch) {
 		t.Fatalf("err = %v, want ErrChecksumMismatch", err)
 	}
-	if len(applied) != 0 || tableExists(t, c, "early") {
-		t.Fatalf("applied %v (table early exists: %v) before refusing", applied, tableExists(t, c, "early"))
+	if len(applied) != 0 || tableExists(ctx, t, c, "early") {
+		t.Fatalf("applied %v (table early exists: %v) before refusing", applied, tableExists(ctx, t, c, "early"))
 	}
-	if got := ledgerVersions(t, c); len(got) != 2 || got[0] != "0001_a" || got[1] != "0002_b" {
+	if got := ledgerVersions(ctx, t, c); len(got) != 2 || got[0] != "0001_a" || got[1] != "0002_b" {
 		t.Fatalf("ledger = %v, want [0001_a 0002_b]", got)
 	}
 }
 
 func TestMigrateSerializesConcurrentRunners(t *testing.T) {
 	dsn := pgtest.EmptyDB(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	var wg sync.WaitGroup
 	results := make([][]string, 2)
 	errs := make([]error, 2)
@@ -155,7 +150,7 @@ func TestMigrateSerializesConcurrentRunners(t *testing.T) {
 
 func TestMigrateRollsBackFailedFile(t *testing.T) {
 	c := conn(t, pgtest.EmptyDB(t))
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	bad := fstest.MapFS{"migrations/0001_bad.sql": {Data: []byte("CREATE TABLE ok1 (x int);\nSELECT no_such_function();")}}
 	if _, err := migrate.Run(ctx, c, "test", bad); err == nil {
 		t.Fatal("failing migration reported success")
@@ -169,7 +164,7 @@ func TestMigrateRollsBackFailedFile(t *testing.T) {
 func TestMigrateRejectsBadFileName(t *testing.T) {
 	c := conn(t, pgtest.EmptyDB(t))
 	bad := fstest.MapFS{"migrations/1_x.sql": {Data: []byte("SELECT 1;")}}
-	if _, err := migrate.Run(context.Background(), c, "test", bad); err == nil {
+	if _, err := migrate.Run(pgtest.Context(t), c, "test", bad); err == nil {
 		t.Fatal("badly named migration accepted")
 	}
 }

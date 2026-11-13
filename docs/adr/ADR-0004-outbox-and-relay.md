@@ -34,4 +34,11 @@ Chosen option: **transactional outbox + `cmd/outbox-relay`**. The write function
 
 ## Confirmation
 
-`internal/audit/relay_test.go::TestRelayCatchesUpAfterLedgerOutage`, `::TestRelayAbortsOnPoisonRow`; `internal/platform/pg/relay_integration_test.go::TestSingleActiveRelayLeader`, `::TestRelayEndToEndAgainstPostgres`.
+`internal/audit/relay_test.go::TestRelayCatchesUpAfterLedgerOutage`, `::TestRelayAbortsOnPoisonRow`; `internal/platform/pg/relay_integration_test.go::TestSingleActiveRelayLeader`, `::TestRelayEndToEndAgainstPostgres`; `internal/platform/pg/leader_test.go::TestLeadKeepsFnResultWhenFnReturnsDuringAPing`; `internal/platform/pg/auditstore/auditstore_integration_test.go::TestEveryLedgerCallHasItsOwnDeadline`.
+
+## More Information
+
+Clarified 2026-11-13 after the CodeRabbit review of PR #3 (head `ead62cf`); the decision is unchanged.
+
+* **Lost leadership** means the lock connection failed: a ping failed while the relay worked, or the unlock failed afterwards. The relay then campaigns again. The relay's work ending on its own is not lost leadership, even if a ping is in flight at that moment: the ping finishes (it is bounded), the lock is released, and the relay's own result stands. A fatal error such as a poison row therefore stops the process instead of starting another term.
+* **Deadlines.** Every call the relay makes to the operational and audit stores has its own deadline, covering the wait for a pool connection and one statement (10 s; `pg.BoundedDB`). PostgreSQL's `statement_timeout` does not cover the wait. A claimed outbox batch is bounded only while its transaction begins, because the batch holds the transaction until it completes or aborts.
