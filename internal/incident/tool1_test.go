@@ -101,6 +101,33 @@ func TestLastScreenIsMonotonic(t *testing.T) {
 	}
 }
 
+// CodeRabbit PR #6: an answered field never changes. A late callback from an
+// older session could otherwise replace the category or the screen 5 answer
+// after the incident was classified on them. The same answer again is
+// accepted (another session's retry); the SQL write path refuses the same
+// events (opstore TestSQLRefusesAChangedAnswer).
+func TestApplyRefusesAChangedAnswer(t *testing.T) {
+	base := []Event{started(), answered(2, 2, FieldDanger, "no"), answered(3, 3, FieldCategory, "poisoning"),
+		answered(4, 4, FieldAgeBand, "age_18_59"), answered(5, 5, FieldSpecificDanger, "no"),
+		ev(6, EvClassified, `{"severity":"yellow"}`)}
+	p, err := Fold(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []Event{answered(7, 3, FieldCategory, "trauma"), answered(7, 5, FieldSpecificDanger, "yes"),
+		answered(7, 2, FieldDanger, "yes")} {
+		if _, err := Apply(p, a); !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("changed answer %s: err = %v, want ErrIllegalTransition", a.Payload, err)
+		}
+	}
+	for _, a := range []Event{answered(7, 3, FieldCategory, "poisoning"), answered(7, 5, FieldSpecificDanger, "no"),
+		answered(7, 8, FieldCallback, "same_number")} {
+		if q, err := Apply(p, a); err != nil || q.Category != "poisoning" || q.SpecificDanger != "no" {
+			t.Errorf("same answer %s: %+v, %v", a.Payload, q, err)
+		}
+	}
+}
+
 func TestDispatchReadySetsZone(t *testing.T) {
 	base := []Event{started(), ev(2, EvClassified, `{"severity":"yellow"}`)}
 	p, err := Fold(append(base, ev(3, EvDispatchReady, `{"zone":{"col":901,"row":70}, "location_quality":"fuzzy"}`)))
