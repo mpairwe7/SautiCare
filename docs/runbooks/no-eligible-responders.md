@@ -9,10 +9,19 @@
 | Last drilled | not yet drilled |
 
 ## Summary
-Dispatch never ends silently (review focus 3). When nobody can be alerted for a role, the coordinator is alerted at once. This happens when the registry is empty, ring 1 holds nobody available, or everyone has declined or not answered. Red incidents also alert the coordinator at 3 minutes without an acceptance. In amended mode (decision 2), the search widens to 2.5 km and then forwards to the nearest health centre, and the coordinator is alerted at that moment ([ADR-0024](../adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md)).
+Dispatch never ends silently (review focus 3). When nobody can be alerted for a role, dispatch records an escalation for the coordinator at once. This happens when the registry is empty, ring 1 holds nobody available, or everyone has declined or not answered. Red incidents are also escalated at 3 minutes without an acceptance. In amended mode (decision 2), the search widens to 2.5 km and then forwards to the nearest health centre, and an escalation is recorded at that moment ([ADR-0024](../adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md)).
+
+**On this release an escalation is only a recorded event** (`incident.escalated`, with its reason and role): nothing calls, texts or pages a coordinator. Dispatch delivers alerts and stand-downs to responders, never escalations. The coordinator voice call arrives with M2 Part B (PR #11, `ivr.CoordinatorCalls`), and the console's incident list with M5. Until then the coordinator on duty must look for escalations (Triggers and detection); do not wait for an alert.
 
 ## Triggers and detection
-The escalation appears on the coordinator's incident list with its reason and, where there is one, the role (`vht` or `transporter`).
+The escalation is an `incident.escalated` event with its reason and, where there is one, the role (`vht` or `transporter`). Until the M5 console lists it, the coordinator on duty checks at least every minute, as `op_readonly`:
+
+```sql
+SELECT incident_id, payload ->> 'reason' AS reason, payload ->> 'role' AS role, recorded_at
+  FROM op.incident_events
+ WHERE type = 'incident.escalated' AND recorded_at > now() - interval '1 hour'
+ ORDER BY recorded_at DESC;
+```
 
 | Reason | Meaning |
 |---|---|
