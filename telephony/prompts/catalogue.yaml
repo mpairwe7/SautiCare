@@ -36,6 +36,13 @@ sounds:
     - sauti/en/alert-intro
     - sauti/en/alert-no-longer-needed
     - sauti/en/alert-options
+    - sauti/en/bridge-choose-role
+    - sauti/en/bridge-connecting
+    - sauti/en/bridge-failed
+    - sauti/en/bridge-last-four
+    - sauti/en/bridge-last-four-again
+    - sauti/en/bridge-no-answer
+    - sauti/en/bridge-no-assignment
     - sauti/en/callback
     - sauti/en/callback-same_number
     - sauti/en/callback-withheld
@@ -147,6 +154,13 @@ sounds:
     - sauti/lg/alert-intro
     - sauti/lg/alert-no-longer-needed
     - sauti/lg/alert-options
+    - sauti/lg/bridge-choose-role
+    - sauti/lg/bridge-connecting
+    - sauti/lg/bridge-failed
+    - sauti/lg/bridge-last-four
+    - sauti/lg/bridge-last-four-again
+    - sauti/lg/bridge-no-answer
+    - sauti/lg/bridge-no-assignment
     - sauti/lg/callback
     - sauti/lg/callback-same_number
     - sauti/lg/callback-withheld

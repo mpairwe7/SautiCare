@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -31,6 +32,7 @@ type Outbound struct {
 	Alerts      *AlertCalls
 	Forwards    *ForwardCalls
 	Coordinator *CoordinatorCalls
+	Bridge      *Bridge // the masked bridge's calls (bridge, bridge-leg)
 }
 
 type outboundHandler interface {
@@ -49,6 +51,9 @@ func (o Outbound) Handle(ctx context.Context, e Event) {
 	if o.Coordinator != nil {
 		byKind["escalation"] = o.Coordinator
 	}
+	if o.Bridge != nil {
+		byKind["bridge"], byKind["bridge-leg"] = o.Bridge, o.Bridge
+	}
 	if e.Type == EventStasisStart {
 		if len(e.Args) > 0 {
 			if h, ok := byKind[e.Args[0]]; ok {
@@ -61,8 +66,11 @@ func (o Outbound) Handle(ctx context.Context, e Event) {
 		}
 		return
 	}
-	for _, h := range byKind {
-		h.Handle(ctx, e)
+	// Every other event goes to each kind once (the bridge serves two kinds).
+	for _, h := range []outboundHandler{o.Alerts, o.Forwards, o.Coordinator, o.Bridge} {
+		if h != nil && !reflect.ValueOf(h).IsNil() {
+			h.Handle(ctx, e)
+		}
 	}
 }
 
