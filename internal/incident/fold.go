@@ -39,7 +39,9 @@ func Apply(p Projection, e Event) (Projection, error) {
 		if err != nil {
 			return p, err
 		}
-		next.set(a)
+		if err := next.set(a); err != nil {
+			return p, err
+		}
 	case EvSessionResumed:
 		if err := parseResumed(e.Payload); err != nil {
 			return p, err

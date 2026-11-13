@@ -28,7 +28,7 @@ Severity (red, yellow, green) is classified from the Tool 1 answers, determinist
 Chosen option: **signed CEL decision table** (`triage-rules/tool1.yaml`, `internal/triage`).
 - Rows are evaluated in order; the first match gives the severity.
 - A bundle loads only if its detached ML-DSA-65 signature (context `sauti-triage-rules/v1`, distinct from audit checkpoints) verifies against a key trusted in `config/gated/triage.yaml`. That file is gated and fingerprinted: who may sign clinical rules is itself a protocol parameter.
-- At load, every combination of the declared input values must reach a row without error (totality), and the Tool 1 catalogue's option values must equal the bundle's input domain (`intake.CheckTriageDomain`).
+- At load, every combination of the declared input values must reach a row without error (totality), and the Tool 1 catalogue's option values must equal the bundle's input domain (`intake.CheckTriageDomain`). The domain is bounded first, at 9⁴ combinations (each input answers a single-digit menu), so a signed but oversized bundle is refused before the check expands it.
 - At run time an evaluation error, no match, an out-of-domain input or a panic gives red with `RuleError`; intake then flags `triage_rule_error` and escalates.
 - `LogicVersion` = `<version>+sha256:<12 hex>` is stamped on `incident.classified`.
 - Classification happens once, after screen 5, when all four inputs are known. Severity can only rise (ADR-0003).
@@ -41,4 +41,4 @@ Chosen option: **signed CEL decision table** (`triage-rules/tool1.yaml`, `intern
 
 ## Confirmation
 
-`internal/triage/triage_test.go::TestScenario3PoisoningScreen5NoIsYellow`, `::TestRuleTableFromBuildPrompt`, `::TestLoadRejectsBadSignature`, `::TestLoadRejectsNonTotalTable`, `::TestRuntimeErrorIsRed`, `::TestRepositoryBundleVerifies`; `internal/crypto/crypto_test.go::TestSignatureContextsAreSeparated`; `internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`; `internal/platform/wiring/intake_integration_test.go::TestBuildIntakeRefusesATamperedBundle`.
+`internal/triage/triage_test.go::TestScenario3PoisoningScreen5NoIsYellow`, `::TestRuleTableFromBuildPrompt`, `::TestLoadRejectsBadSignature`, `::TestLoadRejectsNonTotalTable`, `::TestLoadRejectsOversizedDomain`, `::TestRuntimeErrorIsRed`, `::TestRepositoryBundleVerifies`; `internal/crypto/crypto_test.go::TestSignatureContextsAreSeparated`; `internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`; `internal/platform/wiring/intake_integration_test.go::TestBuildIntakeRefusesATamperedBundle`.

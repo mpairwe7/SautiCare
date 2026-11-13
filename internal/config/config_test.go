@@ -152,9 +152,10 @@ func TestProductionReadyRequiresEnglishErrorScreen(t *testing.T) {
 func TestLoadValidatesFuzzyThreshold(t *testing.T) {
 	for _, v := range []string{"0", "1", "-0.2", "1.5"} {
 		fs := minimalFS()
-		fs["gated/intake.yaml"] = &fstest.MapFile{Data: []byte("resume_window: 10m\ndispatch_trigger_screen: 7\ndefault_screen_char_limit: 160\nscreen_char_limits: {}\nfuzzy_match_min_similarity: " + v + "\n")}
-		if _, err := Load(fs); err == nil {
-			t.Errorf("threshold %s accepted", v)
+		intake := string(fs["gated/intake.yaml"].Data)
+		fs["gated/intake.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(intake, "fuzzy_match_min_similarity: 0.45", "fuzzy_match_min_similarity: "+v, 1))}
+		if _, err := Load(fs); err == nil || !strings.Contains(err.Error(), "fuzzy_match_min_similarity") {
+			t.Errorf("threshold %s: err = %v, want the threshold refused", v, err)
 		}
 	}
 	b, err := Load(minimalFS())

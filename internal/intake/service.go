@@ -52,6 +52,9 @@ type Step struct {
 	ConsumedLen int
 	MAC         crypto.MAC
 	IncidentID  uuid.UUID
+	// MatchedLandmark is the landmark the session's typed landmark matched
+	// (a gazetteer ID, never the text), carried to a screen-8 trigger.
+	MatchedLandmark string
 }
 
 // StepStore persists the reply to each (session, input) so a retried
@@ -183,6 +186,11 @@ var ErrInputHistory = errors.New("intake: callback text does not extend the sess
 type session struct {
 	idem     string // "ussd:<provider>:<session>" or "ivr:<call>"
 	hasPhone bool
+	// landmark is the gazetteer landmark the caller's typed landmark matched
+	// at screen 7, or "". USSD keeps it in each step, so T2 at a screen-8
+	// trigger still locates a typed landmark: the text itself is sealed, and
+	// intake cannot read it back.
+	landmark string
 }
 
 func (s session) key(screen int, suffix string) string {
@@ -232,11 +240,11 @@ func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error)
 	} else if ok {
 		return st.Screen, nil
 	}
-	sess := session{idem: "ussd:" + r.Provider + ":" + r.SessionID, hasPhone: !r.Phone.IsZero()}
 	prev, hasPrev, err := s.d.Steps.Latest(ctx, r.Provider, r.SessionID)
 	if err != nil {
 		return Screen{}, err
 	}
+	sess := session{idem: "ussd:" + r.Provider + ":" + r.SessionID, hasPhone: !r.Phone.IsZero(), landmark: prev.MatchedLandmark}
 	// A concurrent duplicate may have stored this very input's step after our
 	// lookup: replay it rather than mistake it for the previous input.
 	if hasPrev && slices.ContainsFunc(macs, func(m crypto.MAC) bool { return sameMAC(m, prev.MAC) }) {
@@ -265,13 +273,13 @@ func (s *Service) HandleUSSD(ctx context.Context, r USSDRequest) (Screen, error)
 			return Screen{}, err
 		}
 		incidentID = prev.IncidentID
-		if pr, err = s.answer(ctx, incidentID, sess, prev.Kind, input, false); err != nil {
+		if pr, err = s.answer(ctx, incidentID, &sess, prev.Kind, input, false); err != nil {
 			return Screen{}, err
 		}
 	}
 	text, end := RenderUSSD(pr)
 	return s.d.Steps.Save(ctx, r.Provider, r.SessionID, Step{Screen: Screen{Text: text, End: end}, Kind: pr.Kind,
-		ConsumedLen: len(r.Text), MAC: macs[0], IncidentID: incidentID})
+		ConsumedLen: len(r.Text), MAC: macs[0], IncidentID: incidentID, MatchedLandmark: sess.landmark})
 }
 
 // newInput returns the answer this callback adds: the text after the input
@@ -297,7 +305,7 @@ func (s *Service) newInput(ctx context.Context, r USSDRequest, prev Step) (strin
 // answer applies input given to the prompt shown and returns what to show
 // next. Every answer is persisted at once (Guide §4); idempotency keys make a
 // retried or concurrent duplicate callback harmless.
-func (s *Service) answer(ctx context.Context, id uuid.UUID, sess session, shown Kind, input string, voice bool) (Prompt, error) {
+func (s *Service) answer(ctx context.Context, id uuid.UUID, sess *session, shown Kind, input string, voice bool) (Prompt, error) {
 	p, err := s.d.Reader.Projection(ctx, id)
 	if err != nil {
 		return Prompt{}, err
@@ -317,10 +325,15 @@ func (s *Service) answer(ctx context.Context, id uuid.UUID, sess session, shown 
 	case out.Next != nil:
 		return *out.Next, nil
 	}
-	if err := s.apply(ctx, p, sess, out); err != nil {
+	if err := s.apply(ctx, p, *sess, out); err != nil {
 		return Prompt{}, err
 	}
-	if p, err = s.catchUp(ctx, id, out.FreeText); err != nil {
+	if out.FreeText != "" {
+		if sess.landmark, err = s.matchTyped(ctx, p.Ward, out.FreeText); err != nil {
+			return Prompt{}, err
+		}
+	}
+	if p, err = s.catchUp(ctx, id, sess.landmark); err != nil {
 		return Prompt{}, err
 	}
 	return s.next(ctx, p, sess.hasPhone)
@@ -463,12 +476,13 @@ func (s *Service) classification(p incident.Projection, specificDanger string) (
 // is repaired by the retried callback or by the caller's redial. Its keys
 // are incident-scoped, so concurrent sessions converge on one event.
 //
-// freeText is the landmark the caller has just typed, if any. On a retry
-// from a new session or a redial it is unknown (it is sealed, and intake
-// cannot read it back): a free-text landmark then resolves at ward level,
-// flagged needs_location_callback. That is the fail-safe direction: dispatch
-// goes ahead on the ward's zones and a human confirms the location.
-func (s *Service) catchUp(ctx context.Context, id uuid.UUID, freeText string) (incident.Projection, error) {
+// matched is the landmark the session's typed landmark matched (matchTyped),
+// if any. In a new session or a redial it is unknown (the text is sealed,
+// and intake cannot read it back): a free-text landmark then resolves at
+// ward level, flagged needs_location_callback. That is the fail-safe
+// direction: dispatch goes ahead on the ward's zones and a human confirms
+// the location.
+func (s *Service) catchUp(ctx context.Context, id uuid.UUID, matched string) (incident.Projection, error) {
 	p, err := s.d.Reader.Projection(ctx, id)
 	if err != nil || p.State.Terminal() {
 		return p, err
@@ -486,7 +500,7 @@ func (s *Service) catchUp(ctx context.Context, id uuid.UUID, freeText string) (i
 		}
 	}
 	if s.d.Machine.DispatchDue(p) {
-		if err := s.dispatchReady(ctx, p, freeText); err != nil {
+		if err := s.dispatchReady(ctx, p, matched); err != nil {
 			return p, err
 		}
 		return s.d.Reader.Projection(ctx, id)
@@ -501,12 +515,22 @@ const (
 	FlagNeedsLocationCallback = "needs_location_callback"
 )
 
+// matchTyped returns the landmark that a typed landmark matches within the
+// ward at or above the similarity threshold, or "".
+func (s *Service) matchTyped(ctx context.Context, ward, text string) (string, error) {
+	m, err := s.d.Matcher.Match(ctx, s.d.Gazetteer.Version, ward, location.Normalise(text))
+	if err != nil || !m.Found || m.Similarity < s.d.MinSimilarity {
+		return "", err
+	}
+	return m.LandmarkID, nil
+}
+
 // dispatchReady resolves the location to a 500 m zone and records T2: a
-// listed landmark's cell; a free-text landmark matched within the ward above
-// the similarity threshold; otherwise the ward's centre, flagged for a
+// listed landmark's cell; the cell of the landmark a typed landmark matched
+// within the ward (matchTyped); otherwise the ward's centre, flagged for a
 // location call-back, and dispatch proceeds on the ward's zones (Build
 // Prompt §10.1, §12).
-func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, freeText string) error {
+func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, matched string) error {
 	ward, ok := s.d.Gazetteer.Ward(p.Ward)
 	if !ok {
 		return fmt.Errorf("intake: ward %q is not in gazetteer %s", p.Ward, s.d.Gazetteer.Version)
@@ -514,14 +538,8 @@ func (s *Service) dispatchReady(ctx context.Context, p incident.Projection, free
 	cell, quality := ward.Centre, incident.QualityWard
 	if l, ok := s.d.Gazetteer.Landmark(p.Landmark); ok && l.WardID == ward.ID {
 		cell, quality = l.Cell, incident.QualityLandmark
-	} else if p.Landmark == incident.LandmarkOther && freeText != "" {
-		m, err := s.d.Matcher.Match(ctx, s.d.Gazetteer.Version, ward.ID, location.Normalise(freeText))
-		if err != nil {
-			return err
-		}
-		if l, ok := s.d.Gazetteer.Landmark(m.LandmarkID); m.Found && m.Similarity >= s.d.MinSimilarity && ok && l.WardID == ward.ID {
-			cell, quality = l.Cell, incident.QualityFuzzy
-		}
+	} else if l, ok := s.d.Gazetteer.Landmark(matched); ok && p.Landmark == incident.LandmarkOther && l.WardID == ward.ID {
+		cell, quality = l.Cell, incident.QualityFuzzy
 	}
 	if quality == incident.QualityWard {
 		flag, err := newEvent(p.ID, incident.EvFlagged, incident.ActorSystem, map[string]string{"flag": FlagNeedsLocationCallback},

@@ -106,7 +106,7 @@ func NewMachine(cat config.Tool1, gaz location.File, triggerScreen int) (*Machin
 	if triggerScreen != 7 && triggerScreen != 8 {
 		return nil, fmt.Errorf("intake: dispatch trigger screen %d (want 7 or 8)", triggerScreen)
 	}
-	if len(gaz.Wards) == 0 || len(gaz.Wards)+1 > 9 {
+	if len(gaz.Wards) == 0 || len(gaz.Wards) > location.MaxWards {
 		return nil, fmt.Errorf("intake: %d wards plus Somewhere else do not fit a single-digit menu", len(gaz.Wards))
 	}
 	for _, w := range gaz.Wards {

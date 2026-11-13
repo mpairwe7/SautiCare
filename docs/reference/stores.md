@@ -53,6 +53,8 @@ No runtime role holds UPDATE or DELETE on events, audit entries or consent rows.
   - 10-digit reference with a `CHECK` and `UNIQUE`.
   - A logic version must be `<code>+sha256:<12–64 hex>` (the same rule as the ledger); a merge target must exist, differ from the incident and be open.
   - Strict `screen.answered` payloads (codes only) and sealed identifiers (M1, ADR-0021).
+  - An answered Tool 1 field never changes: a `screen.answered` with a different value for a field the incident already holds is refused (trigger `incident_events_answer_unchanged`, migration 0006). Like the flag rule below, it holds whatever version of the write path runs.
+  - A loaded gazetteer version is frozen even for the owner: no UPDATE, DELETE or TRUNCATE, and no INSERT once the version is published in `op.config_versions` (migration 0007; stages and facilities, migration 0028).
   - An `incident.flagged` event's `flag` is a JSON string (`CHECK incident_events_flag_is_string`, migration 0027). The rule is the table's, so it holds whatever version of the write path runs and on every partition, and every stored history folds.
   - Lifecycle table.
   - Idempotency and per-incident sequence uniqueness in `op.event_keys`.

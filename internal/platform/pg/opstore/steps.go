@@ -15,9 +15,9 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg/opstore/opdb"
 )
 
-func stepFrom(response string, end bool, consumed int32, mac []byte, keyID string, inc pgtype.UUID, kind string) intake.Step {
+func stepFrom(response string, end bool, consumed int32, mac []byte, keyID string, inc pgtype.UUID, kind, matched string) intake.Step {
 	st := intake.Step{Screen: intake.Screen{Text: response, End: end}, ConsumedLen: int(consumed),
-		MAC: crypto.MAC{KeyID: keyID, Sum: mac}, Kind: intake.Kind(kind)}
+		MAC: crypto.MAC{KeyID: keyID, Sum: mac}, Kind: intake.Kind(kind), MatchedLandmark: matched}
 	if inc.Valid {
 		st.IncidentID = uuid.UUID(inc.Bytes)
 	}
@@ -38,7 +38,7 @@ func (s *Store) Lookup(ctx context.Context, provider, sessionID string, macs []c
 		return intake.Step{}, false, nil
 	}
 	r := rows[0]
-	return stepFrom(r.Response, r.EndSession, r.ConsumedLen, r.InputMac, r.MacKeyID, r.IncidentID, r.PromptKind), true, nil
+	return stepFrom(r.Response, r.EndSession, r.ConsumedLen, r.InputMac, r.MacKeyID, r.IncidentID, r.PromptKind, r.MatchedLandmark), true, nil
 }
 
 // Latest implements intake.StepStore.
@@ -51,7 +51,7 @@ func (s *Store) Latest(ctx context.Context, provider, sessionID string) (intake.
 		return intake.Step{}, false, nil
 	}
 	r := rows[0]
-	return stepFrom(r.Response, r.EndSession, r.ConsumedLen, r.InputMac, r.MacKeyID, r.IncidentID, r.PromptKind), true, nil
+	return stepFrom(r.Response, r.EndSession, r.ConsumedLen, r.InputMac, r.MacKeyID, r.IncidentID, r.PromptKind, r.MatchedLandmark), true, nil
 }
 
 // Save implements intake.StepStore: the first stored reply wins, and the
@@ -68,6 +68,7 @@ func (s *Store) Save(ctx context.Context, provider, sessionID string, st intake.
 		Provider: provider, ProviderSessionID: sessionID, InputMac: st.MAC.Sum, MacKeyID: st.MAC.KeyID,
 		ConsumedLen: int32(st.ConsumedLen), //nolint:gosec // G115: bounded by the check above
 		Response:    st.Screen.Text, EndSession: st.Screen.End, IncidentID: inc, PromptKind: string(st.Kind),
+		MatchedLandmark: st.MatchedLandmark,
 	}); err != nil {
 		return intake.Screen{}, fmt.Errorf("opstore: ussd step save: %w", err)
 	}
