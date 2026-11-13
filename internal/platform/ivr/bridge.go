@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -241,15 +242,17 @@ func (b *Bridge) start(ctx context.Context, e Event) {
 	}
 }
 
-// proceed connects at once, or asks which incident (a responder: the last 4
-// digits) or which helper (a caller with both roles assigned).
+// proceed connects at once, or asks which helper (a caller with both roles
+// assigned) or which incident (the last 4 digits: a responder with several
+// assignments, or a caller whose helpers of one role are on several
+// incidents).
 func (b *Bridge) proceed(ctx context.Context, st *bridgeCall, targets []dispatch.BridgeTarget, by string) {
 	st.targets, st.by, st.tries = targets, by, 0
 	switch {
 	case len(targets) == 1:
 		st.choosing = ""
 		b.connect(ctx, st, targets[0])
-	case by == dispatch.BridgeByCaller:
+	case by == dispatch.BridgeByCaller && slices.ContainsFunc(targets, func(t dispatch.BridgeTarget) bool { return t.Role != targets[0].Role }):
 		st.choosing = "role"
 		b.ask(ctx, st, "bridge-choose-role")
 	default:
@@ -338,14 +341,18 @@ func (b *Bridge) key(ctx context.Context, st *bridgeCall, digit string) {
 		return
 	case "role":
 		want := map[string]responder.Role{"1": responder.RoleVHT, "2": responder.RoleTransporter}[digit]
+		var match []dispatch.BridgeTarget
 		for _, t := range st.targets {
 			if t.Role == want {
-				st.choosing = ""
-				b.connect(ctx, st, t)
-				return
+				match = append(match, t)
 			}
 		}
-		b.again(ctx, st, "bridge-choose-role")
+		if len(match) == 0 {
+			b.again(ctx, st, "bridge-choose-role")
+			return
+		}
+		// Helpers of that role on several incidents: which incident?
+		b.proceed(ctx, st, match, st.by)
 		return
 	}
 	st.digits += digit
@@ -361,7 +368,9 @@ func (b *Bridge) key(ctx context.Context, st *bridgeCall, digit string) {
 	st.digits = ""
 	if len(match) == 1 {
 		st.choosing = ""
-		st.by = roleBy(match[0].Role)
+		if st.by != dispatch.BridgeByCaller {
+			st.by = roleBy(match[0].Role) // a responder's role on that incident
+		}
 		b.connect(ctx, st, match[0])
 		return
 	}

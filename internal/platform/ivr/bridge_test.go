@@ -171,6 +171,7 @@ const (
 	callerNum      = "+256772000111" // the person who reported the emergency
 	responderNum   = "+256772000222" // the responder
 	transporterNum = "+256772000333" // another responder
+	secondVHTNum   = "+256772000444" // a VHT on the caller's other incident
 	sautiNum       = "+256800100100" // Sauti's bridge number (placeholder)
 )
 
@@ -280,7 +281,8 @@ func press(b *Bridge, ch, keys string) {
 // noNumbers fails if a phone number reached the logs, in any common form.
 func noNumbers(t *testing.T, logs *bytes.Buffer) {
 	t.Helper()
-	for _, n := range []string{callerNum, responderNum, transporterNum, "0772000111", "0772000222", "0772000333", "772000111", "772000222", "772000333"} {
+	for _, n := range []string{callerNum, responderNum, transporterNum, secondVHTNum, "0772000111", "0772000222", "0772000333", "0772000444",
+		"772000111", "772000222", "772000333", "772000444"} {
 		if strings.Contains(logs.String(), n) {
 			t.Fatalf("a phone number reached the logs: %s", logs.String())
 		}
@@ -654,4 +656,46 @@ func TestBridgePromptThatCannotPlayGoesToACoordinator(t *testing.T) {
 			}
 		})
 	}
+}
+
+// CodeRabbit PR #12: a caller with two open incidents can have two helpers
+// of one role. The role then picks no single helper, so the caller keys the
+// last 4 digits of the incident number, and the call is still the caller's
+// (initiated_by "caller"). A role held by one helper connects at once; with
+// one role among several helpers the role is not asked at all.
+func TestBridgeCallerWithTwoHelpersOfARoleKeysTheIncident(t *testing.T) {
+	vhtA, vhtB, trA := target("1234567894", responder.RoleVHT), target("9876543210", responder.RoleVHT), target("1234567894", responder.RoleTransporter)
+	phones := map[uuid.UUID]string{vhtA.ResponderID: responderNum, vhtB.ResponderID: secondVHTNum, trA.ResponderID: transporterNum}
+
+	st := &bridgeStore{byCaller: map[string][]dispatch.BridgeTarget{callerNum: {vhtA, vhtB, trA}}, phones: phones}
+	b, a, logs := bridgeRig(t, st, 30*time.Second)
+	dialIn(b, "in-1", callerNum)
+	press(b, "in-1", "1")
+	if len(a.dialled()) != 0 || !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-last-four") {
+		t.Fatalf("two health workers: expected the last-4 prompt: dialled %v plays %v", a.dialled(), a.plays)
+	}
+	press(b, "in-1", "3210")
+	if !slices.Equal(a.dialled(), []string{"PJSIP/" + secondVHTNum + "@sauti-trunk"}) || !slices.Equal(st.begun, []string{dispatch.BridgeByCaller}) {
+		t.Fatalf("3210: dialled %v begun %v", a.dialled(), st.begun)
+	}
+
+	st2 := &bridgeStore{byCaller: map[string][]dispatch.BridgeTarget{callerNum: {vhtA, vhtB, trA}}, phones: phones}
+	b2, a2, _ := bridgeRig(t, st2, 30*time.Second)
+	dialIn(b2, "in-2", callerNum)
+	press(b2, "in-2", "2")
+	if !slices.Equal(a2.dialled(), []string{"PJSIP/" + transporterNum + "@sauti-trunk"}) {
+		t.Fatalf("one transporter: dialled %v", a2.dialled())
+	}
+
+	st3 := &bridgeStore{byCaller: map[string][]dispatch.BridgeTarget{callerNum: {vhtA, vhtB}}, phones: phones}
+	b3, a3, _ := bridgeRig(t, st3, 30*time.Second)
+	dialIn(b3, "in-3", callerNum)
+	if a3.heard("in-3", "sauti/en/bridge-choose-role") != 0 || !slices.Contains(a3.lastSounds("in-3"), "sauti/en/bridge-last-four") {
+		t.Fatalf("health workers only: expected the last-4 prompt, not the role: %v", a3.plays)
+	}
+	press(b3, "in-3", "7894")
+	if !slices.Equal(a3.dialled(), []string{"PJSIP/" + responderNum + "@sauti-trunk"}) || !slices.Equal(st3.begun, []string{dispatch.BridgeByCaller}) {
+		t.Fatalf("7894: dialled %v begun %v", a3.dialled(), st3.begun)
+	}
+	noNumbers(t, logs)
 }
