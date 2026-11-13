@@ -25,14 +25,23 @@ SELECT incident_id, payload ->> 'reason' AS reason, payload ->> 'role' AS role, 
 
 | Reason | Meaning |
 |---|---|
+| `triage_rule_error` | the triage rules failed and the call was classified red as a fail-safe: see [triage-rule-error.md](triage-rule-error.md) |
+| `red_no_acceptance` | a red incident with a role still unaccepted at 3 minutes (decision 2, both modes); once per open role |
+| `dispatch_stalled` | intake-gw's watchdog: two minutes after T2 dispatch has neither alerted anyone nor escalated, or a dispatch timer is overdue — dispatch-worker is down or stuck: see [dispatch-worker-down.md](dispatch-worker-down.md) |
+| `dispatch_error` | the worker could not process the incident: see [dispatch-worker-down.md](dispatch-worker-down.md) |
+| `dispatch_not_started` | the abandonment sweeper: the caller gave a ward but the call went idle before dispatch started (no T2); nobody has been alerted |
+| `voice_handed_over` | the toll-free voice line handed the caller to the coordinator line (wrong keys three times, silence after the caller answered, a failed prompt or an intake error); if nobody answered the transfer, the caller is waiting for a call: see [ivr-controller-down.md](ivr-controller-down.md) |
+| `abandoned_after_danger_yes` | the caller answered danger yes and the call went idle before dispatch: see [abandoned-danger-callback.md](abandoned-danger-callback.md) |
+| `abandoned_red_before_dispatch` | a red call went idle before dispatch: see [abandoned-danger-callback.md](abandoned-danger-callback.md) |
+| `out_of_area_after_danger` | only with the `out_of_area_escalate_after_danger` flag on: the caller chose "somewhere else" after danger yes or a red classification; the incident stays open for a coordinator |
 | `no_eligible_responder` | nobody left to try for a role within the search limit (ring 1 in protocol mode, 2.5 km amended) and nobody on the way; once per role |
 | `no_responder_nearby` | amended mode: nobody in ring 1 for a role at T2; the search is widening, so help may still come from further away |
-| `red_no_acceptance` | a red incident with a role still unaccepted at 3 minutes (decision 2, both modes); once per open role |
+| `bridge_unanswered` | a caller rang the bridge and reached nobody: the responder did not answer, or no responder is assigned yet; the caller was sent to the coordinator line: see [bridge-failing.md](bridge-failing.md) |
+| `merged_call_escalated` | a call merged into this incident held an unacknowledged escalation (payload `from_reason`): see [split-wrong-merge.md](split-wrong-merge.md) |
 | `forwarded_to_facility` | amended mode: 2.5 km reached with a role unaccepted; the nearest health centre is being called |
 | `no_facility_acknowledged` | every forwarding health centre was tried and none acknowledged |
 | `dispatch_suspended` | dispatch is suspended: see [suspension-and-resumption.md](suspension-and-resumption.md) |
-| `dispatch_error` | the worker could not process the incident: see [dispatch-worker-down.md](dispatch-worker-down.md) |
-| `dispatch_stalled` | intake-gw's watchdog: two minutes after T2 dispatch has neither alerted anyone nor escalated — dispatch-worker is down or stuck: see [dispatch-worker-down.md](dispatch-worker-down.md) |
+| `assigned_follow_up` | a responder accepted, but the incident is still open after the follow-up time: check with the responder whether help arrived |
 
 ## Impact
 The incident is recorded and the search goes on: a responder who switches availability on is alerted at the next ring step (60 s). Until someone accepts, the coordinator is the safety net.

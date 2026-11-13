@@ -100,10 +100,6 @@ func (r DispatchRequest) Call() Candidate {
 		Severity: r.Severity, Escalated: r.Escalated, T1: r.T1}
 }
 
-// ReasonMergedCallEscalated escalates a survivor that absorbed an escalated
-// call: the coordinator alert the call carried must not be lost in the merge.
-const ReasonMergedCallEscalated = "merged_call_escalated"
-
 // MergeConsequences are the events a merge adds to the survivor beyond
 // merge_absorbed, so that absorbing a call never makes an emergency look
 // less urgent (hard constraint 3; Build Prompt §14): the call's severity if
@@ -124,7 +120,7 @@ func Consequences(call, survivor Candidate) (MergeConsequences, error) {
 		}
 	}
 	if call.Escalated && !survivor.Escalated {
-		if out.Escalate, err = json.Marshal(map[string]string{"reason": ReasonMergedCallEscalated}); err != nil {
+		if out.Escalate, err = json.Marshal(map[string]string{"reason": incident.ReasonMergedCallEscalated}); err != nil {
 			return out, err
 		}
 	}

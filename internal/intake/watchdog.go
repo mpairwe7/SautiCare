@@ -13,7 +13,7 @@ import (
 // ReasonDispatchStalled escalates an incident that dispatch has not acted on:
 // T2 is recorded but, after the watchdog time, there is no alert and no
 // dispatch escalation — dispatch-worker is down or stuck (review I8).
-const ReasonDispatchStalled = "dispatch_stalled"
+const ReasonDispatchStalled = incident.ReasonDispatchStalled
 
 // DispatchWatchdogAfter is how long after T2 an untouched incident is
 // escalated: longer than any healthy pass takes, shorter than the 3-minute

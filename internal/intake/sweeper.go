@@ -10,12 +10,10 @@ import (
 	"sautihealth.com/sauti/internal/incident"
 )
 
-// Flags and escalation reasons written by the sweeper (Build Prompt §10.3).
+// Flags written by the sweeper (Build Prompt §10.3).
 const (
-	FlagAbandoned                    = "abandoned"
-	FlagAbandonedBeforeCategory      = "abandoned_before_category"
-	ReasonAbandonedDangerYes         = "abandoned_after_danger_yes"
-	ReasonAbandonedRedBeforeDispatch = "abandoned_red_before_dispatch"
+	FlagAbandoned               = "abandoned"
+	FlagAbandonedBeforeCategory = "abandoned_before_category"
 )
 
 // Idle is an open incident whose Tool 1 is unfinished (or finished without
@@ -100,9 +98,9 @@ func escalation(in Idle) string {
 	case in.Dispatched:
 		return ""
 	case in.Danger == "yes":
-		return ReasonAbandonedDangerYes
+		return incident.ReasonAbandonedDangerYes
 	case in.Severity == incident.SevRed:
-		return ReasonAbandonedRedBeforeDispatch
+		return incident.ReasonAbandonedRedBeforeDispatch
 	}
 	return ""
 }

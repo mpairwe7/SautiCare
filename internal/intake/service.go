@@ -151,7 +151,7 @@ type Suspension interface {
 // ReasonDispatchSuspended escalates an incident completed while dispatch is
 // suspended (the same reason dispatch-worker's planner uses, so the
 // coordinator is alerted once).
-const ReasonDispatchSuspended = "dispatch_suspended"
+const ReasonDispatchSuspended = incident.ReasonDispatchSuspended
 
 // Service runs Tool 1 over USSD (and, from Part C, IVR).
 type Service struct{ d Deps }
@@ -460,7 +460,7 @@ func (s *Service) classification(p incident.Projection, specificDanger string) (
 	if err != nil {
 		return nil, err
 	}
-	esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": FlagTriageRuleError}, incidentKey(p.ID, "escalate"), "")
+	esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": incident.ReasonTriageRuleError}, incidentKey(p.ID, "escalate"), "")
 	if err != nil {
 		return nil, err
 	}

@@ -66,7 +66,9 @@ sounds:
     - sauti/en/escalation-reason-abandoned_after_danger_yes
     - sauti/en/escalation-reason-abandoned_red_before_dispatch
     - sauti/en/escalation-reason-assigned_follow_up
+    - sauti/en/escalation-reason-bridge_unanswered
     - sauti/en/escalation-reason-dispatch_error
+    - sauti/en/escalation-reason-dispatch_not_started
     - sauti/en/escalation-reason-dispatch_stalled
     - sauti/en/escalation-reason-dispatch_suspended
     - sauti/en/escalation-reason-forwarded_to_facility
@@ -75,8 +77,10 @@ sounds:
     - sauti/en/escalation-reason-no_facility_acknowledged
     - sauti/en/escalation-reason-no_responder_nearby
     - sauti/en/escalation-reason-other
+    - sauti/en/escalation-reason-out_of_area_after_danger
     - sauti/en/escalation-reason-red_no_acceptance
     - sauti/en/escalation-reason-triage_rule_error
+    - sauti/en/escalation-reason-voice_handed_over
     - sauti/en/first_aid-acute_medical
     - sauti/en/first_aid-obstetric
     - sauti/en/first_aid-other
@@ -186,7 +190,9 @@ sounds:
     - sauti/lg/escalation-reason-abandoned_after_danger_yes
     - sauti/lg/escalation-reason-abandoned_red_before_dispatch
     - sauti/lg/escalation-reason-assigned_follow_up
+    - sauti/lg/escalation-reason-bridge_unanswered
     - sauti/lg/escalation-reason-dispatch_error
+    - sauti/lg/escalation-reason-dispatch_not_started
     - sauti/lg/escalation-reason-dispatch_stalled
     - sauti/lg/escalation-reason-dispatch_suspended
     - sauti/lg/escalation-reason-forwarded_to_facility
@@ -195,8 +201,10 @@ sounds:
     - sauti/lg/escalation-reason-no_facility_acknowledged
     - sauti/lg/escalation-reason-no_responder_nearby
     - sauti/lg/escalation-reason-other
+    - sauti/lg/escalation-reason-out_of_area_after_danger
     - sauti/lg/escalation-reason-red_no_acceptance
     - sauti/lg/escalation-reason-triage_rule_error
+    - sauti/lg/escalation-reason-voice_handed_over
     - sauti/lg/first_aid-acute_medical
     - sauti/lg/first_aid-obstetric
     - sauti/lg/first_aid-other

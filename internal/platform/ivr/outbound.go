@@ -690,16 +690,10 @@ func cut(ctx context.Context, a AlertARI, current *string) {
 
 var reasonCode = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
-// EscalationReasons are the reasons with their own recording; any other is
-// spoken as "other".
-var EscalationReasons = []string{
-	"triage_rule_error", "abandoned_after_danger_yes", "abandoned_red_before_dispatch", "merged_call_escalated",
-	"no_eligible_responder", "no_responder_nearby", "red_no_acceptance", "forwarded_to_facility",
-	"no_facility_acknowledged", "dispatch_suspended", "dispatch_error", "dispatch_stalled", "assigned_follow_up",
-}
-
+// escalationReasonSound is the reason's recording; a reason outside the
+// registry is spoken as "other".
 func escalationReasonSound(lang, reason string) string {
-	if !slices.Contains(EscalationReasons, reason) {
+	if !slices.Contains(incident.EscalationReasons, reason) {
 		reason = "other"
 	}
 	return "sauti/" + lang + "/escalation-reason-" + reason
@@ -723,7 +717,7 @@ func OutboundSounds(copy config.Responder) []string {
 		b := "sauti/" + lang + "/"
 		out = append(out, b+"forward-intro", b+"forward-options", b+"forward-acknowledged",
 			b+"escalation-intro", b+"escalation-options", b+"escalation-acknowledged", b+"escalation-reason-other")
-		for _, r := range EscalationReasons {
+		for _, r := range incident.EscalationReasons {
 			out = append(out, b+"escalation-reason-"+r)
 		}
 	}
