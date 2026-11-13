@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"sautihealth.com/sauti/internal/intake"
@@ -62,5 +63,17 @@ func TestUSSDRouterSendsRespondersToTheirMenu(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "tool1" || got[1] != "responder" {
 		t.Fatalf("routed %v", got)
+	}
+}
+
+// CodeRabbit PR #11 (4558029969): a service code in both lists would send
+// Tool 1 callers to the responder menu, so it is refused at start.
+func TestServiceCodesMustNotOverlap(t *testing.T) {
+	codes, err := responderCodeSet([]string{"*384*1#"}, []string{"*384*2#"})
+	if err != nil || !codes["*384*2#"] || codes["*384*1#"] {
+		t.Fatalf("distinct codes: %v %v", codes, err)
+	}
+	if _, err := responderCodeSet([]string{"*384*1#", "*384*2#"}, []string{"*384*2#"}); err == nil || !strings.Contains(err.Error(), "*384*2#") {
+		t.Fatalf("overlap accepted: %v", err)
 	}
 }

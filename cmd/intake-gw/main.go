@@ -25,10 +25,12 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -122,10 +124,11 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	router := ussdRouter{tool1: svc, responders: menu, codes: map[string]bool{}}
-	for _, c := range responderCodes {
-		router.codes[c] = true
+	codes, err := responderCodeSet(env.List("SAUTI_USSD_SERVICE_CODES"), responderCodes)
+	if err != nil {
+		return err
 	}
+	router := ussdRouter{tool1: svc, responders: menu, codes: codes}
 	ussd, err := africastalking.NewUSSDHandler(africastalking.USSDConfig{
 		Provider: "at", PathToken: token, ServiceCodes: append(env.List("SAUTI_USSD_SERVICE_CODES"), responderCodes...),
 		ErrorText: errorText,
@@ -219,4 +222,18 @@ func (r ussdRouter) HandleUSSD(ctx context.Context, req intake.USSDRequest) (int
 		return r.responders.HandleUSSD(ctx, req)
 	}
 	return r.tool1.HandleUSSD(ctx, req)
+}
+
+// responderCodeSet is the set of responder-menu service codes. A code that is
+// also a Tool 1 code is refused: the router would send those callers to the
+// responder menu, and nobody could report an incident on it.
+func responderCodeSet(tool1, responders []string) (map[string]bool, error) {
+	set := map[string]bool{}
+	for _, c := range responders {
+		if slices.Contains(tool1, c) {
+			return nil, fmt.Errorf("USSD service code %s is in both SAUTI_USSD_SERVICE_CODES and SAUTI_USSD_RESPONDER_CODES", c)
+		}
+		set[c] = true
+	}
+	return set, nil
 }
