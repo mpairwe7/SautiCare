@@ -296,7 +296,10 @@ func cmdCheckpoint(ctx context.Context, args []string, out io.Writer) error {
 	defer pool.Close()
 	// Anchor on the latest witnessed checkpoint before signing, so a
 	// rewritten or truncated history is refused, never signed and witnessed
-	// (CodeRabbit PR #4). The witness is read before any query.
+	// (CodeRabbit PR #4). The witness is read before any query. The relay's
+	// leader may be signing too; neither takes a lock: each reads the shared
+	// witness again before every signature and checks every note it has not
+	// seen against the chain (audit.Checkpointer).
 	cper, _, err := audit.NewAnchoredCheckpointer(auditstore.New(pool), keys.Signer(), devkeys.NewFSWitness(*witness), *origin, time.Now)
 	if err != nil {
 		return fmt.Errorf("witness store failed verification; refusing to sign (runbook: docs/runbooks/audit-ledger-verification-failure.md): %w", err)
