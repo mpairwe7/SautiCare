@@ -268,14 +268,18 @@ func outboundReady(st *outboundStatus) health.Check {
 // process, which the coordinator line's busy tracking relies on. Calls are
 // placed only while that stream is connected — an answer Sauti cannot hear
 // would be a one-shot attempt wasted — so the loops stop when it drops and
-// start again when it is back. The subscription ends with the term.
+// start again when it is back. The subscription ends with the term, and the
+// term returns only once it has (a later term in this process must not run
+// beside a websocket still closing).
 func outboundTerm(events func(context.Context, func(ari.Event)) error, st *outboundStatus, out ivr.Outbound,
 	loops ...func(context.Context) error) func(context.Context) error {
 	connected := st.connected
 	return func(lctx context.Context) error {
 		st.leading.Store(true)
 		defer st.leading.Store(false)
-		go func() { _ = events(lctx, func(e ari.Event) { out.Handle(lctx, e) }) }()
+		var sub sync.WaitGroup
+		defer sub.Wait()
+		sub.Go(func() { _ = events(lctx, func(e ari.Event) { out.Handle(lctx, e) }) })
 		t := time.NewTicker(outboundPoll)
 		defer t.Stop()
 		for {
