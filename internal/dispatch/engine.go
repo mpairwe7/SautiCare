@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 	"uuid"
@@ -92,11 +93,25 @@ type Engine struct {
 	// passTimeout bounds each incident's pass (below the lease), so a
 	// provider or lock that hangs cannot stall the leader (review I8).
 	passTimeout time.Duration
-	lastPass    atomic.Int64 // unix nanoseconds of the last successful RunOnce
+	sendTimeout time.Duration // each provider call (review I4)
+	workers     int           // provider calls in flight at once
+	lastPass    atomic.Int64  // unix nanoseconds of the last successful RunOnce
 }
 
 // DefaultPassTimeout bounds one incident's pass; it is below the 30 s lease.
 const DefaultPassTimeout = 20 * time.Second
+
+// DefaultSendTimeout bounds each provider call, well below the pass: a
+// provider that hangs costs one send timeout, not a pass (review I4).
+const DefaultSendTimeout = 5 * time.Second
+
+// DefaultDeliveryWorkers is how many provider calls run at once.
+const DefaultDeliveryWorkers = 16
+
+// settleTimeout bounds recording a send's result. It runs on a context of
+// its own, so a pass that ends while a send is in flight still settles the
+// attempt instead of leaving it claimed for ever.
+const settleTimeout = 5 * time.Second
 
 // LastPass is when the last RunOnce completed without a store error (zero:
 // never). dispatch-worker's readiness and metrics use it.
@@ -119,6 +134,8 @@ type EngineConfig struct {
 	Gazetteer    location.File // stages, wards and facilities in force
 	StoppingRule StoppingRule  // Guide §14 (O6)
 	PassTimeout  time.Duration // default DefaultPassTimeout
+	SendTimeout  time.Duration // default DefaultSendTimeout
+	Workers      int           // provider calls at once; default DefaultDeliveryWorkers
 }
 
 // NewEngine validates the configuration.
@@ -144,7 +161,8 @@ func NewEngine(c EngineConfig) (*Engine, error) {
 		timeout = DefaultPassTimeout
 	}
 	return &Engine{store: c.Store, deliverer: c.Deliverer, notifier: c.Notifier, suspension: c.Suspension, params: c.Params, ranker: c.Ranker,
-		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells, rule: c.StoppingRule, passTimeout: timeout}, nil
+		logic: c.LogicVersion, gazetteer: c.Gazetteer, stageCells: cells, rule: c.StoppingRule, passTimeout: timeout,
+		sendTimeout: c.SendTimeout, workers: c.Workers}, nil
 }
 
 // maxRounds bounds re-planning within one wake; each round records facts,
@@ -154,6 +172,28 @@ const maxRounds = 32
 // Process plans one due incident until nothing more is due now, delivers,
 // and stores the next wake for the generation it was claimed at.
 func (e *Engine) Process(ctx context.Context, due Due) error {
+	p, err := e.plan(ctx, due)
+	if err != nil {
+		return err
+	}
+	if err := e.deliverAll(ctx, []Snapshot{p.snap})[due.IncidentID]; err != nil {
+		return err
+	}
+	return e.store.ScheduleDispatch(ctx, due.IncidentID, due.Gen, p.next)
+}
+
+// planned is an incident whose facts due now are recorded: its sends are
+// still to make and its next wake still to store. The wake is stored only
+// once the sends have been made, so a pass that fails while sending leaves
+// the incident leased and the next pass after the lease retries them.
+type planned struct {
+	due  Due
+	snap Snapshot
+	next *time.Time
+}
+
+// plan records every fact due now for one incident.
+func (e *Engine) plan(ctx context.Context, due Due) (planned, error) {
 	// Refused by the database this wake: a responder who lapsed since the
 	// read, a facility it would not take (a suspension committed since the
 	// read). The next round re-reads the facts without them.
@@ -161,39 +201,36 @@ func (e *Engine) Process(ctx context.Context, due Due) error {
 	for range maxRounds {
 		snap, err := e.store.DispatchSnapshot(ctx, due.IncidentID)
 		if err != nil {
-			return err
+			return planned{}, err
 		}
 		now, err := e.store.Now(ctx)
 		if err != nil {
-			return err
+			return planned{}, err
 		}
 		suspended, err := e.suspension.DispatchSuspended(ctx)
 		if err != nil {
-			return err
+			return planned{}, err
 		}
 		st, pool, err := e.state(ctx, snap, suspended, now, refused.responders)
 		if err != nil {
-			return err
+			return planned{}, err
 		}
 		facilities := slices.DeleteFunc(slices.Clone(e.gazetteer.Facilities), func(f location.Facility) bool { return refused.facilities[f.ID] })
 		acts, wake := Plan(st, pool, facilities, e.params, now)
 		if len(acts) == 0 {
-			if err := e.deliver(ctx, snap); err != nil {
-				return err
-			}
-			var next *time.Time
+			p := planned{due: due, snap: snap}
 			if !wake.IsZero() {
-				next = &wake
+				p.next = &wake
 			}
-			return e.store.ScheduleDispatch(ctx, due.IncidentID, due.Gen, next)
+			return p, nil
 		}
 		for _, a := range acts {
 			if err := e.execute(ctx, snap.IncidentID, a, refused); err != nil {
-				return fmt.Errorf("dispatch: %s for %s: %w", a.Kind, snap.IncidentID, err)
+				return planned{}, fmt.Errorf("dispatch: %s for %s: %w", a.Kind, snap.IncidentID, err)
 			}
 		}
 	}
-	return fmt.Errorf("dispatch: incident %s: the plan did not settle in %d rounds", due.IncidentID, maxRounds)
+	return planned{}, fmt.Errorf("dispatch: incident %s: the plan did not settle in %d rounds", due.IncidentID, maxRounds)
 }
 
 // state builds the planner's view: the stored facts, the pool of eligible
@@ -318,65 +355,129 @@ func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, re
 	return err
 }
 
-// deliver sends every alert still pending and every stand-down that has not
-// been attempted. An attempt is claimed in the store before the provider
+// deliverAll makes the sends of the planned incidents: every alert still
+// pending and every stand-down not yet attempted, the caller notices and the
+// forwarded facilities' SMS. Each is claimed in the store before the provider
 // call and only once, so neither a retry nor a crash sends it twice; one
-// whose result is unknown is never re-sent (the cascade's next rung covers
-// it). Channel: SMS (USSD push is disabled, O2; voice fallback is Part B).
-func (e *Engine) deliver(ctx context.Context, snap Snapshot) error {
-	for _, a := range snap.Alerts {
-		purpose := ""
-		switch a.Outcome {
-		case OutcomePending:
-			purpose = PurposeAlert
-		case OutcomeStoodDown:
-			purpose = PurposeStandDown
-		default:
-			continue
+// whose result is unknown is never re-sent (the next rung covers it). The
+// sends run concurrently (at most workers at once), the most urgent incident
+// first, each bounded by the send timeout and settled on a context of its
+// own (review I4): a provider that hangs costs a send timeout, never another
+// incident's alerts. It returns each incident's first store error.
+func (e *Engine) deliverAll(ctx context.Context, snaps []Snapshot) map[uuid.UUID]error {
+	type job struct {
+		incident uuid.UUID
+		send     func(context.Context) error
+	}
+	var jobs []job
+	for _, snap := range snaps {
+		for _, a := range snap.Alerts {
+			purpose := ""
+			switch a.Outcome {
+			case OutcomePending:
+				purpose = PurposeAlert
+			case OutcomeStoodDown:
+				purpose = PurposeStandDown
+			default:
+				continue
+			}
+			jobs = append(jobs, job{snap.IncidentID, func(ctx context.Context) error {
+				attempt, fresh, err := e.store.BeginAttempt(ctx, a.ID, purpose, ChannelSMS)
+				if err != nil || !fresh {
+					return err
+				}
+				ref, derr := e.send(ctx, func(c context.Context) (string, error) {
+					return e.deliverer.Deliver(c, Delivery{AttemptID: attempt, AlertID: a.ID, IncidentID: snap.IncidentID,
+						ResponderID: a.ResponderID, Role: a.Role, Purpose: purpose, Channel: ChannelSMS})
+				})
+				return e.settle(ctx, func(c context.Context) error {
+					_, err := e.store.FinishAttempt(c, attempt, settlement(derr), ref)
+					return err
+				})
+			}})
 		}
-		attempt, fresh, err := e.store.BeginAttempt(ctx, a.ID, purpose, ChannelSMS)
-		if err != nil {
-			return err
+		for _, kind := range snap.CallerNotified {
+			jobs = append(jobs, job{snap.IncidentID, func(ctx context.Context) error {
+				attempt, fresh, err := e.store.BeginNoticeAttempt(ctx, snap.IncidentID, kind, ChannelSMS)
+				if err != nil || !fresh {
+					return err
+				}
+				ref, nerr := e.send(ctx, func(c context.Context) (string, error) {
+					return e.notifier.Notify(c, Notice{AttemptID: attempt, IncidentID: snap.IncidentID, Kind: kind, Channel: ChannelSMS})
+				})
+				return e.settle(ctx, func(c context.Context) error {
+					_, err := e.store.FinishNoticeAttempt(c, attempt, settlement(nerr), ref)
+					return err
+				})
+			}})
 		}
-		if !fresh {
-			continue
-		}
-		ref, derr := e.deliverer.Deliver(ctx, Delivery{AttemptID: attempt, AlertID: a.ID, IncidentID: snap.IncidentID,
-			ResponderID: a.ResponderID, Role: a.Role, Purpose: purpose, Channel: ChannelSMS})
-		if _, err := e.store.FinishAttempt(ctx, attempt, settlement(derr), ref); err != nil {
-			return err
+		// Each forwarded facility's SMS (scenario 7); its call is
+		// ivr-controller's.
+		for _, f := range snap.Forwards {
+			jobs = append(jobs, job{snap.IncidentID, func(ctx context.Context) error {
+				attempt, fresh, err := e.store.BeginForwardAttempt(ctx, snap.IncidentID, f.FacilityID, ChannelSMS)
+				if err != nil || !fresh {
+					return err
+				}
+				ref, ferr := e.send(ctx, func(c context.Context) (string, error) {
+					return e.notifier.NotifyFacility(c, snap.IncidentID, f.FacilityID)
+				})
+				return e.settle(ctx, func(c context.Context) error {
+					_, err := e.store.FinishForwardAttempt(c, attempt, settlement(ferr), ref)
+					return err
+				})
+			}})
 		}
 	}
-	// Caller notices the same way: each claimed once, never re-sent.
-	for _, kind := range snap.CallerNotified {
-		attempt, fresh, err := e.store.BeginNoticeAttempt(ctx, snap.IncidentID, kind, ChannelSMS)
-		if err != nil {
-			return err
-		}
-		if !fresh {
-			continue
-		}
-		ref, nerr := e.notifier.Notify(ctx, Notice{AttemptID: attempt, IncidentID: snap.IncidentID, Kind: kind, Channel: ChannelSMS})
-		if _, err := e.store.FinishNoticeAttempt(ctx, attempt, settlement(nerr), ref); err != nil {
-			return err
-		}
+	errs := map[uuid.UUID]error{}
+	if len(jobs) == 0 {
+		return errs
 	}
-	// Each forwarded facility's SMS (scenario 7), once; its call is
-	// ivr-controller's.
-	for _, f := range snap.Forwards {
-		attempt, fresh, err := e.store.BeginForwardAttempt(ctx, snap.IncidentID, f.FacilityID, ChannelSMS)
-		if err != nil {
-			return err
-		}
-		if !fresh {
-			continue
-		}
-		ref, ferr := e.notifier.NotifyFacility(ctx, snap.IncidentID, f.FacilityID)
-		if _, err := e.store.FinishForwardAttempt(ctx, attempt, settlement(ferr), ref); err != nil {
-			return err
-		}
+	workers := e.workers
+	if workers <= 0 {
+		workers = DefaultDeliveryWorkers
 	}
-	return nil
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	queue := make(chan job)
+	for range min(workers, len(jobs)) {
+		wg.Go(func() {
+			for j := range queue {
+				if err := j.send(ctx); err != nil {
+					mu.Lock()
+					if errs[j.incident] == nil {
+						errs[j.incident] = err
+					}
+					mu.Unlock()
+				}
+			}
+		})
+	}
+	for _, j := range jobs {
+		queue <- j
+	}
+	close(queue)
+	wg.Wait()
+	return errs
+}
+
+// send makes one provider call under the send timeout.
+func (e *Engine) send(ctx context.Context, call func(context.Context) (string, error)) (string, error) {
+	t := e.sendTimeout
+	if t <= 0 {
+		t = DefaultSendTimeout
+	}
+	c, cancel := context.WithTimeout(ctx, t)
+	defer cancel()
+	return call(c)
+}
+
+// settle records a send's result on a context of its own, so the end of the
+// pass does not leave the attempt claimed for ever.
+func (e *Engine) settle(ctx context.Context, f func(context.Context) error) error {
+	c, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancel()
+	return f(c)
 }
 
 // RunOnce claims due incidents (most urgent first) and processes each. A
@@ -387,20 +488,46 @@ func (e *Engine) RunOnce(ctx context.Context, batch int, lease time.Duration, on
 		return 0, err
 	}
 	failed := false
+	fail := func(id uuid.UUID, err error) {
+		failed = true
+		onErr(id, err)
+		// Fail safe to a human (rule 3.14): the coordinator sees it now.
+		if _, eerr := e.store.DispatchEscalate(ctx, id, ReasonDispatchError, "", e.logic); eerr != nil {
+			onErr(id, eerr)
+		}
+	}
+	// Every due incident is planned first (its alerts issued, T3 recorded),
+	// then all their sends go out together (review I4): a slow provider
+	// delays no incident's planning within the batch.
+	var ready []planned
 	for _, d := range due {
 		pctx, cancel := context.WithTimeout(ctx, e.passTimeout)
-		err := e.Process(pctx, d)
+		p, err := e.plan(pctx, d)
 		cancel()
 		if err != nil {
-			failed = true
 			if ctx.Err() != nil {
 				return len(due), ctx.Err()
 			}
-			onErr(d.IncidentID, err)
-			// Fail safe to a human (rule 3.14): the coordinator sees it now.
-			if _, eerr := e.store.DispatchEscalate(ctx, d.IncidentID, ReasonDispatchError, "", e.logic); eerr != nil {
-				onErr(d.IncidentID, eerr)
+			fail(d.IncidentID, err)
+			continue
+		}
+		ready = append(ready, p)
+	}
+	snaps := make([]Snapshot, 0, len(ready))
+	for _, p := range ready {
+		snaps = append(snaps, p.snap)
+	}
+	errs := e.deliverAll(ctx, snaps)
+	for _, p := range ready {
+		err := errs[p.due.IncidentID]
+		if err == nil {
+			err = e.store.ScheduleDispatch(ctx, p.due.IncidentID, p.due.Gen, p.next)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return len(due), ctx.Err()
 			}
+			fail(p.due.IncidentID, err)
 		}
 	}
 	if !failed {

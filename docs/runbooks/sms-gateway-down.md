@@ -17,7 +17,7 @@ dispatch-worker sends alerts, stand-downs, caller notices, facility SMS and expi
 - intake-gw's delivery-report callback answers 503 when it cannot store a report; the provider then retries.
 
 ## Impact
-**The dispatch path degrades but does not stop.** An alert attempt that failed is not re-sent. The responder's phone rings at 20 s (voice), and the cascade moves on at 90 s. Callers miss "help is on the way" and the forwarding SMS, so coordinators call them back. Health centres still get the forwarding call.
+**The dispatch path degrades but does not stop.** Alerts are still issued on time: every due incident is planned before any message is sent. A provider that hangs costs each message at most 5 s, with 16 sent at once. An alert attempt that failed is not re-sent. The responder's phone rings at 20 s (voice), and the cascade moves on at 90 s. Callers miss "help is on the way" and the forwarding SMS, so coordinators call them back. Health centres still get the forwarding call.
 
 ## Diagnosis
 1. Status or failure codes: `401`/HTTP 4xx means credentials (key rotated, application username); `405` means insufficient balance; `406` means the number is blacklisted; `5xx` or timeouts mean the provider is down or unreachable.

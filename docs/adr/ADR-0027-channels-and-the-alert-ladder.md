@@ -39,6 +39,7 @@ Chosen option: **ports, adapters, attempts claimed once**.
 
 **SMS** (`africastalking.SMSClient`, `channels.SMS`):
 - The client posts the documented form through the egress allowlist. Accepted (100–102) returns the message ID. A provider refusal is `dispatch.ErrRejected`, settled as failed. Anything else is unknown and never re-sent.
+- The worker plans every due incident first (its alerts issued and T3 recorded), then sends all their messages together. At most 16 provider calls run at once, the most urgent incident first, each bounded at 5 s. Each result is recorded on a context of its own, so a pass that ends mid-send never leaves an attempt claimed. A provider that hangs therefore costs one send timeout, not other incidents' alerts. An incident's next wake is stored only after its sends: a store failure while sending leaves it leased, and the next pass retries it.
 - Delivery reports arrive at intake-gw on a secret path (`/v1/sms/delivery/at/<token>`). Only codes are kept, and a final report is never overwritten.
 - Templates are gated config (`config/gated/sms.yaml`). Each template may carry only its own placeholders, and the value type has no field for a name, a clinical answer or the caller's number.
   - Protocol-mode alerts carry the incident number, colour and category.
