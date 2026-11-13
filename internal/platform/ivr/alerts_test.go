@@ -257,3 +257,25 @@ func repoForAlerts(t *testing.T) (config.Bundle, error) {
 	}
 	return b, nil
 }
+
+// CodeRabbit PR #11 (4560453615): a key the menu being heard does not offer
+// leaves its prompt playing (no silence): 9 during the alert, 9 during the
+// reasons. Valid keys still cut the prompt.
+func TestAnInvalidKeyDoesNotCutTheAlertPrompt(t *testing.T) {
+	c, a, st := alertRig(t, true)
+	ch := answer(t, c, a, st)
+	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "9"})
+	if len(a.stopped) != 0 || len(a.plays) != 1 || st.accepted != 0 {
+		t.Fatalf("invalid key during the alert: stopped %v plays %d", a.stopped, len(a.plays))
+	}
+	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "2"})
+	if !slices.Equal(a.stopped, a.pbs[:1]) || len(a.plays) != 2 {
+		t.Fatalf("2 did not cut the alert for the reasons: stopped %v plays %v", a.stopped, a.plays)
+	}
+	for _, k := range []string{"9", "0", "*"} {
+		c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: k})
+	}
+	if len(a.stopped) != 1 || len(st.declined) != 0 {
+		t.Fatalf("invalid keys during the reasons: stopped %v declined %v", a.stopped, st.declined)
+	}
+}

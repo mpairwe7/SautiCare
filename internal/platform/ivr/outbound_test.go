@@ -210,3 +210,34 @@ func TestCoordinatorLineIsRungOneCallAtATime(t *testing.T) {
 		t.Fatalf("two lines: %d %v", n, st2.limits)
 	}
 }
+
+// CodeRabbit PR #11 (4560453615): on forwarding and coordinator calls only 1
+// and 3 are keys; any other leaves the prompt playing.
+func TestAnInvalidKeyDoesNotCutAnOutboundPrompt(t *testing.T) {
+	a := &alertARI{}
+	fs := &forwardStore{claimed: map[string]bool{}}
+	fc, err := NewForwardCalls(ForwardCallsConfig{ARI: a, Store: fs, Dial: "PJSIP/{number}@sauti-trunk", Gazetteer: gazetteer(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "fwd-1", Args: []string{"forward", uuid.NewV7().String(), "hc_test_1"}})
+	cs := &coordStore{acked: map[uuid.UUID]int64{}}
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: cs, Endpoint: "PJSIP/coordinators"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "esc-1",
+		Args: []string{"escalation", uuid.NewV7().String(), "3", "dispatch_stalled", "1234567894"}})
+	for _, k := range []string{"2", "9", "#"} {
+		fc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "fwd-1", Digit: k})
+		cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "esc-1", Digit: k})
+	}
+	if len(a.stopped) != 0 || len(a.plays) != 2 || len(fs.acked) != 0 || len(cs.acked) != 0 {
+		t.Fatalf("invalid keys: stopped %v plays %d", a.stopped, len(a.plays))
+	}
+	fc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "fwd-1", Digit: "3"})
+	cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "esc-1", Digit: "3"})
+	if len(a.stopped) != 2 || len(a.plays) != 4 {
+		t.Fatalf("3 repeats, cutting the prompt: stopped %v plays %d", a.stopped, len(a.plays))
+	}
+}

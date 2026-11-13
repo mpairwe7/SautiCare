@@ -221,7 +221,7 @@ func (f *ForwardCalls) Handle(ctx context.Context, e Event) {
 		f.mu.Lock()
 		st := f.calls[e.ChannelID]
 		f.mu.Unlock()
-		if st == nil || st.done {
+		if st == nil || st.done || !outboundKey(e.Digit) {
 			return
 		}
 		cut(op, f.c.ARI, &st.current)
@@ -424,7 +424,7 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 		k.mu.Lock()
 		st := k.calls[e.ChannelID]
 		k.mu.Unlock()
-		if st == nil || st.done {
+		if st == nil || st.done || !outboundKey(e.Digit) {
 			return
 		}
 		cut(op, k.c.ARI, &st.current)
@@ -509,8 +509,13 @@ func endAfter(ctx context.Context, a AlertARI, ch, pb string, sounds []string) s
 	return pb
 }
 
-// cut stops the prompt being heard when a key is pressed, so the answer is
-// spoken at once rather than queued behind it.
+// outboundKey reports whether a forwarding or coordinator call takes digit:
+// 1 acknowledges, 3 repeats. Any other key is ignored, leaving the prompt
+// playing rather than cutting it to silence.
+func outboundKey(digit string) bool { return digit == "1" || digit == "3" }
+
+// cut stops the prompt being heard when a key the menu offers is pressed, so
+// the answer is spoken at once rather than queued behind it.
 func cut(ctx context.Context, a AlertARI, current *string) {
 	if *current != "" {
 		_ = a.StopPlayback(ctx, *current)
