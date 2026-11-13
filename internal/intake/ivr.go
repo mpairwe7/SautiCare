@@ -13,6 +13,7 @@ import (
 type IVRCall struct {
 	CallID     string
 	IncidentID uuid.UUID
+	Reference  incident.Reference // shown to the coordinator on a hand-over
 	HasPhone   bool
 	Shown      Kind // the prompt being played; the next input answers it
 }
@@ -42,12 +43,35 @@ func (s *Service) StartIVR(ctx context.Context, callID string, phone pii.Phone) 
 	if err != nil {
 		return IVRTurn{}, err
 	}
+	call.Reference = p.Reference
 	pr, err := s.next(ctx, p, call.HasPhone)
 	if err != nil {
 		return IVRTurn{}, err
 	}
 	call.Shown = pr.Kind
 	return IVRTurn{Call: call, Prompt: pr}, nil
+}
+
+// HandOver records that the voice line is handing the call to a
+// coordinator: an incident.escalated event, once per call, so the
+// coordinator line rings even if the transfer itself fails (ADR-0029 rule
+// 3). A call with no incident, or whose incident is closed or merged, has
+// nothing to escalate.
+func (s *Service) HandOver(ctx context.Context, call IVRCall, reason string) error {
+	if call.IncidentID == (uuid.UUID{}) {
+		return nil
+	}
+	p, err := s.d.Reader.Projection(ctx, call.IncidentID)
+	if err != nil || p.State.Terminal() {
+		return err
+	}
+	esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": reason},
+		incident.EscalationKey(reason, "")+":handover:"+call.CallID, "")
+	if err != nil {
+		return err
+	}
+	_, err = s.d.Incidents.Append(ctx, esc)
+	return err
 }
 
 // AnswerIVR applies keypad input given to the prompt being played. It is

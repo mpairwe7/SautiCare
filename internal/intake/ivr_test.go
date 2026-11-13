@@ -152,3 +152,37 @@ func TestIVRRepeatedInputIsIdempotent(t *testing.T) {
 		t.Fatalf("events %d → %d on a repeated answer", n, len(r.inc.allEvents()))
 	}
 }
+
+// A voice hand-over records one escalation for the call, however often the
+// controller asks (a retry after a failed Continue), so the coordinator line
+// rings even if the dialplan's transfer fails. The call carries the
+// reference the coordinator is shown.
+func TestHandOverEscalatesOncePerCall(t *testing.T) {
+	r := newRig(t, nil, nil)
+	v := r.callIVR(t, "call-1", "+256772123456")
+	v.press("1")
+	if _, err := incident.ParseReference(string(v.call.Reference)); err != nil {
+		t.Fatalf("call reference %q: %v", v.call.Reference, err)
+	}
+	for range 2 {
+		if err := r.svc.HandOver(context.Background(), v.call, incident.ReasonVoiceHandedOver); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var reasons []string
+	for _, e := range r.inc.allEvents() {
+		if e.Type == incident.EvEscalated {
+			reasons = append(reasons, string(e.Payload))
+		}
+	}
+	if !slices.Equal(reasons, []string{`{"reason":"voice_handed_over"}`}) {
+		t.Fatalf("escalations %v", reasons)
+	}
+	if !v.projection().Escalated {
+		t.Fatal("incident not escalated")
+	}
+	// A call with no incident (intake never opened one) has nothing to escalate.
+	if err := r.svc.HandOver(context.Background(), IVRCall{CallID: "call-2"}, incident.ReasonVoiceHandedOver); err != nil {
+		t.Fatal(err)
+	}
+}

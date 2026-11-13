@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/ari"
@@ -37,12 +38,15 @@ type ARI interface {
 	Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error
 	Hangup(ctx context.Context, channelID string) error
 	ListChannels(ctx context.Context) ([]ari.Channel, error)
+	SetCallerID(ctx context.Context, channelID, number string) error
+	SetCallerName(ctx context.Context, channelID, name string) error
 }
 
 // Intake is the voice side of intake.Service.
 type Intake interface {
 	StartIVR(ctx context.Context, callID string, phone pii.Phone) (intake.IVRTurn, error)
 	AnswerIVR(ctx context.Context, call intake.IVRCall, input string) (intake.IVRTurn, error)
+	HandOver(ctx context.Context, call intake.IVRCall, reason string) error
 }
 
 // FallbackContext is the dialplan context that takes a call Sauti cannot
@@ -53,10 +57,15 @@ const FallbackContext = "sauti-ivr-fallback"
 // Options tune the call behaviour.
 type Options struct {
 	// NoInput is how long silence lasts, counted from the end of a prompt,
-	// before the prompt is played again; after MaxReprompts the call ends
-	// (resume brings the caller back).
+	// before the prompt is played again. After MaxReprompts a caller who
+	// has answered a screen (or resumed past the first) goes to a
+	// coordinator; a call silent from the first prompt ends, as a pocket
+	// dial (ADR-0029 rule 2; resume brings the caller back).
 	NoInput      time.Duration
 	MaxReprompts int
+	// MaxNoMatch is how many invalid answers in a row to one question hand
+	// the caller to a coordinator (default 3).
+	MaxNoMatch int
 	// OpTimeout bounds each intake or ARI operation of a call (default
 	// 3 s). A call whose operation runs out of time is handed to a
 	// coordinator; other calls are not affected.
@@ -68,6 +77,9 @@ type Options struct {
 	// App is the Stasis application the controller serves (default
 	// sauti-ivr): Adopt hands over the calls parked in it.
 	App string
+	// CallerID is Sauti's number (SAUTI_ARI_CALLER_ID), shown to the
+	// coordinator who takes a handed-over call instead of the caller's.
+	CallerID string
 }
 
 // maxCallbackDigits bounds a typed callback number (E.164 is at most 15).
@@ -94,6 +106,7 @@ type call struct {
 	playing   bool   // current is playing: a key stops it (barge-in)
 	hangupOn  string // playback after which to hang up
 	reprompts int
+	invalid   int // invalid answers in a row to the question shown
 	timer     *time.Timer
 	timerGen  int
 	begun     bool
@@ -160,6 +173,9 @@ func New(a ARI, in Intake, log *slog.Logger, opt Options) *Controller {
 	}
 	if opt.OpTimeout <= 0 {
 		opt.OpTimeout = 3 * time.Second
+	}
+	if opt.MaxNoMatch <= 0 {
+		opt.MaxNoMatch = 3
 	}
 	if opt.PromptMax <= 0 {
 		opt.PromptMax = 30 * time.Second
@@ -397,12 +413,26 @@ func (c *Controller) answer(ctx context.Context, st *call, input string) {
 		c.handOver(ctx, st)
 		return
 	}
+	// The same question back with a notice is a no-match.
+	noMatch := turn.Prompt.Notice != "" && turn.Prompt.Kind == st.turn.Call.Shown
 	st.turn, st.reprompts, st.digits = turn, 0, ""
+	if !noMatch {
+		st.invalid = 0
+	} else if st.invalid++; st.invalid >= c.opt.MaxNoMatch {
+		c.handOver(ctx, st)
+		return
+	}
 	c.play(ctx, st, Sounds(turn.Prompt), turn.Prompt.End)
 }
 
 func (c *Controller) noInput(ctx context.Context, st *call) {
 	if st.reprompts >= c.opt.MaxReprompts {
+		// Past the first screen the caller has engaged (answered it, or
+		// resumed a report): silence is not a pocket dial.
+		if st.turn.Call.Shown != intake.KindLanguage {
+			c.handOver(ctx, st)
+			return
+		}
 		c.hangup(ctx, st)
 		return
 	}
@@ -442,10 +472,18 @@ func (c *Controller) play(ctx context.Context, st *call, sounds []string, end bo
 // handOver passes a call Sauti cannot serve to the dialplan's fallback (a
 // recorded message, then the on-call coordinators; hard constraint 14). The
 // incident and every answer given so far are already persisted, and a
-// redial resumes them. If even that fails, the call is hung up rather than
-// left in silence.
+// redial resumes them. The escalation is recorded first, so the coordinator
+// line rings even if the transfer fails; the coordinator is shown Sauti's
+// number and the reference, never the caller's. If the transfer fails, the
+// call is hung up rather than left in silence.
 func (c *Controller) handOver(ctx context.Context, st *call) {
 	c.stopTimer(st)
+	hctx, hcancel := c.op(ctx)
+	if err := c.in.HandOver(hctx, st.turn.Call, incident.ReasonVoiceHandedOver); err != nil {
+		c.log.Error("ivr hand-over escalation failed", "channel", st.ch, "err", err)
+	}
+	hcancel()
+	c.present(ctx, st)
 	octx, cancel := c.op(ctx)
 	defer cancel()
 	if err := c.ari.Continue(octx, st.ch, FallbackContext, "s", 1); err != nil {
@@ -455,6 +493,26 @@ func (c *Controller) handOver(ctx context.Context, st *call) {
 	}
 	c.log.Warn("ivr call handed to the coordinator fallback", "channel", st.ch)
 	st.ended = true
+}
+
+// present sets what the coordinator's phone shows: Sauti's number and
+// "SAUTI" with the reference. A failure is logged and the hand-over goes
+// ahead: reaching a person comes first (hard constraint 14).
+func (c *Controller) present(ctx context.Context, st *call) {
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	if c.opt.CallerID != "" {
+		if err := c.ari.SetCallerID(octx, st.ch, c.opt.CallerID); err != nil {
+			c.log.Error("ivr hand-over caller ID failed", "channel", st.ch, "err", err)
+		}
+	}
+	name := "SAUTI"
+	if ref := st.turn.Call.Reference; ref != "" {
+		name += " " + ref.Spoken()
+	}
+	if err := c.ari.SetCallerName(octx, st.ch, name); err != nil {
+		c.log.Error("ivr hand-over caller name failed", "channel", st.ch, "err", err)
+	}
 }
 
 func (c *Controller) hangup(ctx context.Context, st *call) {

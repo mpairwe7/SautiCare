@@ -312,3 +312,21 @@ func TestClientStreamReportsEachConnect(t *testing.T) {
 		t.Fatalf("seen %v", seen)
 	}
 }
+
+// A handed-over call shows the coordinator "SAUTI" and the reference as the
+// caller name (rule 5); a name is letters, digits and spaces only.
+func TestClientSetsCallerName(t *testing.T) {
+	f, c := newPair(t)
+	ctx := context.Background()
+	if err := c.SetCallerName(ctx, "chan-1", "SAUTI 123 456 7894"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.CallerName("chan-1"); got != "SAUTI 123 456 7894" {
+		t.Fatalf("caller name %q", got)
+	}
+	for _, bad := range []string{"", "x\"<1>", "SAUTI\n"} {
+		if err := c.SetCallerName(ctx, "chan-1", bad); err == nil {
+			t.Fatalf("name %q was sent", bad)
+		}
+	}
+}

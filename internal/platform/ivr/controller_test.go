@@ -35,6 +35,21 @@ type fakeARI struct {
 	failPlay     func(sounds []string) bool
 	ctrl         *Controller
 	channels     []ari.Channel // what ListChannels reports
+	seq          []string      // caller ID, name and continue requests, in order
+}
+
+func (f *fakeARI) SetCallerID(_ context.Context, ch, number string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq = append(f.seq, "id "+ch+" "+number)
+	return nil
+}
+
+func (f *fakeARI) SetCallerName(_ context.Context, ch, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq = append(f.seq, "name "+ch+" "+name)
+	return nil
 }
 
 func (f *fakeARI) ListChannels(context.Context) ([]ari.Channel, error) {
@@ -82,6 +97,7 @@ func (f *fakeARI) Continue(_ context.Context, ch, dialContext, ext string, prio 
 	if f.failContinue {
 		return errors.New("asterisk: continue failed")
 	}
+	f.seq = append(f.seq, "continue "+ch)
 	f.continues = append(f.continues, ch+" "+dialContext+","+ext+","+string(rune('0'+prio)))
 	return nil
 }
@@ -122,6 +138,21 @@ type scripted struct {
 	failOn    string
 	failStart bool
 	block     map[string]chan struct{}
+	invalid   map[string]bool // inputs that re-prompt the same question with a notice
+	handovers []string        // HandOver reasons
+}
+
+func (s *scripted) HandOver(_ context.Context, c intake.IVRCall, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.handovers = append(s.handovers, c.CallID+" "+reason)
+	return nil
+}
+
+func (s *scripted) handedOver() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.handovers)
 }
 
 func (s *scripted) StartIVR(ctx context.Context, callID string, phone pii.Phone) (intake.IVRTurn, error) {
@@ -141,8 +172,8 @@ func (s *scripted) StartIVR(ctx context.Context, callID string, phone pii.Phone)
 		return intake.IVRTurn{}, errors.New("store down")
 	}
 	s.phone = phone
-	return intake.IVRTurn{Call: intake.IVRCall{CallID: callID, IncidentID: uuid.NewV7(), HasPhone: !phone.IsZero(), Shown: s.prompts[0].Kind},
-		Prompt: s.prompts[0]}, nil
+	return intake.IVRTurn{Call: intake.IVRCall{CallID: callID, IncidentID: uuid.NewV7(), Reference: "1234567894", HasPhone: !phone.IsZero(),
+		Shown: s.prompts[0].Kind}, Prompt: s.prompts[0]}, nil
 }
 
 func (s *scripted) AnswerIVR(_ context.Context, c intake.IVRCall, input string) (intake.IVRTurn, error) {
@@ -150,6 +181,11 @@ func (s *scripted) AnswerIVR(_ context.Context, c intake.IVRCall, input string) 
 	defer s.mu.Unlock()
 	if input == s.failOn {
 		return intake.IVRTurn{}, errors.New("store down")
+	}
+	if s.invalid[input] {
+		pr := s.prompts[min(len(s.inputs), len(s.prompts)-1)]
+		pr.Notice = "invalid"
+		return intake.IVRTurn{Call: c, Prompt: pr}, nil
 	}
 	s.inputs = append(s.inputs, input)
 	next := s.prompts[min(len(s.inputs), len(s.prompts)-1)]
@@ -283,17 +319,17 @@ func TestControllerSameNumberIsOneKey(t *testing.T) {
 	}
 }
 
-// Silence after a prompt re-plays it, then the call ends (the abandonment
-// sweeper and resume take it from there).
-func TestControllerNoInputRepromptsThenHangsUp(t *testing.T) {
+// Silence from the very first prompt re-plays it, then the call ends: a
+// pocket dial (the abandonment sweeper and resume take it from there).
+func TestSilenceFromTheFirstPromptHangsUp(t *testing.T) {
 	s := &scripted{prompts: prompts()}
 	a := &fakeARI{}
 	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: 20 * time.Millisecond, MaxReprompts: 2})
 	a.ctrl = c
 	c.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: ""})
 	waitFor(t, "the hang-up", func() bool { return a.count(&a.hangups) == 1 })
-	if n := a.playCount(); n != 3 {
-		t.Fatalf("plays %d, want 3 (prompt + 2 re-prompts) then hang-up", n)
+	if n := a.playCount(); n != 3 || a.count(&a.continues) != 0 || len(s.handedOver()) != 0 {
+		t.Fatalf("plays %d, want 3 (prompt + 2 re-prompts) then hang-up; continues %v", n, a.continues)
 	}
 }
 
@@ -545,5 +581,101 @@ func TestShutdownHandsOverLiveCalls(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if !slices.Equal(a.continues, []string{"ch1 sauti-ivr-fallback,s,1"}) || a.count(&a.hangups) != 0 {
 		t.Fatalf("continues %v hangups %v", a.continues, a.hangups)
+	}
+}
+
+// Three wrong keys on one question reach a coordinator (ADR-0029 rule 2): a
+// caller who cannot find the right key is never looped for ever.
+func TestThreeNoMatchesHandOver(t *testing.T) {
+	s := &scripted{prompts: prompts(), invalid: map[string]bool{"0": true}}
+	c, a, _ := newController(t, s)
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	for i := range 3 {
+		if a.count(&a.continues) != 0 {
+			t.Fatalf("handed over after %d wrong keys", i)
+		}
+		started(t, c, a, "ch1")
+		send(t, c, key("ch1", "0"))
+	}
+	if !slices.Equal(a.continues, []string{"ch1 sauti-ivr-fallback,s,1"}) || a.playCount() != 3 ||
+		!slices.Equal(s.handedOver(), []string{"ch1 voice_handed_over"}) {
+		t.Fatalf("continues %v plays %d handovers %v", a.continues, a.playCount(), s.handovers)
+	}
+}
+
+// A valid answer resets the count: two wrong keys, a right one, then two
+// wrong keys on the next question do not hand over.
+func TestNoMatchCountResetsOnAValidAnswer(t *testing.T) {
+	choice := []intake.MenuOption{{Digit: 1, Value: "yes"}, {Digit: 2, Value: "no"}}
+	s := &scripted{prompts: []intake.Prompt{prompts()[0], {Kind: intake.KindDanger, Lang: "en", Options: choice}, prompts()[2]},
+		invalid: map[string]bool{"0": true}}
+	c, a, _ := newController(t, s)
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	for _, d := range []string{"0", "0", "2", "0", "0"} {
+		started(t, c, a, "ch1")
+		send(t, c, key("ch1", d))
+	}
+	if a.count(&a.continues) != 0 {
+		t.Fatalf("continues %v", a.continues)
+	}
+}
+
+// Silence after the caller has answered a screen is not a pocket dial: after
+// the re-prompts the caller reaches a coordinator, not a hang-up.
+func TestSilenceAfterAnAnswerHandsOver(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		s := &scripted{prompts: prompts()}
+		a := &fakeARI{}
+		c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: 15 * time.Second, MaxReprompts: 2})
+		finish := func() {
+			pb, _ := a.lastPlay()
+			c.Handle(ctx, Event{Type: EventPlaybackStarted, ChannelID: "ch1", PlaybackID: pb})
+			c.Handle(ctx, Event{Type: EventPlaybackFinished, ChannelID: "ch1", PlaybackID: pb})
+			synctest.Wait()
+		}
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		synctest.Wait()
+		finish()
+		c.Handle(ctx, key("ch1", "1"))
+		synctest.Wait()
+		for range 3 { // the question and its two re-prompts, each met by silence
+			finish()
+			time.Sleep(15 * time.Second)
+			synctest.Wait()
+		}
+		if !slices.Equal(a.continues, []string{"ch1 sauti-ivr-fallback,s,1"}) || a.count(&a.hangups) != 0 || a.playCount() != 4 {
+			t.Fatalf("continues %v hangups %v plays %d", a.continues, a.hangups, a.playCount())
+		}
+	})
+}
+
+// The escalation is recorded first, so the coordinator line rings even when
+// the transfer itself fails; the caller is then hung up, not left in silence.
+func TestHandOverRecordsAnEscalationEvenWhenContinueFails(t *testing.T) {
+	s := &scripted{prompts: prompts(), failOn: "1"}
+	a := &fakeARI{failContinue: true}
+	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	started(t, c, a, "ch1")
+	send(t, c, key("ch1", "1"))
+	if !slices.Equal(s.handedOver(), []string{"ch1 voice_handed_over"}) || a.count(&a.hangups) != 1 {
+		t.Fatalf("handovers %v hangups %v", s.handovers, a.hangups)
+	}
+}
+
+// The coordinator taking a handed-over call sees Sauti and the reference,
+// never the caller's number (rule 5; ADR-0029 rule 6).
+func TestHandOverShowsSautiAndTheReference(t *testing.T) {
+	s := &scripted{prompts: prompts(), failOn: "1"}
+	a := &fakeARI{}
+	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, CallerID: "+256800100100"})
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	started(t, c, a, "ch1")
+	send(t, c, key("ch1", "1"))
+	want := []string{"id ch1 +256800100100", "name ch1 SAUTI 123 456 7894", "continue ch1"}
+	if !slices.Equal(a.seq, want) {
+		t.Fatalf("requests %v, want %v", a.seq, want)
 	}
 }
