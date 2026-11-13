@@ -319,7 +319,7 @@ func cmdDemo(ctx context.Context, args []string, out io.Writer) error {
 	fs := flags("demo")
 	admin := fs.String("admin-dsn", env.Default("SAUTI_TEST_PG_DSN", ""), "superuser DSN (URL form)")
 	cfgDir := fs.String("config-dir", "config", "configuration directory")
-	keep := fs.Bool("keep", false, "keep the demo databases")
+	keep := fs.Bool("keep", false, "keep the demo databases, keys and witness")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
