@@ -1,0 +1,40 @@
+# Gazetteer: wards and landmarks for Tool 1 screens 6 and 7 (Build Prompt §9,
+# §12). PLACEHOLDER: synthetic names at points inside Kawempe division, for
+# development and tests only. The real per-ward landmark lists are agreed with
+# ward leadership and their points collected by the field team during
+# mobilisation. status: placeholder blocks SAUTI_ENV=production.
+#
+# Gated (rule 3.11): frozen during the study window; a correction is a new
+# version plus a deviation record. Load with `sautictl gazetteer load`.
+version: "placeholder-2026-11-12"
+status: placeholder
+wards:
+  - {id: w01, name: {en: "Test Ward 1", lg: "Test Ward 1"}, centre: {lat: 0.3800, lon: 32.5560}}
+  - {id: w02, name: {en: "Test Ward 2", lg: "Test Ward 2"}, centre: {lat: 0.3880, lon: 32.5620}}
+  - {id: w03, name: {en: "Test Ward 3", lg: "Test Ward 3"}, centre: {lat: 0.3720, lon: 32.5650}}
+  - {id: w04, name: {en: "Test Ward 4", lg: "Test Ward 4"}, centre: {lat: 0.3650, lon: 32.5540}}
+landmarks:
+  - {id: w01_market, ward: w01, name: {en: "Test Market 1", lg: "Test Market 1"}, point: {lat: 0.3770, lon: 32.5572}, menu: 1}
+  - {id: w01_clinic, ward: w01, name: {en: "Test Clinic 1", lg: "Test Clinic 1"}, point: {lat: 0.3785, lon: 32.5548}, menu: 2}
+  - {id: w01_school, ward: w01, name: {en: "Test School 1", lg: "Test School 1"}, point: {lat: 0.3800, lon: 32.5572}, menu: 3}
+  - {id: w01_church, ward: w01, name: {en: "Test Church 1", lg: "Test Church 1"}, point: {lat: 0.3815, lon: 32.5548}, menu: 4}
+  - {id: w01_stage, ward: w01, name: {en: "Test Stage 1", lg: "Test Stage 1"}, point: {lat: 0.3830, lon: 32.5572}, menu: 5}
+  - {id: w01_well, ward: w01, name: {en: "Test Well 1", lg: "Test Well 1"}, point: {lat: 0.3830, lon: 32.5540}, aliases: ["Water Point 1"]}
+  - {id: w02_market, ward: w02, name: {en: "Test Market 2", lg: "Test Market 2"}, point: {lat: 0.3850, lon: 32.5632}, menu: 1}
+  - {id: w02_clinic, ward: w02, name: {en: "Test Clinic 2", lg: "Test Clinic 2"}, point: {lat: 0.3865, lon: 32.5608}, menu: 2}
+  - {id: w02_school, ward: w02, name: {en: "Test School 2", lg: "Test School 2"}, point: {lat: 0.3880, lon: 32.5632}, menu: 3}
+  - {id: w02_church, ward: w02, name: {en: "Test Church 2", lg: "Test Church 2"}, point: {lat: 0.3895, lon: 32.5608}, menu: 4}
+  - {id: w02_stage, ward: w02, name: {en: "Test Stage 2", lg: "Test Stage 2"}, point: {lat: 0.3910, lon: 32.5632}, menu: 5}
+  - {id: w02_well, ward: w02, name: {en: "Test Well 2", lg: "Test Well 2"}, point: {lat: 0.3910, lon: 32.5600}, aliases: ["Water Point 2"]}
+  - {id: w03_market, ward: w03, name: {en: "Test Market 3", lg: "Test Market 3"}, point: {lat: 0.3690, lon: 32.5662}, menu: 1}
+  - {id: w03_clinic, ward: w03, name: {en: "Test Clinic 3", lg: "Test Clinic 3"}, point: {lat: 0.3705, lon: 32.5638}, menu: 2}
+  - {id: w03_school, ward: w03, name: {en: "Test School 3", lg: "Test School 3"}, point: {lat: 0.3720, lon: 32.5662}, menu: 3}
+  - {id: w03_church, ward: w03, name: {en: "Test Church 3", lg: "Test Church 3"}, point: {lat: 0.3735, lon: 32.5638}, menu: 4}
+  - {id: w03_stage, ward: w03, name: {en: "Test Stage 3", lg: "Test Stage 3"}, point: {lat: 0.3750, lon: 32.5662}, menu: 5}
+  - {id: w03_well, ward: w03, name: {en: "Test Well 3", lg: "Test Well 3"}, point: {lat: 0.3750, lon: 32.5630}, aliases: ["Water Point 3"]}
+  - {id: w04_market, ward: w04, name: {en: "Test Market 4", lg: "Test Market 4"}, point: {lat: 0.3620, lon: 32.5552}, menu: 1}
+  - {id: w04_clinic, ward: w04, name: {en: "Test Clinic 4", lg: "Test Clinic 4"}, point: {lat: 0.3635, lon: 32.5528}, menu: 2}
+  - {id: w04_school, ward: w04, name: {en: "Test School 4", lg: "Test School 4"}, point: {lat: 0.3650, lon: 32.5552}, menu: 3}
+  - {id: w04_church, ward: w04, name: {en: "Test Church 4", lg: "Test Church 4"}, point: {lat: 0.3665, lon: 32.5528}, menu: 4}
+  - {id: w04_stage, ward: w04, name: {en: "Test Stage 4", lg: "Test Stage 4"}, point: {lat: 0.3680, lon: 32.5552}, menu: 5}
+  - {id: w04_well, ward: w04, name: {en: "Test Well 4", lg: "Test Well 4"}, point: {lat: 0.3680, lon: 32.5520}, aliases: ["Water Point 4"]}

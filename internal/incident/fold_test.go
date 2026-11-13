@@ -34,7 +34,7 @@ func ev(seq int64, typ EventType, payload string) Event {
 func FixtureLifecycle() []Event {
 	return []Event{
 		ev(1, EvSessionStarted, `{"reference":"1234567894","channel":"ussd_at"}`),
-		ev(2, EvScreenAnswered, `{"screen":2,"answer":"1"}`),
+		ev(2, EvScreenAnswered, `{"screen":2,"field":"danger","value":"yes"}`),
 		func() Event {
 			e := ev(3, EvClassified, `{"severity":"red","category":"trauma"}`)
 			e.LogicVersion = "tr-test+sha256:0123456789ab"

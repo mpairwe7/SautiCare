@@ -49,7 +49,7 @@ func TestVerifyProjectionsUsesConsistentSnapshot(t *testing.T) {
 	restore := opstore.SetVerifyHook(func() {
 		if !raced {
 			raced = true
-			appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":2}`, "")
+			appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":2,"field":"danger","value":"no"}`, "")
 		}
 	})
 	defer restore()

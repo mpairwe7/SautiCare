@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"testing"
 
@@ -200,5 +201,78 @@ func TestMACRejectsInvalidKeyLength(t *testing.T) {
 		if _, err := env.MAC(context.Background(), ClassIdentifiers, []byte("+256772123456")); err == nil {
 			t.Errorf("MAC accepted a %d-byte key", len(key))
 		}
+	}
+}
+
+// Each signature purpose has its own ML-DSA context, so a triage-rules
+// signature can never be presented as an audit checkpoint signature (or the
+// reverse), even under the same key.
+func TestSignatureContextsAreSeparated(t *testing.T) {
+	sk, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := sk.PublicKey().Bytes()
+	msg := []byte("bundle")
+	sig, err := SignWithContext(sk, TriageRulesContext, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyWithContext(pub, TriageRulesContext, msg, sig); err != nil {
+		t.Fatalf("own context: %v", err)
+	}
+	if err := VerifyMLDSA65(pub, msg, sig); err == nil {
+		t.Fatal("triage signature verified as a checkpoint signature")
+	}
+	cp, err := SignMLDSA65(sk, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyWithContext(pub, TriageRulesContext, msg, cp); err == nil {
+		t.Fatal("checkpoint signature verified as a triage signature")
+	}
+}
+
+// USSD step keys are keyed hashes under their own HKDF info: never the plain
+// sha256 of the input (which holds the callback number at screen 8, and
+// would be reversible by enumeration), and never equal to the phone lookup
+// MAC of the same bytes.
+func TestStepMACIsKeyedAndSeparated(t *testing.T) {
+	ids := Identifiers{Env: NewEnvelope(newMemKeys(t), rand.Reader)}
+	ctx := context.Background()
+	msg := []byte("+256772123456")
+	step, err := ids.StepMAC(ctx, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := sha256.Sum256(msg)
+	phone, err := ids.Env.MAC(ctx, ClassIdentifiers, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(step.Sum, plain[:]) || bytes.Equal(step.Sum, phone.Sum) || step.KeyID != phone.KeyID {
+		t.Fatalf("step MAC not domain-separated: %x", step.Sum)
+	}
+	cands, err := ids.StepLookupMACs(ctx, msg)
+	if err != nil || len(cands) == 0 || !bytes.Equal(cands[0].Sum, step.Sum) {
+		t.Fatalf("StepLookupMACs = %v, %v", cands, err)
+	}
+}
+
+func TestSealTextBindsToItsRow(t *testing.T) {
+	ids := Identifiers{Env: NewEnvelope(newMemKeys(t), rand.Reader)}
+	ctx := context.Background()
+	aad := AAD{Store: "operational", Table: "incident_identifiers", Column: "ct", RowID: "row-1"}
+	s, err := ids.SealText(ctx, []byte("Kawempe mkt"), aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ids.Env.Open(ctx, s, aad); err != nil || string(got) != "Kawempe mkt" {
+		t.Fatalf("Open = %q, %v", got, err)
+	}
+	other := aad
+	other.RowID = "row-2"
+	if _, err := ids.Env.Open(ctx, s, other); err == nil {
+		t.Fatal("ciphertext opened under another row's AAD")
 	}
 }

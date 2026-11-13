@@ -169,6 +169,35 @@ func (s *Store) Append(ctx context.Context, p incident.AppendParams) (incident.A
 	}, nil
 }
 
+// AppendBatch implements incident.Store: every event in one transaction,
+// all or none. Each append runs the same write path as Append (so each is
+// idempotent on its key), and a later event sees the state earlier ones
+// left.
+func (s *Store) AppendBatch(ctx context.Context, ps []incident.AppendParams) (out []incident.Appended, err error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			rollback(ctx, tx)
+		}
+	}()
+	ts := &Store{pool: s.pool, q: opdb.New(tx)}
+	out = make([]incident.Appended, 0, len(ps))
+	for _, p := range ps {
+		a, aerr := ts.Append(ctx, p)
+		if aerr != nil {
+			return nil, aerr
+		}
+		out = append(out, a)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // original answers a reused idempotency key: the event stored at seq (not
 // the retry's fields, which may differ) and the state right after it (not
 // the incident's current state, which later events may have moved on).
@@ -223,6 +252,12 @@ func (s *Store) Projection(ctx context.Context, id uuid.UUID) (incident.Projecti
 		ID: uuid.UUID(r.ID.Bytes), Reference: ref, State: incident.State(r.State), Version: r.Version,
 		Channel: r.Channel, Severity: incident.Severity(deref(r.Severity)), LogicVersion: deref(r.LogicVersion),
 		Escalated: r.Escalated, Flags: r.Flags, MergedInto: idPtr(r.MergedInto),
+		Language: deref(r.Language), Danger: deref(r.Danger), Category: deref(r.Category),
+		AgeBand: deref(r.AgeBand), SpecificDanger: deref(r.SpecificDanger), Ward: deref(r.Ward),
+		Landmark: deref(r.Landmark), LastScreen: int(r.LastScreen), LocationQuality: deref(r.LocationQuality),
+	}
+	if r.ZoneCol != nil && r.ZoneRow != nil {
+		p.Zone = &incident.Zone{Col: int(*r.ZoneCol), Row: int(*r.ZoneRow)}
 	}
 	for i, t := range []pgtype.Timestamptz{r.T1, r.T2, r.T3, r.T4, r.T5, r.T6, r.T7} {
 		p.T[i+1] = tsPtr(t)

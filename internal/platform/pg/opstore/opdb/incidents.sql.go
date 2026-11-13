@@ -118,31 +118,78 @@ func (q *Queries) EnsureEventPartitions(ctx context.Context, monthsAhead int32) 
 	return created, err
 }
 
+const findResumable = `-- name: FindResumable :many
+SELECT i.id FROM op.sessions s JOIN op.incidents i ON i.id = s.incident_id
+WHERE s.phone_mac = ANY ($1::bytea[])
+  AND i.state NOT IN ('closed', 'merged') AND (i.last_screen < 8 OR i.t2 IS NULL)
+  AND i.updated_at >= clock_timestamp() - $2::int * interval '1 second'
+ORDER BY i.updated_at DESC
+LIMIT 1
+`
+
+type FindResumableParams struct {
+	Macs          [][]byte
+	WindowSeconds int32
+}
+
+func (q *Queries) FindResumable(ctx context.Context, arg FindResumableParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, findResumable, arg.Macs, arg.WindowSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getIncident = `-- name: GetIncident :one
 SELECT id, reference, channel, state, version, severity, logic_version,
-       t1, t2, t3, t4, t5, t6, t7, escalated, flags, merged_into
+       t1, t2, t3, t4, t5, t6, t7, escalated, flags, merged_into,
+       language, danger, category, age_band, specific_danger, ward, landmark,
+       last_screen, zone_col, zone_row, location_quality
 FROM op.incidents
 WHERE id = $1::uuid
 `
 
 type GetIncidentRow struct {
-	ID           pgtype.UUID
-	Reference    string
-	Channel      string
-	State        string
-	Version      int64
-	Severity     *string
-	LogicVersion *string
-	T1           pgtype.Timestamptz
-	T2           pgtype.Timestamptz
-	T3           pgtype.Timestamptz
-	T4           pgtype.Timestamptz
-	T5           pgtype.Timestamptz
-	T6           pgtype.Timestamptz
-	T7           pgtype.Timestamptz
-	Escalated    bool
-	Flags        []string
-	MergedInto   pgtype.UUID
+	ID              pgtype.UUID
+	Reference       string
+	Channel         string
+	State           string
+	Version         int64
+	Severity        *string
+	LogicVersion    *string
+	T1              pgtype.Timestamptz
+	T2              pgtype.Timestamptz
+	T3              pgtype.Timestamptz
+	T4              pgtype.Timestamptz
+	T5              pgtype.Timestamptz
+	T6              pgtype.Timestamptz
+	T7              pgtype.Timestamptz
+	Escalated       bool
+	Flags           []string
+	MergedInto      pgtype.UUID
+	Language        *string
+	Danger          *string
+	Category        *string
+	AgeBand         *string
+	SpecificDanger  *string
+	Ward            *string
+	Landmark        *string
+	LastScreen      int32
+	ZoneCol         *int32
+	ZoneRow         *int32
+	LocationQuality *string
 }
 
 func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentRow, error) {
@@ -166,8 +213,71 @@ func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentR
 		&i.Escalated,
 		&i.Flags,
 		&i.MergedInto,
+		&i.Language,
+		&i.Danger,
+		&i.Category,
+		&i.AgeBand,
+		&i.SpecificDanger,
+		&i.Ward,
+		&i.Landmark,
+		&i.LastScreen,
+		&i.ZoneCol,
+		&i.ZoneRow,
+		&i.LocationQuality,
 	)
 	return i, err
+}
+
+const latestUSSDStep = `-- name: LatestUSSDStep :many
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
+WHERE provider = $1::text AND provider_session_id = $2::text
+ORDER BY consumed_len DESC, created_at DESC
+LIMIT 1
+`
+
+type LatestUSSDStepParams struct {
+	Provider          string
+	ProviderSessionID string
+}
+
+type LatestUSSDStepRow struct {
+	Response        string
+	EndSession      bool
+	ConsumedLen     int32
+	InputMac        []byte
+	MacKeyID        string
+	IncidentID      pgtype.UUID
+	PromptKind      string
+	MatchedLandmark string
+}
+
+func (q *Queries) LatestUSSDStep(ctx context.Context, arg LatestUSSDStepParams) ([]LatestUSSDStepRow, error) {
+	rows, err := q.db.Query(ctx, latestUSSDStep, arg.Provider, arg.ProviderSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LatestUSSDStepRow
+	for rows.Next() {
+		var i LatestUSSDStepRow
+		if err := rows.Scan(
+			&i.Response,
+			&i.EndSession,
+			&i.ConsumedLen,
+			&i.InputMac,
+			&i.MacKeyID,
+			&i.IncidentID,
+			&i.PromptKind,
+			&i.MatchedLandmark,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listEvents = `-- name: ListEvents :many
@@ -221,6 +331,55 @@ func (q *Queries) ListEvents(ctx context.Context, incidentID pgtype.UUID) ([]Lis
 	return items, nil
 }
 
+const listIdle = `-- name: ListIdle :many
+SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
+WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
+  AND updated_at < clock_timestamp() - $1::int * interval '1 second'
+  AND (NOT ('abandoned' = ANY (flags))
+       OR (NOT escalated AND t2 IS NULL AND (danger = 'yes' OR severity = 'red')))
+ORDER BY updated_at
+LIMIT 500
+`
+
+type ListIdleRow struct {
+	ID         pgtype.UUID
+	Danger     *string
+	Category   *string
+	Severity   *string
+	Dispatched bool
+}
+
+// An idle incident is listed until the sweeper flags it abandoned, and again
+// while an abandonment owes its escalation: a caller who resumed an
+// abandoned incident, answered danger yes (or was classified red) and
+// dropped again before T2. The flag is never cleared, and escalated is
+// sticky. The second condition is intake.escalation's rule.
+func (q *Queries) ListIdle(ctx context.Context, idleSeconds int32) ([]ListIdleRow, error) {
+	rows, err := q.db.Query(ctx, listIdle, idleSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListIdleRow
+	for rows.Next() {
+		var i ListIdleRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Danger,
+			&i.Category,
+			&i.Severity,
+			&i.Dispatched,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIncidentIDs = `-- name: ListIncidentIDs :many
 SELECT id FROM op.incidents ORDER BY id
 `
@@ -246,24 +405,30 @@ func (q *Queries) ListIncidentIDs(ctx context.Context) ([]pgtype.UUID, error) {
 }
 
 const lookupUSSDStep = `-- name: LookupUSSDStep :many
-SELECT response, end_session FROM op.ussd_steps
+SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text
-  AND input_sha256 = $3::bytea
+  AND input_mac = ANY ($3::bytea[])
 `
 
 type LookupUSSDStepParams struct {
 	Provider          string
 	ProviderSessionID string
-	InputSha256       []byte
+	InputMacs         [][]byte
 }
 
 type LookupUSSDStepRow struct {
-	Response   string
-	EndSession bool
+	Response        string
+	EndSession      bool
+	ConsumedLen     int32
+	InputMac        []byte
+	MacKeyID        string
+	IncidentID      pgtype.UUID
+	PromptKind      string
+	MatchedLandmark string
 }
 
 func (q *Queries) LookupUSSDStep(ctx context.Context, arg LookupUSSDStepParams) ([]LookupUSSDStepRow, error) {
-	rows, err := q.db.Query(ctx, lookupUSSDStep, arg.Provider, arg.ProviderSessionID, arg.InputSha256)
+	rows, err := q.db.Query(ctx, lookupUSSDStep, arg.Provider, arg.ProviderSessionID, arg.InputMacs)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +436,16 @@ func (q *Queries) LookupUSSDStep(ctx context.Context, arg LookupUSSDStepParams) 
 	var items []LookupUSSDStepRow
 	for rows.Next() {
 		var i LookupUSSDStepRow
-		if err := rows.Scan(&i.Response, &i.EndSession); err != nil {
+		if err := rows.Scan(
+			&i.Response,
+			&i.EndSession,
+			&i.ConsumedLen,
+			&i.InputMac,
+			&i.MacKeyID,
+			&i.IncidentID,
+			&i.PromptKind,
+			&i.MatchedLandmark,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -349,30 +523,125 @@ func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) (Ope
 	return i, err
 }
 
+const resumeSession = `-- name: ResumeSession :one
+SELECT r.incident_id::uuid AS incident_id, r.reference::text AS reference, r.event_id::uuid AS event_id,
+       r.t1::timestamptz AS t1, r.created::boolean AS created
+FROM op.resume_session(
+    $1::uuid, $2::text, $3::uuid,
+    $4::text, $5::bytea, $6::text,
+    $7::bytea, $8::text, $9::text,
+    $10::text
+) AS r(incident_id, reference, event_id, t1, created)
+`
+
+type ResumeSessionParams struct {
+	IncidentID        pgtype.UUID
+	Channel           string
+	SessionID         pgtype.UUID
+	ProviderSessionID string
+	PhoneCt           []byte
+	PhoneKeyID        *string
+	PhoneMac          []byte
+	PhoneMacKeyID     *string
+	NetworkCode       *string
+	IdemKey           string
+}
+
+type ResumeSessionRow struct {
+	IncidentID pgtype.UUID
+	Reference  string
+	EventID    pgtype.UUID
+	T1         pgtype.Timestamptz
+	Created    bool
+}
+
+func (q *Queries) ResumeSession(ctx context.Context, arg ResumeSessionParams) (ResumeSessionRow, error) {
+	row := q.db.QueryRow(ctx, resumeSession,
+		arg.IncidentID,
+		arg.Channel,
+		arg.SessionID,
+		arg.ProviderSessionID,
+		arg.PhoneCt,
+		arg.PhoneKeyID,
+		arg.PhoneMac,
+		arg.PhoneMacKeyID,
+		arg.NetworkCode,
+		arg.IdemKey,
+	)
+	var i ResumeSessionRow
+	err := row.Scan(
+		&i.IncidentID,
+		&i.Reference,
+		&i.EventID,
+		&i.T1,
+		&i.Created,
+	)
+	return i, err
+}
+
 const saveUSSDStep = `-- name: SaveUSSDStep :exec
-INSERT INTO op.ussd_steps (provider, provider_session_id, input_sha256, response, end_session, incident_id)
+INSERT INTO op.ussd_steps (provider, provider_session_id, input_mac, mac_key_id, consumed_len, response, end_session,
+                           incident_id, prompt_kind, matched_landmark)
 VALUES ($1::text, $2::text, $3::bytea,
-        $4::text, $5::boolean, $6::uuid)
+        $4::text, $5::int, $6::text,
+        $7::boolean, $8::uuid, $9::text,
+        $10::text)
 ON CONFLICT DO NOTHING
 `
 
 type SaveUSSDStepParams struct {
 	Provider          string
 	ProviderSessionID string
-	InputSha256       []byte
+	InputMac          []byte
+	MacKeyID          string
+	ConsumedLen       int32
 	Response          string
 	EndSession        bool
 	IncidentID        pgtype.UUID
+	PromptKind        string
+	MatchedLandmark   string
 }
 
 func (q *Queries) SaveUSSDStep(ctx context.Context, arg SaveUSSDStepParams) error {
 	_, err := q.db.Exec(ctx, saveUSSDStep,
 		arg.Provider,
 		arg.ProviderSessionID,
-		arg.InputSha256,
+		arg.InputMac,
+		arg.MacKeyID,
+		arg.ConsumedLen,
 		arg.Response,
 		arg.EndSession,
 		arg.IncidentID,
+		arg.PromptKind,
+		arg.MatchedLandmark,
 	)
 	return err
+}
+
+const storeIdentifier = `-- name: StoreIdentifier :one
+SELECT op.store_identifier($1::uuid, $2::uuid, $3::text,
+                           $4::bytea, $5::text, $6::text)::uuid AS id
+`
+
+type StoreIdentifierParams struct {
+	ID         pgtype.UUID
+	IncidentID pgtype.UUID
+	Kind       string
+	Ct         []byte
+	KeyID      string
+	IdemKey    string
+}
+
+func (q *Queries) StoreIdentifier(ctx context.Context, arg StoreIdentifierParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, storeIdentifier,
+		arg.ID,
+		arg.IncidentID,
+		arg.Kind,
+		arg.Ct,
+		arg.KeyID,
+		arg.IdemKey,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }

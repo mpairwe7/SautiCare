@@ -10,7 +10,9 @@ var Allowed = map[string][]string{
 	"crypto":   {"pii"},
 	"incident": {"pii", "crypto"},
 	"audit":    {"crypto"},
-	"intake":   {"incident", "pii", "config"},
+	"location": {},
+	"triage":   {"crypto"},
+	"intake":   {"incident", "pii", "config", "crypto", "location", "triage"},
 }
 
 // netImports may be used only by adapters, processes, tests and tools (R3).

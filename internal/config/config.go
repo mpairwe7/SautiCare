@@ -39,6 +39,8 @@ type Bundle struct {
 	Dispatch        Dispatch
 	Flags           Flags
 	Screens         Screens
+	Triage          Triage
+	Tool1           Tool1
 	Platform        Platform
 	// Fingerprint is "sha256:<hex>" over every gated file (path and content).
 	Fingerprint string
@@ -60,6 +62,13 @@ type Intake struct {
 	DispatchTriggerScreen  int            `yaml:"dispatch_trigger_screen"`
 	DefaultScreenCharLimit int            `yaml:"default_screen_char_limit"`
 	ScreenCharLimits       map[string]int `yaml:"screen_char_limits"`
+	// FuzzyMatchMinSimilarity is the pg_trgm similarity a free-text landmark
+	// needs to count as a match; below it the incident is located at ward
+	// level and flagged for a location call-back (Build Prompt §12).
+	FuzzyMatchMinSimilarity float64 `yaml:"fuzzy_match_min_similarity"`
+	// AbandonAfter is how long an unfinished session may be silent before it
+	// is flagged abandoned (and escalated after a danger yes, Guide §4).
+	AbandonAfter Duration `yaml:"abandon_after"`
 }
 
 // Dispatch holds Build Prompt §10.4 parameters.
@@ -76,6 +85,14 @@ type Dispatch struct {
 	RankingVersion     string   `yaml:"ranking_version"`
 }
 
+// Triage holds the trust anchors for clinical rule bundles: who may sign
+// them (ML-DSA-65 public keys, base64, by key ID) and which bundle runs.
+// Changing either is a protocol change under the amendment gate.
+type Triage struct {
+	RulesFile   string            `yaml:"rules_file"`
+	TrustedKeys map[string]string `yaml:"trusted_keys"`
+}
+
 // Flags are the section 11 enhancements; all stay false during the study.
 type Flags struct {
 	AndroidApp   bool `yaml:"android_app"`
@@ -84,19 +101,18 @@ type Flags struct {
 	AppAPI       bool `yaml:"app_api"`
 }
 
-// Screens is the caller-facing copy catalogue, keyed by language ("en", "lg").
+// Screens holds adapter-level caller copy, keyed by language ("en", "lg").
+// InternalError is the END screen given when a request cannot be processed:
+// it names the free voice line (fail safe to a human, rule 3.14).
 type Screens struct {
-	StartedTestMode map[string]string `yaml:"started_test_mode"`
-	InternalError   map[string]string `yaml:"internal_error"`
+	InternalError map[string]string `yaml:"internal_error"`
 }
 
 // All returns every catalogue entry as name/lang/text triples.
 func (s Screens) All() [][3]string {
 	var out [][3]string
-	for name, m := range map[string]map[string]string{"started_test_mode": s.StartedTestMode, "internal_error": s.InternalError} {
-		for lang, text := range m {
-			out = append(out, [3]string{name, lang, text})
-		}
+	for lang, text := range s.InternalError {
+		out = append(out, [3]string{"internal_error", lang, text})
 	}
 	return out
 }
@@ -109,7 +125,7 @@ type Platform struct {
 }
 
 // placeholderMarkers appear in copy that has not been signed off.
-var placeholderMarkers = []string{"PENDING-TRANSLATION", "XXX"}
+var placeholderMarkers = []string{"PENDING-TRANSLATION", "PENDING-TOOL1", "XXX"}
 
 // ProductionReady reports whether the bundle may run with SAUTI_ENV=production:
 // the protocol content must be approved and no placeholder copy may remain.
@@ -118,12 +134,15 @@ func (b Bundle) ProductionReady() error {
 	if b.ProtocolStatus != "approved" {
 		problems = append(problems, "protocol_status is "+b.ProtocolStatus)
 	}
-	// Intake falls back to English; without it a caller would get an empty
-	// final screen and no incident reference.
-	if strings.TrimSpace(b.Screens.StartedTestMode["en"]) == "" {
-		problems = append(problems, "screen started_test_mode/en is missing")
+	// The adapter falls back to English; without it a failed request would
+	// get an empty END screen and no voice line.
+	if strings.TrimSpace(b.Screens.InternalError["en"]) == "" {
+		problems = append(problems, "screen internal_error/en is missing")
 	}
-	for _, e := range b.Screens.All() {
+	if b.Tool1.Status != "approved" {
+		problems = append(problems, "tool1 status is "+b.Tool1.Status)
+	}
+	for _, e := range append(b.Screens.All(), b.Tool1.Texts()...) {
 		for _, m := range placeholderMarkers {
 			if strings.Contains(e[2], m) {
 				problems = append(problems, fmt.Sprintf("screen %s/%s contains placeholder %q", e[0], e[1], m))

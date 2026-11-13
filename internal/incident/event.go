@@ -13,6 +13,7 @@ type EventType string
 
 const (
 	EvSessionStarted EventType = "session.started"         // T1
+	EvSessionResumed EventType = "session.resumed"         //
 	EvScreenAnswered EventType = "screen.answered"         //
 	EvClassified     EventType = "incident.classified"     //
 	EvDispatchReady  EventType = "incident.dispatch_ready" // T2
@@ -30,7 +31,7 @@ const (
 // EventTypes lists every known event type.
 func EventTypes() []EventType {
 	return []EventType{
-		EvSessionStarted, EvScreenAnswered, EvClassified, EvDispatchReady,
+		EvSessionStarted, EvSessionResumed, EvScreenAnswered, EvClassified, EvDispatchReady,
 		EvAlertIssued, EvAccepted, EvArrived, EvDeparted, EvAtFacility,
 		EvFlagged, EvEscalated, EvMerged, EvClosed,
 	}

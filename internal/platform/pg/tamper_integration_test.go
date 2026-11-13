@@ -32,7 +32,7 @@ func TestOwnerRewriteWithRecomputedChainIsCaughtByWitness(t *testing.T) {
 	}
 	for range 5 {
 		if _, err := e.svc.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvScreenAnswered,
-			Payload: json.RawMessage(`{"screen":2}`), ActorKind: incident.ActorCaller, IdemKey: uuid.NewV4().String()}); err != nil {
+			Payload: json.RawMessage(`{"screen":2,"field":"danger","value":"no"}`), ActorKind: incident.ActorCaller, IdemKey: uuid.NewV4().String()}); err != nil {
 			t.Fatal(err)
 		}
 	}

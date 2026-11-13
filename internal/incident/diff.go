@@ -49,6 +49,22 @@ func Diff(a, b Projection) string {
 	if (a.MergedInto == nil) != (b.MergedInto == nil) || (a.MergedInto != nil && *a.MergedInto != *b.MergedInto) {
 		add("merged_into", a.MergedInto, b.MergedInto)
 	}
+	for _, f := range [][3]string{
+		{"language", a.Language, b.Language}, {"danger", a.Danger, b.Danger},
+		{"category", a.Category, b.Category}, {"age_band", a.AgeBand, b.AgeBand},
+		{"specific_danger", a.SpecificDanger, b.SpecificDanger}, {"ward", a.Ward, b.Ward},
+		{"landmark", a.Landmark, b.Landmark}, {"location_quality", a.LocationQuality, b.LocationQuality},
+	} {
+		if f[1] != f[2] {
+			add(f[0], f[1], f[2])
+		}
+	}
+	if a.LastScreen != b.LastScreen {
+		add("last_screen", a.LastScreen, b.LastScreen)
+	}
+	if (a.Zone == nil) != (b.Zone == nil) || (a.Zone != nil && *a.Zone != *b.Zone) {
+		add("zone", a.Zone, b.Zone)
+	}
 	return strings.Join(d, "; ")
 }
 

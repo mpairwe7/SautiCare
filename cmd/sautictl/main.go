@@ -8,10 +8,14 @@
 //	sautictl verify-projections --dsn <op_readonly DSN>
 //	sautictl checkpoint --dsn <audit_appender DSN> --devkeys-dir D --witness-dir W [--origin O]
 //	sautictl demo m0 --admin-dsn <superuser DSN> [--config-dir config] [--keep]
+//	sautictl gazetteer load --file config/gated/gazetteer.yaml --dsn <operational owner DSN>
+//	sautictl triage keygen --out <seed file> --key-id dev-<name>                  (dev/CI only)
+//	sautictl triage sign --key <seed file> --key-id <id> --rules triage-rules/tool1.yaml
 package main
 
 import (
 	"context"
+	"crypto/mldsa"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -26,6 +30,7 @@ import (
 
 	"sautihealth.com/sauti/db"
 	"sautihealth.com/sauti/internal/audit"
+	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/platform/demo"
 	"sautihealth.com/sauti/internal/platform/devkeys"
 	"sautihealth.com/sauti/internal/platform/env"
@@ -34,6 +39,7 @@ import (
 	"sautihealth.com/sauti/internal/platform/pg/bootstrap"
 	"sautihealth.com/sauti/internal/platform/pg/migrate"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
+	"sautihealth.com/sauti/internal/triage"
 )
 
 type command struct {
@@ -49,6 +55,8 @@ var commands = map[string]command{
 	"verify-projections": {"--dsn <op_readonly DSN>", cmdVerifyProjections},
 	"checkpoint":         {"--dsn <audit_appender DSN> --devkeys-dir D --witness-dir W [--origin O]", cmdCheckpoint},
 	"demo":               {"m0 --admin-dsn <DSN> [--config-dir config] [--keep]", cmdDemo},
+	"gazetteer":          {"load --file <gazetteer.yaml> --dsn <operational owner DSN>", cmdGazetteer},
+	"triage":             {"keygen --out <file> --key-id dev-<name> | sign --key <file> --key-id <id> --rules <bundle>", cmdTriage},
 }
 
 func main() {
@@ -350,4 +358,124 @@ func cmdDemo(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintln(out, "M0 demo PASSED")
 	}
 	return err
+}
+
+// cmdGazetteer loads a gazetteer version into the operational store. The file
+// is validated before any connection is made; loading the same version twice
+// is a no-op and different content under a loaded version is refused.
+func cmdGazetteer(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 || args[0] != "load" {
+		return errors.New("usage: sautictl gazetteer load --file <gazetteer.yaml> --dsn <owner DSN>")
+	}
+	fs := flags("gazetteer load")
+	file := fs.String("file", "config/gated/gazetteer.yaml", "gazetteer file")
+	dsn := fs.String("dsn", "", "operational store owner DSN")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(*file)
+	if err != nil {
+		return err
+	}
+	f, err := location.ParseFile(raw)
+	if err != nil {
+		return err
+	}
+	if *dsn == "" {
+		return errors.New("--dsn (the operational store owner) is required")
+	}
+	conn, err := pgx.Connect(ctx, *dsn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	loaded, err := opstore.LoadGazetteer(ctx, conn, f, raw)
+	if err != nil {
+		return err
+	}
+	if loaded {
+		fmt.Fprintf(out, "gazetteer %s (%s): loaded %d wards, %d landmarks\n", f.Version, f.Status, len(f.Wards), len(f.Landmarks))
+	} else {
+		fmt.Fprintf(out, "gazetteer %s: already loaded, unchanged\n", f.Version)
+	}
+	return nil
+}
+
+// cmdTriage generates development rule-signing keys and signs rule bundles.
+// Production bundles are signed with the clinical sign-off key held in
+// OpenBao (P0); keygen only ever makes "dev-" keys, which a production
+// intake-gw refuses.
+func cmdTriage(_ context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: sautictl triage keygen|sign [flags]")
+	}
+	switch args[0] {
+	case "keygen":
+		fs := flags("triage keygen")
+		file := fs.String("out", "", "seed file to create (0600, never overwritten)")
+		keyID := fs.String("key-id", "", `key ID, must start with "dev-"`)
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if senv, err := env.Environment(); err != nil {
+			return err
+		} else if senv != "dev" && senv != "test" {
+			return devkeys.ErrProductionForbidden
+		}
+		if *file == "" || !strings.HasPrefix(*keyID, "dev-") {
+			return errors.New(`--out and a --key-id starting with "dev-" are required`)
+		}
+		sk, err := mldsa.GenerateKey(mldsa.MLDSA65())
+		if err != nil {
+			return err
+		}
+		f, err := os.OpenFile(*file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return fmt.Errorf("%w (refusing to overwrite a signing key)", err)
+		}
+		if _, err := f.Write(sk.Bytes()); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s: %s\n", *keyID, base64.StdEncoding.EncodeToString(sk.PublicKey().Bytes()))
+		return nil
+	case "sign":
+		fs := flags("triage sign")
+		file := fs.String("key", "", "seed file")
+		keyID := fs.String("key-id", "", "key ID recorded in the signature")
+		rulesPath := fs.String("rules", "triage-rules/tool1.yaml", "rule bundle")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		seed, err := os.ReadFile(*file)
+		if err != nil {
+			return err
+		}
+		sk, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), seed)
+		if err != nil {
+			return err
+		}
+		doc, err := os.ReadFile(*rulesPath)
+		if err != nil {
+			return err
+		}
+		sig, err := triage.Sign(sk, *keyID, doc)
+		if err != nil {
+			return err
+		}
+		// Never write a signature for a bundle that would not load.
+		if _, err := triage.Load(doc, sig, map[string][]byte{*keyID: sk.PublicKey().Bytes()}); err != nil {
+			return err
+		}
+		// The signature is public and committed next to the bundle.
+		if err := os.WriteFile(*rulesPath+".sig", sig, 0o644); err != nil { //nolint:gosec // G306: a public, committed file
+			return err
+		}
+		fmt.Fprintf(out, "signed %s with %s\n", *rulesPath, *keyID)
+		return nil
+	}
+	return fmt.Errorf("unknown triage subcommand %q", args[0])
 }

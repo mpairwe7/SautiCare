@@ -22,6 +22,16 @@ type StartSession struct {
 	IdemKey           string
 }
 
+// ResumeSession attaches a redial (USSD or IVR) to an unfinished incident.
+type ResumeSession struct {
+	IncidentID        uuid.UUID
+	Channel           Channel
+	ProviderSessionID string
+	NetworkCode       string
+	Phone             pii.Phone
+	IdemKey           string
+}
+
 // AnswerScreen records a Tool 1 screen answer.
 type AnswerScreen struct {
 	IncidentID uuid.UUID

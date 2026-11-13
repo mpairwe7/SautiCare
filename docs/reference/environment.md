@@ -15,7 +15,7 @@ Processes read deployment settings from the environment (12-factor), so a later 
 | `SAUTI_ADMIN_ADDR` | intake-gw | health and metrics listener | `127.0.0.1:9100` |
 | `SAUTI_AT_PATH_TOKEN` | intake-gw | secret callback path token, ≥ 24 characters | — (required) |
 | `SAUTI_USSD_SERVICE_CODES` | intake-gw | comma-separated accepted service codes | — (required) |
-| `SAUTI_DEFAULT_LANG` | intake-gw | `en` or `lg` until screen 1 exists (M1) | `en` |
+| `SAUTI_RULES_ROOT` | intake-gw | directory holding `triage-rules/` (the signed bundle named by `config/gated/triage.yaml`) | `.` |
 | `SAUTI_WITNESS_DIR` | outbox-relay | write-once checkpoint witness directory | `var/witness` |
 | `SAUTI_ORIGIN` | outbox-relay | ledger origin name in checkpoints | `sauti-dispatch` |
 | `SAUTI_DEV_DB_PASSWORD` | sautictl dev-bootstrap, sautictl demo | the dev server's password for all Sauti roles. Roles are server-global, so the demo reuses it and never changes it. | — (required) |

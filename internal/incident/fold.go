@@ -32,6 +32,27 @@ func Apply(p Projection, e Event) (Projection, error) {
 	next := p
 	next.Flags = slices.Clone(p.Flags)
 	switch e.Type {
+	case EvScreenAnswered:
+		a, err := ParseScreenAnswer(e.Payload)
+		if err != nil {
+			return p, err
+		}
+		if err := next.set(a); err != nil {
+			return p, err
+		}
+	case EvSessionResumed:
+		if err := parseResumed(e.Payload); err != nil {
+			return p, err
+		}
+	case EvDispatchReady:
+		loc, err := ParseDispatchLocation(e.Payload)
+		if err != nil {
+			return p, err
+		}
+		if loc.Zone != nil {
+			z := *loc.Zone
+			next.Zone, next.LocationQuality = &z, loc.Quality
+		}
 	case EvClassified:
 		var pl struct {
 			Severity Severity `json:"severity"`

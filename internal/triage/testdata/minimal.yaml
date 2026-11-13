@@ -1,0 +1,20 @@
+version: "tool1-test-1"
+protocol_status: pending
+inputs:
+  danger: ["yes", "no", "unknown"]
+  category: ["trauma", "obstetric", "acute_medical", "poisoning", "other"]
+  age_band: ["under_5", "age_5_17", "age_18_59", "age_60_plus", "unknown"]
+  specific_danger: ["yes", "no"]
+rules:
+  - id: red-danger
+    when: 'danger == "yes" || specific_danger == "yes"'
+    severity: red
+  - id: yellow-danger-unknown
+    when: 'danger == "unknown" && specific_danger == "no"'
+    severity: yellow
+  - id: yellow-time-critical
+    when: 'category in ["poisoning"] && specific_danger == "no"'
+    severity: yellow
+  - id: green-default
+    when: "true"
+    severity: green

@@ -1,9 +1,6 @@
-# Caller-facing copy. Tool 1 wording is protocol-authored and not yet received;
-# Luganda copy needs forward/back translation and clinical sign-off.
-# "XXX" and "PENDING-TRANSLATION" block production start-up.
-started_test_mode:
-  en: "SAUTI TEST\nIncident {ref}\nTriage screens pending protocol sign-off."
-  lg: "PENDING-TRANSLATION"
+# Adapter-level caller copy (the Tool 1 screens are in tool1.yaml).
+# internal_error is the END screen when a request cannot be processed: it
+# names the free voice line. "XXX" and "PENDING-TRANSLATION" block production.
 internal_error:
   en: "Sorry, Sauti cannot take this request now. Call 0800-XXX-XXX free."
   lg: "PENDING-TRANSLATION"

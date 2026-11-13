@@ -25,26 +25,44 @@ type OpEventKey struct {
 	RecordedAt pgtype.Timestamptz
 }
 
+type OpGazetteerVersion struct {
+	Version  string
+	Sha256   string
+	Status   string
+	LoadedAt pgtype.Timestamptz
+}
+
 type OpIncident struct {
-	ID           pgtype.UUID
-	Reference    string
-	Channel      string
-	State        string
-	Version      int64
-	Severity     *string
-	LogicVersion *string
-	T1           pgtype.Timestamptz
-	T2           pgtype.Timestamptz
-	T3           pgtype.Timestamptz
-	T4           pgtype.Timestamptz
-	T5           pgtype.Timestamptz
-	T6           pgtype.Timestamptz
-	T7           pgtype.Timestamptz
-	Escalated    bool
-	Flags        []string
-	MergedInto   pgtype.UUID
-	CreatedAt    pgtype.Timestamptz
-	UpdatedAt    pgtype.Timestamptz
+	ID              pgtype.UUID
+	Reference       string
+	Channel         string
+	State           string
+	Version         int64
+	Severity        *string
+	LogicVersion    *string
+	T1              pgtype.Timestamptz
+	T2              pgtype.Timestamptz
+	T3              pgtype.Timestamptz
+	T4              pgtype.Timestamptz
+	T5              pgtype.Timestamptz
+	T6              pgtype.Timestamptz
+	T7              pgtype.Timestamptz
+	Escalated       bool
+	Flags           []string
+	MergedInto      pgtype.UUID
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	Language        *string
+	Danger          *string
+	Category        *string
+	AgeBand         *string
+	SpecificDanger  *string
+	Ward            *string
+	Landmark        *string
+	LastScreen      int32
+	ZoneCol         *int32
+	ZoneRow         *int32
+	LocationQuality *string
 }
 
 type OpIncidentEvent struct {
@@ -74,6 +92,16 @@ type OpIncidentEventsDefault struct {
 	LogicVersion *string
 }
 
+type OpIncidentIdentifier struct {
+	ID         pgtype.UUID
+	IncidentID pgtype.UUID
+	Kind       string
+	Ct         []byte
+	KeyID      string
+	IdemKey    string
+	CreatedAt  pgtype.Timestamptz
+}
+
 type OpIncidentTransition struct {
 	FromState string
 	EventType string
@@ -86,6 +114,28 @@ type OpKeyPeriod struct {
 	StartsAt    pgtype.Timestamptz
 	EndsAt      pgtype.Timestamptz
 	DestroyedAt pgtype.Timestamptz
+}
+
+type OpLandmark struct {
+	Version   string
+	ID        string
+	ListOrder int32
+	WardID    string
+	NameEn    string
+	NameLg    string
+	Lat       float64
+	Lon       float64
+	ZoneCol   int32
+	ZoneRow   int32
+	Menu      int32
+}
+
+type OpLandmarkAlias struct {
+	Version    string
+	LandmarkID string
+	AliasOrder int32
+	WardID     string
+	AliasNorm  string
 }
 
 type OpOutbox struct {
@@ -112,9 +162,30 @@ type OpSession struct {
 type OpUssdStep struct {
 	Provider          string
 	ProviderSessionID string
-	InputSha256       []byte
 	Response          string
 	EndSession        bool
 	IncidentID        pgtype.UUID
 	CreatedAt         pgtype.Timestamptz
+	InputMac          []byte
+	MacKeyID          string
+	ConsumedLen       int32
+	PromptKind        string
+	MatchedLandmark   string
+}
+
+type OpWard struct {
+	Version   string
+	ID        string
+	MenuOrder int32
+	NameEn    string
+	NameLg    string
+	CentreCol int32
+	CentreRow int32
+}
+
+type OpWardZone struct {
+	Version string
+	WardID  string
+	ZoneCol int32
+	ZoneRow int32
 }

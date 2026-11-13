@@ -30,6 +30,7 @@ func Transitions() []Transition {
 		{StateOnScene, EvDeparted, StateTransporting},
 		{StateTransporting, EvAtFacility, StateAtFacility},
 		{Any, EvScreenAnswered, ""},
+		{Any, EvSessionResumed, ""},
 		{Any, EvFlagged, ""},
 		{Any, EvEscalated, ""},
 		{Any, EvClosed, StateClosed},

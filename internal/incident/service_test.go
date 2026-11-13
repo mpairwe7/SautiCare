@@ -16,6 +16,14 @@ type fakeStore struct {
 	takenFirst int
 	opens      []OpenParams
 	appends    []AppendParams
+	batches    [][]AppendParams
+	idents     []IdentifierParams
+	resumes    []ResumeParams
+}
+
+func (f *fakeStore) StoreIdentifier(_ context.Context, p IdentifierParams) (uuid.UUID, error) {
+	f.idents = append(f.idents, p)
+	return p.ID, nil
 }
 
 func (f *fakeStore) OpenIncident(_ context.Context, p OpenParams) (Opened, error) {
@@ -31,6 +39,11 @@ func (f *fakeStore) Append(_ context.Context, p AppendParams) (Appended, error) 
 	return Appended{NewState: StateIntake}, nil
 }
 
+func (f *fakeStore) AppendBatch(_ context.Context, ps []AppendParams) ([]Appended, error) {
+	f.batches = append(f.batches, ps)
+	return make([]Appended, len(ps)), nil
+}
+
 func (f *fakeStore) Events(context.Context, uuid.UUID) ([]Event, error) { return nil, nil }
 
 type fakeSealer struct{ aads []crypto.AAD }
@@ -38,6 +51,11 @@ type fakeSealer struct{ aads []crypto.AAD }
 func (s *fakeSealer) SealPhone(_ context.Context, _ pii.Phone, aad crypto.AAD) (crypto.Sealed, error) {
 	s.aads = append(s.aads, aad)
 	return crypto.Sealed{KeyID: "k", Ciphertext: []byte{1}}, nil
+}
+
+func (s *fakeSealer) SealText(_ context.Context, b []byte, aad crypto.AAD) (crypto.Sealed, error) {
+	s.aads = append(s.aads, aad)
+	return crypto.Sealed{KeyID: "k", Ciphertext: append([]byte("ct:"), b...)}, nil
 }
 
 func (s *fakeSealer) PhoneMAC(context.Context, pii.Phone) (crypto.MAC, error) {
@@ -122,5 +140,87 @@ func TestAppendRejectsUnknownEventType(t *testing.T) {
 	}
 	if len(st.appends) != 0 {
 		t.Fatal("unknown type reached the store")
+	}
+}
+
+// A batch is validated as a whole before anything reaches the store: one
+// bad event refuses every event, and an empty payload becomes {}.
+func TestAppendBatchValidatesEveryEvent(t *testing.T) {
+	st := &fakeStore{}
+	svc := NewService(st, &fakeSealer{}, rand.Reader)
+	id := uuid.NewV7()
+	good := AppendParams{IncidentID: id, Type: EvFlagged, Payload: []byte(`{"flag":"x"}`), IdemKey: "a"}
+	for _, bad := range []AppendParams{
+		{IncidentID: id, Type: "made.up", IdemKey: "b"},
+		{IncidentID: id, Type: EvSessionStarted, IdemKey: "b"},
+		{IncidentID: id, Type: EvEscalated},
+	} {
+		if _, err := svc.AppendBatch(context.Background(), []AppendParams{good, bad}); err == nil {
+			t.Errorf("batch with %+v accepted", bad)
+		}
+	}
+	if _, err := svc.AppendBatch(context.Background(), nil); err == nil {
+		t.Error("empty batch accepted")
+	}
+	if len(st.batches) != 0 {
+		t.Fatalf("a refused batch reached the store: %v", st.batches)
+	}
+	if _, err := svc.AppendBatch(context.Background(), []AppendParams{good, {IncidentID: id, Type: EvEscalated, IdemKey: "c"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.batches) != 1 || string(st.batches[0][1].Payload) != "{}" {
+		t.Fatalf("batches = %v", st.batches)
+	}
+}
+
+// A typed landmark or callback number is sealed with AAD naming its own row,
+// stored outside every event payload, and referenced by that row's ID.
+func TestStoreIdentifierSealsWithRowAAD(t *testing.T) {
+	st, se := &fakeStore{}, &fakeSealer{}
+	svc := NewService(st, se, rand.Reader)
+	inc := uuid.NewV7()
+	id, err := svc.StoreIdentifier(context.Background(), inc, IdentifierCallback, []byte("+256772123456"), "ussd:at:s1:s8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.idents) != 1 || len(se.aads) != 1 {
+		t.Fatalf("stored %d, sealed %d", len(st.idents), len(se.aads))
+	}
+	p, aad := st.idents[0], se.aads[0]
+	want := crypto.AAD{Store: "operational", Table: "incident_identifiers", Column: "ct", RowID: id.String()}
+	if aad != want || p.ID != id || p.IncidentID != inc || p.Kind != IdentifierCallback || p.IdemKey != "ussd:at:s1:s8" {
+		t.Fatalf("aad=%+v params=%+v", aad, p)
+	}
+	if _, err := svc.StoreIdentifier(context.Background(), inc, "address", []byte("x"), "k"); err == nil {
+		t.Fatal("unknown identifier kind accepted")
+	}
+	if _, err := svc.StoreIdentifier(context.Background(), inc, IdentifierLandmarkText, []byte("x"), ""); err == nil {
+		t.Fatal("identifier without an idempotency key accepted")
+	}
+}
+
+func (f *fakeStore) ResumeSession(_ context.Context, p ResumeParams) (Opened, error) {
+	f.resumes = append(f.resumes, p)
+	return Opened{IncidentID: p.IncidentID, Reference: "1234567894", EventID: uuid.NewV7(), T1: time.Now(), Created: true}, nil
+}
+
+// A redial resumes the same incident through a new session row; the number
+// is sealed to that new row, never copied from the old one.
+func TestResumeSessionSealsPhoneForNewSession(t *testing.T) {
+	st, se := &fakeStore{}, &fakeSealer{}
+	svc := NewService(st, se, rand.Reader)
+	inc := uuid.NewV7()
+	cmd := startCmd(t)
+	o, err := svc.ResumeSession(context.Background(), ResumeSession{IncidentID: inc, Channel: ChannelIVR,
+		ProviderSessionID: "call-9", Phone: cmd.Phone, IdemKey: "ivr:call-9:start"})
+	if err != nil || o.IncidentID != inc || len(st.resumes) != 1 {
+		t.Fatalf("resume: %+v %v", o, err)
+	}
+	r := st.resumes[0]
+	if r.SessionID == (uuid.UUID{}) || len(se.aads) != 1 || se.aads[0].RowID != r.SessionID.String() || se.aads[0].Table != "sessions" {
+		t.Fatalf("params %+v aads %+v", r, se.aads)
+	}
+	if _, err := svc.ResumeSession(context.Background(), ResumeSession{IncidentID: inc, Channel: ChannelIVR, ProviderSessionID: "c"}); err == nil {
+		t.Fatal("resume without an idempotency key accepted")
 	}
 }

@@ -69,4 +69,12 @@ type Projection struct {
 	Escalated    bool
 	Flags        []string
 	MergedInto   *uuid.UUID
+
+	// Tool 1 answers (coded values only; identifiers are sealed elsewhere).
+	Language, Danger, Category, AgeBand, SpecificDanger, Ward, Landmark string
+	// LastScreen is the highest Tool 1 screen answered (0 = none).
+	LastScreen int
+	// Zone and LocationQuality are set by dispatch_ready.
+	Zone            *Zone
+	LocationQuality string
 }

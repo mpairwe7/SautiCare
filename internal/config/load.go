@@ -21,12 +21,39 @@ var gatedFiles = []string{
 	"gated/intake.yaml",
 	"gated/protocol.yaml",
 	"gated/screens.yaml",
+	"gated/triage.yaml",
+	"gated/tool1.yaml",
+}
+
+// separatelyVersioned are gated files with their own version, stamped where
+// they are used rather than in Fingerprint: the gazetteer is loaded into the
+// operational store and recorded in op.config_versions (kind gazetteer).
+var separatelyVersioned = []string{
+	"gated/gazetteer.yaml",
+}
+
+// checkGatedDir fails on any file under gated/ that Load would not use.
+func checkGatedDir(fsys fs.FS) error {
+	entries, err := fs.ReadDir(fsys, "gated")
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	for _, e := range entries {
+		p := "gated/" + e.Name()
+		if !slices.Contains(gatedFiles, p) && !slices.Contains(separatelyVersioned, p) {
+			return fmt.Errorf("config: unknown gated file %s: add it to Load or to separatelyVersioned", p)
+		}
+	}
+	return nil
 }
 
 // Load reads the configuration directory (fsys rooted at config/). Decoding
 // is strict: an unknown key is an error, so a typo cannot silently disable a
 // parameter.
 func Load(fsys fs.FS) (Bundle, error) {
+	if err := checkGatedDir(fsys); err != nil {
+		return Bundle{}, err
+	}
 	var b Bundle
 	var proto protocolFile
 	targets := []struct {
@@ -40,6 +67,8 @@ func Load(fsys fs.FS) (Bundle, error) {
 		{"gated/dispatch.yaml", &b.Dispatch},
 		{"gated/flags.yaml", &b.Flags},
 		{"gated/screens.yaml", &b.Screens},
+		{"gated/triage.yaml", &b.Triage},
+		{"gated/tool1.yaml", &b.Tool1},
 	}
 	// Each file is read exactly once; the fingerprint covers the very bytes
 	// that were decoded, so it always identifies the parameters in force.
@@ -68,6 +97,18 @@ func Load(fsys fs.FS) (Bundle, error) {
 	b.ProtocolStatus = proto.ProtocolStatus
 	b.ProtocolVersion = proto.ProtocolVersion
 	b.Fingerprint = "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if b.Intake.AbandonAfter.Duration <= 0 {
+		return Bundle{}, errors.New("config: intake abandon_after must be positive")
+	}
+	if s := b.Intake.FuzzyMatchMinSimilarity; s <= 0 || s >= 1 {
+		return Bundle{}, fmt.Errorf("config: intake fuzzy_match_min_similarity %v must be between 0 and 1", s)
+	}
+	if err := b.Tool1.Validate(); err != nil {
+		return Bundle{}, err
+	}
+	if b.Triage.RulesFile == "" || len(b.Triage.TrustedKeys) == 0 {
+		return Bundle{}, errors.New("config: gated/triage.yaml needs rules_file and at least one trusted key")
+	}
 	return b, nil
 }
 

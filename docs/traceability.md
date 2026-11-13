@@ -28,7 +28,7 @@ Policy documents are cited by section only (they are confidential, ADR-0008).
 | R11 | Retention schedule, holds, destruction log | RMRP §2–4 | Partial | `internal/platform/pg/schemas_integration_test.go::TestMediaRecordingsRequireDestroyByAndKey` | M6: retention-agent, crypto-shredding |
 | R12 | Breach timers 24 h / 48 h / 72 h / 7 days and register | ISP §7 | Planned | — | M5: breach workflow |
 | R13 | Data-subject requests in 14 days; withdrawal removes analytic record | ISP §8 | Partial | `internal/platform/pg/schemas_integration_test.go::TestSuppressionLedgerAppendOnly`<br>`internal/platform/pg/schemas_integration_test.go::TestSuppressionDeletesAndBlocksMEDSRecord` | M5/M6: DSR workflow, restore replay |
-| R14 | Triage logic versioned; logic version on every record; overrides logged | DPIA risk 8 | Partial | `internal/config/config_test.go::TestFingerprintStableAndSensitive`<br>`internal/incident/fold_test.go::TestApplyRejectsSeverityLowering` | M1: signed CEL tables |
+| R14 | Triage logic versioned; logic version on every record; overrides logged | DPIA risk 8 | Partial | `internal/config/config_test.go::TestFingerprintStableAndSensitive`<br>`internal/incident/fold_test.go::TestApplyRejectsSeverityLowering`<br>`internal/triage/triage_test.go::TestLoadRejectsBadSignature`<br>`internal/triage/triage_test.go::TestLogicVersionAndDevSigned`<br>`tests/e2e/m1_intake_test.go::TestScenario3PoisoningIsYellow` | M5: overrides logged |
 | R15 | Pseudonymised outputs with small-cell checks; minimal payment payloads | ISP §5.11 | Partial | `internal/platform/pg/schemas_integration_test.go::TestAnalyticRejectsUnconsentedRecord` | M4: payment payloads; M6: disclosure control |
 
 ## Hard constraints (Build Prompt §3)
@@ -36,10 +36,10 @@ Policy documents are cited by section only (they are confidential, ADR-0008).
 | # | Constraint | Status | Proof (M0) | Remaining |
 |---|---|---|---|---|
 | 1 | Data stays in Uganda | Partial | `internal/platform/egress/egress_test.go::TestEgressDeniesRedirectToUnlistedHost` | P0: hosting, approved-host locations, network controls, backups |
-| 2 | Basic phone first | Partial | `internal/platform/africastalking/ussd_test.go::TestATParsesFormAndRendersCONEND`<br>`internal/intake/service_test.go::TestScreensFitCharLimit` | M1 Tool 1 + IVR; M2 responder channels |
-| 3 | Deterministic triage and dispatch; no model lowers severity | Partial | `internal/incident/fold_test.go::TestApplyRejectsSeverityLowering`<br>`internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering` | M1 CEL; M2 ranking |
+| 2 | Basic phone first | Partial | `internal/platform/africastalking/ussd_test.go::TestATParsesFormAndRendersCONEND`<br>`internal/intake/machine_test.go::TestEveryRenderedScreenFitsLimitAndGSM7`<br>`tests/e2e/m1_intake_test.go::TestScenario5ResumedSessionCompletes` | M1 Part C IVR; M2 responder channels |
+| 3 | Deterministic triage and dispatch; no model lowers severity | Partial | `internal/incident/fold_test.go::TestApplyRejectsSeverityLowering`<br>`internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering`<br>`internal/triage/triage_test.go::TestRuleTableFromBuildPrompt`<br>`internal/triage/triage_test.go::TestLoadRejectsNonTotalTable` | M2 ranking |
 | 4 | Server-side time | Verified | `internal/platform/pg/opstore/opstore_integration_test.go::TestOpenIncidentSetsT1FromDatabase`<br>`internal/platform/pg/schemas_integration_test.go::TestIntakeCannotSupplyUSSDStepTimestamp` | M3 attested T5 verification |
-| 5 | Never reveal the caller's number | Partial | `internal/pii/pii_test.go::TestPhoneMasksEverywhere`<br>`internal/platform/logging/redact_test.go::TestRedactionMasksPhoneInsideErrorValues`<br>`internal/platform/africastalking/ussd_test.go::TestATLogsAKeyedCorrelationValueNeverTheSessionID` | M2 masked bridge; M5 audited reveal |
+| 5 | Never reveal the caller's number | Partial | `internal/pii/pii_test.go::TestPhoneMasksEverywhere`<br>`internal/platform/logging/redact_test.go::TestRedactionMasksPhoneInsideErrorValues`<br>`internal/platform/africastalking/ussd_test.go::TestATLogsAKeyedCorrelationValueNeverTheSessionID`<br>`internal/intake/service_test.go::TestCallbackNumberNeverInPayloadOrSteps`<br>`internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRejectsWhatFoldRejects`<br>`tests/e2e/m1_intake_test.go::TestNoCallerNumberInLogs` | M2 masked bridge; M5 audited reveal |
 | 6 | No patient data on messaging apps | Partial | `internal/platform/egress/egress_test.go::TestEgressDeniesUnlistedHost` | M2 SMS template content test |
 | 7 | No coordinator override outside exceptions | Planned | — | M5 |
 | 8 | Audit trail, incident and staff IDs only | Verified | `internal/platform/pg/relay_integration_test.go::TestAuditEntryNeverCarriesPayloadContent`<br>`internal/platform/pg/auditstore/auditstore_integration_test.go::TestSQLHashMatchesGoCanonical`<br>`internal/platform/pg/opstore/opstore_integration_test.go::TestAuditPayloadHashIsSalted`<br>`internal/platform/pg/tamper_integration_test.go::TestOwnerRewriteWithRecomputedChainIsCaughtByWitness`<br>`internal/audit/witness_test.go::TestAnchoredCheckpointerUsesTheLatestWitnessEachTerm`<br>`internal/audit/witness_test.go::TestRelayCheckpointRefusesARewriteBehindAManualCheckpoint`<br>`internal/audit/witness_test.go::TestCheckpointerChecksEveryNewWitnessNote`<br>`cmd/sautictl/checkpoint_integration_test.go::TestCheckpointCommandRefusesARewrittenChain`<br>`cmd/sautictl/checkpoint_integration_test.go::TestRelayCheckpointRefusesARewriteBehindTheCommandsCheckpoint` | M2–M5 producers |
@@ -48,7 +48,7 @@ Policy documents are cited by section only (they are confidential, ADR-0008).
 | 11 | Amendment gate | Verified | `tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment`<br>`tools/amendgate/check_test.go::TestCheckFailsWhenHashDiffersFromAmendment`<br>`tools/amendgate/check_test.go::TestEffectiveGlobsCannotShrink`<br>`tools/amendgate/check_test.go::TestGatedSymlinkIsRejected` | M5 admin-screen enforcement |
 | 12 | No new kind of record without the DPO | Partial | `internal/platform/pg/schemas_integration_test.go::TestMediaRecordingsRequireDestroyByAndKey`<br>`internal/config/config_test.go::TestLoadRejectsUnknownField` | Open gap: no gate yet requires DPO approval of a new record category (threat T-012). M5: DPO-owned record-category register, enforced in CI |
 | 13 | No access from outside Uganda | Planned | `internal/platform/devkeys/devkeys_test.go::TestDevkeysRefuseProduction` | P0 |
-| 14 | Dispatch first, fail safe to a human | Partial | `internal/audit/relay_test.go::TestRelayCatchesUpAfterLedgerOutage`<br>`internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine` | M2 escalation workflow |
+| 14 | Dispatch first, fail safe to a human | Partial | `internal/audit/relay_test.go::TestRelayCatchesUpAfterLedgerOutage`<br>`internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine`<br>`internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`<br>`internal/intake/sweeper_test.go::TestSweeperEscalatesDangerYesBeforeDispatch` | M2 escalation workflow (voice call) |
 
 ## Scenarios (Build Prompt §16)
 
@@ -58,15 +58,15 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 |---|---|---|
 | 1 | Red trauma: parallel alerts, first accept wins, arrival, payment | M2–M4 |
 | 2 | Yellow obstetric cascade depth 3 | M2 |
-| 3 | Poisoning with screen 5 = no is yellow | M1 |
+| 3 | Poisoning with screen 5 = no is yellow | M1 — **verified:** `tests/e2e/m1_intake_test.go::TestScenario3PoisoningIsYellow` |
 | 4 | Three bystanders, one crash: merge; coordinator split | M1 |
-| 5 | USSD drops at screen 6: resume within 10 min or finish on IVR | M1 |
-| 6 | Somewhere else: 999/112 message; record kept and flagged | M1 |
+| 5 | USSD drops at screen 6: resume within 10 min or finish on IVR | M1 — **USSD part verified:** `tests/e2e/m1_intake_test.go::TestScenario5RedialResumesAtScreen6`, `tests/e2e/m1_intake_test.go::TestScenario5ResumedSessionCompletes`; IVR finish: M1 Part C |
+| 6 | Somewhere else: 999/112 message; record kept and flagged | M1 — **verified:** `tests/e2e/m1_intake_test.go::TestScenario6SomewhereElse` |
 | 7 | Nobody accepts: rings to 2.5 km, health centre acknowledges | M2 |
 | 8 | First health centre silent: next nearest called | M2 |
 | 9 | USSD push unanswered: voice at 20 s | M2 |
 | 10 | Decline reason 3 stored and shown | M2 |
-| 11 | Triage rule error: red and coordinator alerted | M1 |
+| 11 | Triage rule error: red and coordinator alerted | M1 red + flag + escalation event (`internal/intake/service_test.go::TestTriageRuleErrorIsRedAndEscalated`); M2 voice alert |
 | 12 | Implausible arrival flagged | M3 |
 | 13 | Payment timeout: status by reference, one disbursement | M4 |
 | 14 | Primary DB fails over mid-cascade: no lost or duplicate alert | M2 |

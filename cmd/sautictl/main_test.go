@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
+
+	"sautihealth.com/sauti/internal/triage"
 )
 
 func TestUnknownCommandPrintsUsage(t *testing.T) {
@@ -45,5 +48,70 @@ func TestVerifyLedgerRequiresWitnessOrExplicitOptOut(t *testing.T) {
 	code := Main([]string{"verify-ledger", "--dsn", "postgres://x@127.0.0.1:1/x", "--devkeys-dir", dir}, &out, &errOut)
 	if code != 1 || !strings.Contains(errOut.String(), "--witness-dir is required") {
 		t.Fatalf("exit=%d err=%s", code, errOut.String())
+	}
+}
+
+// A malformed gazetteer is refused before any database connection, so a
+// typo can never reach the store.
+func TestGazetteerLoadValidatesBeforeConnecting(t *testing.T) {
+	bad := t.TempDir() + "/g.yaml"
+	if err := os.WriteFile(bad, []byte("version: v\nstatus: draft\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := Main([]string{"gazetteer", "load", "--file", bad, "--dsn", "postgres://invalid.invalid/x"}, &out, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "status") {
+		t.Fatalf("exit = %d, err = %s", code, errOut.String())
+	}
+	if code := Main([]string{"gazetteer", "load", "--file", "../../config/gated/gazetteer.yaml"}, &out, &errOut); code != 1 ||
+		!strings.Contains(errOut.String(), "--dsn") {
+		t.Fatalf("missing --dsn: exit = %d, err = %s", code, errOut.String())
+	}
+}
+
+// keygen then sign produces a signature that the triage loader accepts under
+// the printed key; keygen never overwrites an existing key file.
+func TestTriageKeygenAndSign(t *testing.T) {
+	t.Setenv("SAUTI_ENV", "dev")
+	dir := t.TempDir()
+	keyFile := dir + "/triage.key"
+	var out, errOut bytes.Buffer
+	if code := Main([]string{"triage", "keygen", "--out", keyFile, "--key-id", "dev-triage-test"}, &out, &errOut); code != 0 {
+		t.Fatalf("keygen: %d %s", code, errOut.String())
+	}
+	pub := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out.String()), "dev-triage-test:"))
+	if code := Main([]string{"triage", "keygen", "--out", keyFile, "--key-id", "dev-triage-test"}, &out, &errOut); code != 1 {
+		t.Fatal("keygen overwrote an existing key")
+	}
+	rules, err := os.ReadFile("../../internal/triage/testdata/minimal.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := dir + "/rules.yaml"
+	if err := os.WriteFile(bundle, rules, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := Main([]string{"triage", "sign", "--key", keyFile, "--key-id", "dev-triage-test", "--rules", bundle}, &out, &errOut); code != 0 {
+		t.Fatalf("sign: %d %s", code, errOut.String())
+	}
+	sig, err := os.ReadFile(bundle + ".sig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := triage.DecodeTrustedKeys(map[string]string{"dev-triage-test": pub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := triage.Load(rules, sig, keys); err != nil {
+		t.Fatalf("signed bundle does not load: %v", err)
+	}
+}
+
+func TestTriageKeygenRefusesProduction(t *testing.T) {
+	t.Setenv("SAUTI_ENV", "production")
+	var out, errOut bytes.Buffer
+	if code := Main([]string{"triage", "keygen", "--out", t.TempDir() + "/k", "--key-id", "dev-x"}, &out, &errOut); code != 1 {
+		t.Fatalf("exit = %d", code)
 	}
 }
