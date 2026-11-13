@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,14 +19,22 @@ import (
 
 func TestMain(m *testing.M) { pgtest.Main(m) }
 
+// closeConn closes c on a fresh bounded context: the test's own context may
+// already have expired.
+func closeConn(c *pgx.Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = c.Close(ctx)
+}
+
 // Five stores, five credential sets: a runtime role of one store cannot even
 // connect to another store's database (hard constraint 9).
 func TestBootstrapIsolatesStores(t *testing.T) {
 	c := pgtest.Cluster(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	cross, err := pgx.Connect(ctx, c.DSN(pg.StoreAudit, "op_intake"))
 	if err == nil {
-		cross.Close(ctx)
+		closeConn(cross)
 		t.Fatal("op_intake connected to the audit store")
 	}
 	var pgErr *pgconn.PgError
@@ -36,7 +45,7 @@ func TestBootstrapIsolatesStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("op_intake cannot connect to its own store: %v", err)
 	}
-	own.Close(ctx)
+	closeConn(own)
 }
 
 // CodeRabbit PR #3: PostgreSQL grants CONNECT to PUBLIC on a new database.
@@ -44,7 +53,7 @@ func TestBootstrapIsolatesStores(t *testing.T) {
 // must not leave it open to another store's roles; a rerun completes it.
 func TestFailedBootstrapLeavesNewDatabaseClosed(t *testing.T) {
 	admin := pgtest.AdminConn(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	opts := bootstrap.Options{Suffix: pgtest.RandomSuffix(), Password: pgtest.RolePassword(t), Env: "test"}
 	name := bootstrap.DatabaseName(pg.StoreOperational, opts.Suffix)
 	t.Cleanup(func() { pgtest.DropDatabases(t, map[pg.Store]string{pg.StoreOperational: name}) })
@@ -70,7 +79,7 @@ func TestFailedBootstrapLeavesNewDatabaseClosed(t *testing.T) {
 	}
 	for _, role := range []string{"audit_appender", "an_writer", "lk_reader", "md_writer", "op_intake"} {
 		if c, err := pgx.Connect(ctx, dsn(role)); err == nil {
-			_ = c.Close(ctx)
+			closeConn(c)
 			t.Errorf("%s connected to %s left by a failed bootstrap", role, name)
 		}
 	}
@@ -85,16 +94,16 @@ func TestFailedBootstrapLeavesNewDatabaseClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("op_intake cannot connect to its own store after the rerun: %v", err)
 	}
-	_ = own.Close(ctx)
+	closeConn(own)
 	if c, err := pgx.Connect(ctx, dsn("audit_appender")); err == nil {
-		_ = c.Close(ctx)
+		closeConn(c)
 		t.Fatal("audit_appender connected to the operational store after the rerun")
 	}
 }
 
 func TestBootstrapRefusesProduction(t *testing.T) {
 	admin := pgtest.AdminConn(t)
-	_, err := bootstrap.Run(context.Background(), admin, bootstrap.Options{Suffix: "_prod", Password: "x", Env: "production"})
+	_, err := bootstrap.Run(pgtest.Context(t), admin, bootstrap.Options{Suffix: "_prod", Password: "x", Env: "production"})
 	if !errors.Is(err, bootstrap.ErrProductionForbidden) {
 		t.Fatalf("err = %v, want ErrProductionForbidden", err)
 	}
@@ -102,7 +111,7 @@ func TestBootstrapRefusesProduction(t *testing.T) {
 
 func TestBootstrapIsIdempotent(t *testing.T) {
 	admin := pgtest.AdminConn(t)
-	ctx := context.Background()
+	ctx := pgtest.Context(t)
 	opts := bootstrap.Options{Suffix: pgtest.RandomSuffix(), Password: pgtest.RolePassword(t), Env: "test"}
 	first, err := bootstrap.Run(ctx, admin, opts)
 	if err != nil {
