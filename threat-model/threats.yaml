@@ -523,9 +523,12 @@ threats:
     hard_constraints: [5]
     mitigations:
       - The bridge connects only a number whose keyed hash matches a responder with an open assignment, or a number that a session of an open incident (or of a report merged into it, until a split) came from; anyone else hears the same "nothing to connect" message, so the bridge reveals nobody's registration
+      - "UX-1 (ADR-0034): a number whose report is open with nobody assigned yet hears exactly what an unknown number hears (the same prompts, the same key 0 for a coordinator, the same timing and hand-over), so the bridge is no oracle for whether a number has reported an emergency; the open report is escalated quietly (bridge_unanswered), off the call's path, at most once per incident per 10-minute window on the database's clock"
       - Neither party ever learns the other's number; a spoofed caller ID reaches only the voice of the other party, never a number or a record
     verified_by:
       - internal/platform/ivr/bridge_test.go::TestBridgeUnknownNumber
+      - internal/platform/ivr/bridge_test.go::TestBridgeOpenIncidentIsIndistinguishableFromAnUnknownNumber
+      - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeOpenIncidentForCallerAndEscalate
       - internal/platform/ivr/bridge_test.go::TestBridgeCallerCallsBack
       - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeTargetsAndLog
       - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeCallerOfAMergedReport

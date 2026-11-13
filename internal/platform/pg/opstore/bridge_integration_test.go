@@ -5,6 +5,7 @@ package opstore_test
 import (
 	"context"
 	"testing"
+	"time"
 	"uuid"
 
 	"sautihealth.com/sauti/internal/crypto"
@@ -121,8 +122,10 @@ func TestBridgeCallerOfAMergedReport(t *testing.T) {
 }
 
 // UX-1 (ADR-0029 rule 3): a caller of the bridge whose report has nobody
-// assigned is found by their number (op_ivr), and the bridge records one
-// bridge_unanswered escalation per bridge call through the single write path.
+// assigned is found by their number (op_ivr). The bridge records one
+// bridge_unanswered escalation per bridge call (a responder who did not
+// answer), and a quiet one at most once per window on the database's clock
+// (an open report with nobody assigned, ADR-0028).
 func TestBridgeOpenIncidentForCallerAndEscalate(t *testing.T) {
 	r := newDispatchRig(t)
 	ctx := context.Background()
@@ -136,13 +139,18 @@ func TestBridgeOpenIncidentForCallerAndEscalate(t *testing.T) {
 		t.Fatalf("another number found an incident: %v %v", ok, err)
 	}
 	for _, scope := range []string{"bridge:in-1", "bridge:in-1", "bridge:in-2"} {
-		if err := r.ivr.Escalate(ctx, r.incident, incident.ReasonBridgeUnanswered, scope); err != nil {
+		if err := r.ivr.Escalate(ctx, r.incident, incident.ReasonBridgeUnanswered, scope, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := r.ivr.Escalate(ctx, r.incident, incident.ReasonBridgeUnanswered, "bridge-open", time.Hour); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var n int
 	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(ctx, `SELECT count(*) FROM op.incident_events
-		WHERE incident_id = $1 AND type = 'incident.escalated' AND payload ->> 'reason' = 'bridge_unanswered'`, r.incident).Scan(&n); err != nil || n != 2 {
-		t.Fatalf("escalations %d %v, want one per bridge call", n, err)
+		WHERE incident_id = $1 AND type = 'incident.escalated' AND payload ->> 'reason' = 'bridge_unanswered'`, r.incident).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("escalations %d %v, want one per bridge call and one in the window", n, err)
 	}
 }

@@ -100,6 +100,11 @@ WHERE i.state NOT IN ('closed', 'merged')
 ORDER BY i.updated_at DESC
 LIMIT 1;
 
+-- name: ClockWindow :one
+-- Which window of the given length (seconds) the database's clock is in: an
+-- idempotency key that carries it repeats only within the window.
+SELECT floor(extract(epoch FROM clock_timestamp()) / sqlc.arg(seconds)::int)::bigint AS bucket;
+
 -- name: ListIdle :many
 -- An idle incident is listed until the sweeper flags it abandoned, and again
 -- while an abandonment owes its escalation: a caller who resumed an

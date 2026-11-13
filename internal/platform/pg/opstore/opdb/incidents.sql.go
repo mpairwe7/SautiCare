@@ -96,6 +96,19 @@ func (q *Queries) ClaimOutbox(ctx context.Context, arg ClaimOutboxParams) ([]Cla
 	return items, nil
 }
 
+const clockWindow = `-- name: ClockWindow :one
+SELECT floor(extract(epoch FROM clock_timestamp()) / $1::int)::bigint AS bucket
+`
+
+// Which window of the given length (seconds) the database's clock is in: an
+// idempotency key that carries it repeats only within the window.
+func (q *Queries) ClockWindow(ctx context.Context, seconds int32) (int64, error) {
+	row := q.db.QueryRow(ctx, clockWindow, seconds)
+	var bucket int64
+	err := row.Scan(&bucket)
+	return bucket, err
+}
+
 const dedupCandidates = `-- name: DedupCandidates :many
 SELECT c.id::uuid AS id, c.category::text AS category, c.zone_col::int AS zone_col, c.zone_row::int AS zone_row,
        coalesce(c.location_quality, '')::text AS location_quality, coalesce(c.severity, '')::text AS severity,

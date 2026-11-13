@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -68,12 +70,20 @@ func (s *Store) OpenIncidentForCaller(ctx context.Context, macs []crypto.MAC) (u
 	return uuid.UUID(ids[0].Bytes), true, nil
 }
 
-// Escalate records an incident.escalated event for reason, once per scope
-// (a bridge call), through the single write path.
-func (s *Store) Escalate(ctx context.Context, incidentID uuid.UUID, reason, scope string) error {
+// Escalate records an incident.escalated event for reason through the
+// single write path, once per scope (a bridge call) and, with every > 0,
+// once per window of that length on the database's clock.
+func (s *Store) Escalate(ctx context.Context, incidentID uuid.UUID, reason, scope string, every time.Duration) error {
 	payload, err := json.Marshal(map[string]string{"reason": reason})
 	if err != nil {
 		return err
+	}
+	if every > 0 {
+		n, err := s.q.ClockWindow(ctx, int32(every/time.Second))
+		if err != nil {
+			return mapErr(err)
+		}
+		scope += ":" + strconv.FormatInt(n, 10)
 	}
 	_, err = s.Append(ctx, incident.AppendParams{IncidentID: incidentID, Type: incident.EvEscalated, Payload: payload,
 		ActorKind: incident.ActorSystem, IdemKey: incident.EscalationKey(reason, "") + ":" + scope})

@@ -46,8 +46,8 @@ type BridgeStore interface {
 	// number, assigned or not.
 	OpenIncidentForCaller(ctx context.Context, macs []crypto.MAC) (uuid.UUID, bool, error)
 	// Escalate records an incident.escalated event for reason, once per
-	// scope (one bridge call).
-	Escalate(ctx context.Context, incidentID uuid.UUID, reason, scope string) error
+	// scope, and with every > 0 once per server-side window of that length.
+	Escalate(ctx context.Context, incidentID uuid.UUID, reason, scope string, every time.Duration) error
 }
 
 // BridgeARI is Asterisk as the masked bridge uses it: outbound calls plus a
@@ -243,12 +243,15 @@ func (b *Bridge) start(ctx context.Context, e Event) {
 	}
 	st.asResp, st.asCaller = asResp, asCaller
 	switch {
-	case len(asResp) == 0 && len(asCaller) == 0 && open != (uuid.UUID{}):
-		// A caller whose report has nobody assigned yet reached nobody.
-		b.unanswered(ctx, st, open)
 	case len(asResp) == 0 && len(asCaller) == 0:
-		// The same answer for an unknown number and one with nothing open:
-		// the bridge never tells who is registered. 0 reaches a coordinator.
+		// The same answer, keys and timing for an unknown number, one with
+		// nothing open, and one whose report has nobody assigned yet: the
+		// bridge never tells who is registered or who has reported
+		// (ADR-0028). 0 reaches a coordinator; an open report is escalated
+		// quietly, off this call's path, so the coordinator line rings.
+		if open != (uuid.UUID{}) {
+			go b.escalateQuietly(context.WithoutCancel(ctx), open)
+		}
 		st.choosing = "coordinator"
 		b.ask(ctx, st, choicePrompt["coordinator"]...)
 	case len(asResp) > 0 && len(asCaller) > 0:
@@ -286,7 +289,8 @@ func (b *Bridge) proceed(ctx context.Context, st *bridgeCall, targets []dispatch
 // assigned to the open incidents it reported. Nobody reaches themselves: an
 // incident the responder reported is not one of their callers, and they are
 // not one of their own helpers. With neither, open is the newest open
-// incident the number reported, with nobody assigned yet.
+// incident the number reported, with nobody assigned yet (every such number
+// is looked up, so the lookups take the same course for every number).
 func (b *Bridge) recognise(ctx context.Context, from string) (asResp, asCaller []dispatch.BridgeTarget, open uuid.UUID, err error) {
 	p, perr := pii.ParsePhone(from)
 	if perr != nil {
@@ -616,6 +620,19 @@ func (b *Bridge) noAnswer(ctx context.Context, st *bridgeCall) {
 	b.noOneAnswered(ctx, st)
 }
 
+// quietWindow bounds the quiet escalation of an open report found on the
+// bridge: at most once per incident per window, measured by the database's
+// clock, however often the number calls.
+const quietWindow = 10 * time.Minute
+
+func (b *Bridge) escalateQuietly(ctx context.Context, id uuid.UUID) {
+	if _, err := bounded(ctx, b.c.OpTimeout, func(c context.Context) (struct{}, error) {
+		return struct{}{}, b.c.Store.Escalate(c, id, incident.ReasonBridgeUnanswered, "bridge-open", quietWindow)
+	}); err != nil {
+		b.c.Log.Error("bridge escalation not recorded", "incident", id, "err", err)
+	}
+}
+
 // noOneAnswered ends a call whose other party did not answer. A responder
 // hears so; a caller, who reached nobody, goes to a coordinator.
 func (b *Bridge) noOneAnswered(ctx context.Context, st *bridgeCall) {
@@ -632,7 +649,7 @@ func (b *Bridge) noOneAnswered(ctx context.Context, st *bridgeCall) {
 // ahead.
 func (b *Bridge) unanswered(ctx context.Context, st *bridgeCall, id uuid.UUID) {
 	if _, err := bounded(context.WithoutCancel(ctx), b.c.OpTimeout, func(c context.Context) (struct{}, error) {
-		return struct{}{}, b.c.Store.Escalate(c, id, incident.ReasonBridgeUnanswered, "bridge:"+st.inbound)
+		return struct{}{}, b.c.Store.Escalate(c, id, incident.ReasonBridgeUnanswered, "bridge:"+st.inbound, 0)
 	}); err != nil {
 		b.c.Log.Error("bridge escalation not recorded", "incident", id, "err", err)
 	}

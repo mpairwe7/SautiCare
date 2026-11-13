@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -206,10 +207,14 @@ func (s *bridgeStore) OpenIncidentForCaller(_ context.Context, macs []crypto.MAC
 	id, ok := s.open[string(macs[0].Sum)]
 	return id, ok, nil
 }
-func (s *bridgeStore) Escalate(_ context.Context, id uuid.UUID, reason, scope string) error {
+func (s *bridgeStore) Escalate(_ context.Context, id uuid.UUID, reason, scope string, every time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.escalated = append(s.escalated, id.String()+" "+reason+" "+scope)
+	e := id.String() + " " + reason + " " + scope
+	if every > 0 {
+		e += " every " + every.String()
+	}
+	s.escalated = append(s.escalated, e)
 	return nil
 }
 func (s *bridgeStore) escalations() []string {
@@ -437,19 +442,43 @@ func TestBridgeUnknownNumberCanPressZeroForACoordinator(t *testing.T) {
 	}
 }
 
-// A caller whose report is open but has nobody assigned yet reaches a
-// coordinator, and the incident is escalated, rather than hearing "nothing
-// to connect" (ADR-0029 rule 3).
-func TestBridgeCallerWithAnUnassignedIncidentGoesToACoordinator(t *testing.T) {
-	inc := uuid.NewV7()
-	st := &bridgeStore{open: map[string]uuid.UUID{callerNum: inc}}
-	b, a, logs := bridgeRig(t, st, 30*time.Second)
-	dialIn(b, "in-1", callerNum)
-	if !slices.Equal(a.handedOver(), []string{"in-1→" + FallbackContext}) ||
-		!slices.Equal(st.escalations(), []string{inc.String() + " bridge_unanswered bridge:in-1"}) {
-		t.Fatalf("handed over %v escalated %v plays %v", a.handedOver(), st.escalated, a.plays)
+// ADR-0028: the bridge never reveals whether a number has reported an
+// emergency. A caller whose report is open with nobody assigned yet hears
+// exactly what an unknown number hears (the same prompts, keys, timing and
+// hand-over on 0); the incident is escalated quietly, at most once per
+// incident in a server-side window, so the coordinator line rings.
+func TestBridgeOpenIncidentIsIndistinguishableFromAnUnknownNumber(t *testing.T) {
+	type seen struct {
+		plays                    [][]string
+		pbs, stops, cont, hungUp []string
+		begun, dialled           int
 	}
-	noNumbers(t, logs)
+	run := func(st *bridgeStore) seen {
+		b, a, logs := bridgeRig(t, st, 30*time.Second)
+		dialIn(b, "in-1", callerNum)
+		b.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: "in-1", PlaybackID: a.lastPlayback("in-1")})
+		press(b, "in-1", "1") // not offered: ignored
+		press(b, "in-1", "0")
+		noNumbers(t, logs)
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return seen{plays: slices.Clone(a.plays["in-1"]), pbs: slices.Clone(a.pbs["in-1"]), stops: slices.Clone(a.stopped),
+			cont: slices.Clone(a.continued), hungUp: slices.Clone(a.hungUp), begun: len(st.begun), dialled: len(a.endpoints)}
+	}
+	inc := uuid.NewV7()
+	open := &bridgeStore{open: map[string]uuid.UUID{callerNum: inc}}
+	unknown := &bridgeStore{}
+	got, want := run(open), run(unknown)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("an open report is distinguishable:\n open    %+v\n unknown %+v", got, want)
+	}
+	if !slices.Contains(want.plays[0], "sauti/en/bridge-coordinator-option") || !slices.Equal(want.cont, []string{"in-1→" + FallbackContext}) {
+		t.Fatalf("the shared sequence: %+v", want)
+	}
+	waitFor(t, "the quiet escalation", func() bool { return len(open.escalations()) == 1 })
+	if e := open.escalations(); e[0] != inc.String()+" bridge_unanswered bridge-open every 10m0s" || len(unknown.escalations()) != 0 {
+		t.Fatalf("escalations: open %v unknown %v", e, unknown.escalations())
+	}
 }
 
 // A caller whose responder does not answer, or whose phone is unreachable,
