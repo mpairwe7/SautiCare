@@ -256,6 +256,13 @@ func (f *FakeARI) Emit(ev map[string]any) {
 
 // StartCall delivers a call into the Stasis application. An empty caller
 // number is a withheld number.
+// CallIn is a call that entered the application with arguments (the
+// dialplan's Stasis(app,args...)), from callerNumber.
+func (f *FakeARI) CallIn(channelID, callerNumber string, args ...string) {
+	f.Emit(map[string]any{"type": "StasisStart", "args": args,
+		"channel": map[string]any{"id": channelID, "state": "Ring", "caller": map[string]string{"number": callerNumber}}})
+}
+
 func (f *FakeARI) StartCall(channelID, callerNumber string) {
 	f.Emit(event{"type": "StasisStart", "args": []string{},
 		"channel": map[string]any{"id": channelID, "state": "Ring", "caller": map[string]string{"number": callerNumber}}})
