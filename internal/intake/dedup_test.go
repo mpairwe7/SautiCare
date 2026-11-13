@@ -93,3 +93,19 @@ func TestNoMergeAtWardLevel(t *testing.T) {
 		t.Fatal("a matched typed landmark did not merge")
 	}
 }
+
+// F-06: a merge never silences an unacknowledged escalation. The survivor
+// was escalated and that escalation acknowledged; the absorbed call holds a
+// triage rule error nobody has acknowledged. The survivor rings again.
+func TestMergedUnacknowledgedEscalationRingsOnTheSurvivor(t *testing.T) {
+	survivor := cand("trauma", here, base, base.Add(time.Minute))
+	survivor.Escalated = true
+	got, err := Consequences(call("trauma", here, base.Add(2*time.Minute)), survivor, incident.ReasonTriageRuleError)
+	if err != nil || string(got.Escalate) != `{"reason":"merged_call_escalated"}` {
+		t.Fatalf("escalate %s %v", got.Escalate, err)
+	}
+	// An absorbed call whose escalations were all acknowledged adds none.
+	if got, _ := Consequences(call("trauma", here, base.Add(2*time.Minute)), survivor, ""); got.Escalate != nil {
+		t.Fatalf("escalated for an acknowledged call: %s", got.Escalate)
+	}
+}

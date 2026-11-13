@@ -10,6 +10,7 @@ import (
 
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/platform/pg"
+	"sautihealth.com/sauti/internal/platform/pg/opstore"
 )
 
 // rewind makes every coordinator call due again (the retry interval passed).
@@ -99,5 +100,34 @@ func TestOldestUnacknowledgedEscalationGauge(t *testing.T) {
 	}
 	if secs, n, err := r.intake.OldestUnacknowledgedEscalation(ctx); err != nil || n != 0 || secs != 0 {
 		t.Fatalf("acknowledged: %v %d %v", secs, n, err)
+	}
+}
+
+// F-06: a merge reads, in its transaction, whether the absorbed call holds
+// an escalation no coordinator has acknowledged (op_intake and op_ivr).
+func TestHasUnacknowledgedEscalation(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	if _, err := r.c.Owner(t, pg.StoreOperational).Exec(ctx, "DELETE FROM op.incident_events WHERE type = 'incident.escalated'"); err != nil {
+		t.Fatal(err)
+	}
+	if reason, ok, err := r.intake.HasUnacknowledgedEscalation(ctx, r.incident); err != nil || ok || reason != "" {
+		t.Fatalf("none: %q %v %v", reason, ok, err)
+	}
+	appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"triage_rule_error"}`, "")
+	for _, s := range []*opstore.Store{r.intake, r.ivr} {
+		if reason, ok, err := s.HasUnacknowledgedEscalation(ctx, r.incident); err != nil || !ok || reason != "triage_rule_error" {
+			t.Fatalf("unacknowledged: %q %v %v", reason, ok, err)
+		}
+	}
+	calls, _ := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10)
+	if len(calls) != 1 {
+		t.Fatalf("calls %+v", calls)
+	}
+	if err := r.ivr.AcknowledgeCoordinatorCall(ctx, r.incident, calls[0].Seq); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := r.intake.HasUnacknowledgedEscalation(ctx, r.incident); err != nil || ok {
+		t.Fatalf("acknowledged: %v %v", ok, err)
 	}
 }

@@ -100,6 +100,17 @@ WHERE i.state NOT IN ('closed', 'merged')
 ORDER BY i.updated_at DESC
 LIMIT 1;
 
+-- name: UnacknowledgedEscalation :many
+-- The reason of an incident's newest escalation no coordinator has
+-- acknowledged (op.acknowledge_coordinator_call), if any: a merge carries it
+-- to the survivor (F-06).
+SELECT coalesce(e.payload ->> 'reason', '')::text AS reason
+FROM op.incident_events e
+LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
+WHERE e.incident_id = sqlc.arg(id)::uuid AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+ORDER BY e.seq DESC
+LIMIT 1;
+
 -- name: ClockWindow :one
 -- Which window of the given length (seconds) the database's clock is in: an
 -- idempotency key that carries it repeats only within the window.

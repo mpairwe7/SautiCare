@@ -260,7 +260,15 @@ func (m *memIncidents) DispatchOrMerge(_ context.Context, r DispatchRequest) (ou
 	if _, err := m.appendLocked(survivor.ID, incident.EvMergeAbsorbed, abs, "dedup:absorb:"+r.IncidentID.String(), ""); err != nil {
 		return DispatchOutcome{}, err
 	}
-	cons, err := Consequences(r.Call(), survivor)
+	// No acknowledgement exists in memory: the call's newest escalation is
+	// unacknowledged.
+	unacked := ""
+	for _, e := range m.events[r.IncidentID] {
+		if e.Type == incident.EvEscalated {
+			unacked, _, _ = incident.ParseEscalated(e.Payload)
+		}
+	}
+	cons, err := Consequences(r.Call(), survivor, unacked)
 	if err != nil {
 		return DispatchOutcome{}, err
 	}

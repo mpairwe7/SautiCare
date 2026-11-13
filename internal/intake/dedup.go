@@ -104,14 +104,18 @@ func (r DispatchRequest) Call() Candidate {
 // merge_absorbed, so that absorbing a call never makes an emergency look
 // less urgent (hard constraint 3; Build Prompt §14): the call's severity if
 // it ranks higher (incident.severity_raised), and an escalation if the call
-// was escalated and the survivor is not. Payloads only; the store adds keys.
+// holds one no coordinator has acknowledged, whether or not the survivor was
+// ever escalated (F-06): a merge never silences an alert nobody heard.
+// Payloads only; the store adds keys.
 type MergeConsequences struct {
 	Raise    json.RawMessage // severity_raised payload, or nil
 	Escalate json.RawMessage // escalated payload, or nil
 }
 
-// Consequences computes what absorbing call adds to survivor.
-func Consequences(call, survivor Candidate) (MergeConsequences, error) {
+// Consequences computes what absorbing call adds to survivor. unacked is the
+// reason of the call's newest escalation no coordinator has acknowledged, or
+// "" (the store reads it in the merge's transaction).
+func Consequences(call, survivor Candidate, unacked string) (MergeConsequences, error) {
 	var out MergeConsequences
 	var err error
 	if call.Severity.Rank() > survivor.Severity.Rank() {
@@ -119,7 +123,7 @@ func Consequences(call, survivor Candidate) (MergeConsequences, error) {
 			return out, err
 		}
 	}
-	if call.Escalated && !survivor.Escalated {
+	if unacked != "" {
 		if out.Escalate, err = json.Marshal(map[string]string{"reason": incident.ReasonMergedCallEscalated}); err != nil {
 			return out, err
 		}

@@ -987,3 +987,35 @@ func (q *Queries) StoreIdentifier(ctx context.Context, arg StoreIdentifierParams
 	err := row.Scan(&id)
 	return id, err
 }
+
+const unacknowledgedEscalation = `-- name: UnacknowledgedEscalation :many
+SELECT coalesce(e.payload ->> 'reason', '')::text AS reason
+FROM op.incident_events e
+LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
+WHERE e.incident_id = $1::uuid AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+ORDER BY e.seq DESC
+LIMIT 1
+`
+
+// The reason of an incident's newest escalation no coordinator has
+// acknowledged (op.acknowledge_coordinator_call), if any: a merge carries it
+// to the survivor (F-06).
+func (q *Queries) UnacknowledgedEscalation(ctx context.Context, id pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, unacknowledgedEscalation, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var reason string
+		if err := rows.Scan(&reason); err != nil {
+			return nil, err
+		}
+		items = append(items, reason)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

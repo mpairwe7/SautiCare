@@ -125,8 +125,9 @@ func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (
 // merge records, in the caller's transaction, the call's merge into
 // survivor: merged on the call, merge_absorbed on the survivor, and what the
 // call carries to it (intake.Consequences): severity_raised if the call is
-// more urgent, an escalation if the call was escalated and the survivor is
-// not. A merge never leaves the dispatch less urgent than a call it absorbed.
+// more urgent, an escalation if the call holds one no coordinator has
+// acknowledged. A merge never leaves the dispatch less urgent than a call it
+// absorbed.
 func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor intake.Candidate) error {
 	into, err := json.Marshal(map[string]string{"into": survivor.ID.String()})
 	if err != nil {
@@ -136,7 +137,11 @@ func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor in
 	if err != nil {
 		return err
 	}
-	cons, err := intake.Consequences(r.Call(), survivor)
+	unacked, _, err := s.HasUnacknowledgedEscalation(ctx, r.IncidentID)
+	if err != nil {
+		return err
+	}
+	cons, err := intake.Consequences(r.Call(), survivor, unacked)
 	if err != nil {
 		return err
 	}
@@ -160,6 +165,16 @@ func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor in
 		}
 	}
 	return nil
+}
+
+// HasUnacknowledgedEscalation reports the reason of the incident's newest
+// escalation no coordinator has acknowledged (op_intake, op_ivr).
+func (s *Store) HasUnacknowledgedEscalation(ctx context.Context, id uuid.UUID) (string, bool, error) {
+	reasons, err := s.q.UnacknowledgedEscalation(ctx, pgID(id))
+	if err != nil || len(reasons) == 0 {
+		return "", false, mapErr(err)
+	}
+	return reasons[0], true, nil
 }
 
 // SplitIncident splits a wrongly merged call off its survivor (coordinator
