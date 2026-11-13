@@ -18,7 +18,7 @@ go run ./cmd/sautictl demo m0 --admin-dsn "postgres://postgres:…@127.0.0.1:543
 
 The demo reuses the server's role password and never changes it, because roles are shared by everything else on that server.
 
-Add `--keep` to keep the databases for inspection.
+Add `--keep` to keep the databases for inspection. The run's work directory stays with them, because the kept ciphertext needs its development keys and the kept ledger its checkpoint witness; the demo prints its path (`kept: development keys and checkpoint witness in …`). Delete the directory and drop the `_demo…` databases yourself when done.
 
 **What a passing run proves:**
 

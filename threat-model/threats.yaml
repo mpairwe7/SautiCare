@@ -98,7 +98,7 @@ threats:
       - SHA-256 hash chain computed in SQL and re-verified in Go
       - Append-only triggers even for the owner; EXECUTE-only appender role
       - ML-DSA-65 signed checkpoints written to a write-once witness; verification requires the witness, and an empty or missing witness fails it unless --no-witness is explicit
-      - The checkpointer is anchored on the last witnessed checkpoint and refuses to sign over diverged history
+      - The checkpointer is anchored on the last witnessed checkpoint and refuses to sign over diverged history; every checkpoint writer reads the shared witness again before signing and checks each note it has not seen against the chain
     verified_by:
       - internal/platform/pg/auditstore/auditstore_integration_test.go::TestSQLHashMatchesGoCanonical
       - internal/platform/pg/auditstore/auditstore_integration_test.go::TestOwnerUpdateBlockedByTrigger
@@ -108,6 +108,9 @@ threats:
       - tests/e2e/m0_fixture_test.go::TestM0FixtureIncident
       - internal/platform/pg/tamper_integration_test.go::TestOwnerRewriteWithRecomputedChainIsCaughtByWitness
       - internal/audit/witness_test.go::TestCheckpointerRefusesDivergedChain
+      - internal/audit/witness_test.go::TestRelayCheckpointRefusesARewriteBehindAManualCheckpoint
+      - internal/audit/witness_test.go::TestCheckpointerChecksEveryNewWitnessNote
+      - cmd/sautictl/checkpoint_integration_test.go::TestRelayCheckpointRefusesARewriteBehindTheCommandsCheckpoint
       - cmd/sautictl/main_test.go::TestVerifyLedgerRequiresWitnessOrExplicitOptOut
       - cmd/sautictl/ledger_test.go::TestVerifyLedgerFailsWhenTheWitnessDirHoldsNoNotes
 
