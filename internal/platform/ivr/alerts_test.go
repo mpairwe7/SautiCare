@@ -293,9 +293,9 @@ func TestAlertCallAccept(t *testing.T) {
 	}
 }
 
-// Two responders accept at the same moment (Scalable MVP Stack, §Edge cases,
-// row 11): the one who loses on a voice alert hears that the incident is
-// taken, is told nothing of where to go, and the call ends.
+// Simultaneous acceptances (Scalable MVP Stack, §Edge cases, row 11): the
+// responder who loses on a voice alert hears that the incident is taken, is
+// told nothing of where to go, and the call ends.
 func TestALateVoiceAcceptHearsAlreadyTaken(t *testing.T) {
 	c, a, st := alertRig(t, false)
 	st.accept = dispatch.AlreadyTaken

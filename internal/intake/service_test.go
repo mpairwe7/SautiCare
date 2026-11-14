@@ -263,7 +263,7 @@ func TestUSSDWithheldNumberNeverResumes(t *testing.T) {
 	}
 }
 
-// Triage rules change while an incident is open (Scalable MVP Stack, §Edge
+// A new triage bundle during an open incident (Scalable MVP Stack, §Edge
 // cases, row 16): intake restarts on a new signed bundle over the same store.
 // The open incident keeps the severity and logic version it was classified
 // under when its caller redials; only a new incident takes the new version.

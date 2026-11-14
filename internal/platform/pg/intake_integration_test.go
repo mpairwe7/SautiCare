@@ -82,7 +82,7 @@ func TestRetriedCallbackReturnsSameScreenNoSecondEvent(t *testing.T) {
 	}
 }
 
-// Africa's Talking retries a callback mid-flow (Scalable MVP Stack, §Edge
+// A repeated Africa's Talking callback mid-flow (Scalable MVP Stack, §Edge
 // cases, row 4): the stored step keyed on this session and input replays the
 // same screen, and neither the event log nor the step store is written twice.
 func TestRetriedAnswerReturnsSameScreenNoSecondWrite(t *testing.T) {
