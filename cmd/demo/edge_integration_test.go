@@ -4,17 +4,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -523,7 +522,9 @@ func demoPhase(t *testing.T, base string) (string, int) {
 		Phase string
 		Run   int
 	}
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/api/state", nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second) // a probe never hangs on a silent server
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/state", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", 0
@@ -537,51 +538,17 @@ func demoPhase(t *testing.T, base string) (string, int) {
 }
 
 // startEdgeDemo builds and starts the demo runner as TestDemoScenario1OverHTTP
-// does, stops it with SIGTERM at the end, and returns its URL.
+// does (startRunner: it stops the runner with SIGTERM at the end) and
+// returns its URL.
 func startEdgeDemo(t *testing.T) string {
 	t.Helper()
 	if os.Geteuid() == 0 {
 		t.Skip("PostgreSQL refuses to run as root")
 	}
 	pg := pgBin(t)
-	bin := t.TempDir()
-	build := exec.Command("go", "build", "-o", bin+"/", "./cmd/demo", "./cmd/intake-gw", "./cmd/dispatch-worker", "./cmd/outbox-relay")
-	build.Dir = "../.."
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-	ports, err := freePorts(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logs, err := os.Create(filepath.Join(t.TempDir(), "demo.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner := exec.Command(filepath.Join(bin, "demo"), "--pg-bin", pg, "--data", t.TempDir(), "--addr", "127.0.0.1:"+ports[0],
+	r := startRunner(t, filepath.Join(buildDemo(t), "demo"), "--pg-bin", pg, "--data", t.TempDir(),
 		"--config-dir", "../../config", "--rules-root", "../..")
-	runner.Env = []string{"PATH=" + os.Getenv("PATH")}
-	runner.Stdout, runner.Stderr = logs, logs
-	if err := runner.Start(); err != nil {
-		t.Fatal(err)
-	}
-	exited := make(chan error, 1)
-	go func() { exited <- runner.Wait() }()
-	t.Cleanup(func() {
-		_ = runner.Process.Signal(syscall.SIGTERM)
-		select {
-		case <-exited:
-		case <-time.After(time.Minute):
-			_ = runner.Process.Kill()
-			t.Error("the demo did not stop on SIGTERM")
-		}
-		_ = logs.Close()
-		if t.Failed() {
-			out, _ := os.ReadFile(logs.Name())
-			t.Logf("runner log:\n%s", out)
-		}
-	})
-	return "http://127.0.0.1:" + ports[0]
+	return r.base
 }
 
 // recorder is a transport that keeps every distinct response body, so the

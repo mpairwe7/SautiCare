@@ -6,12 +6,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -128,29 +131,72 @@ type boardView struct {
 	}
 }
 
-// runnerProc is the demo runner under test. logs may be read only once
-// done is closed.
+// runnerProc is the demo runner under test.
 type runnerProc struct {
 	cmd  *exec.Cmd
-	logs bytes.Buffer
+	logs lockedBuffer
 	done chan struct{}
-	err  error
+	err  error // the exit status, set before done closes
+	addr string
 	base string
 }
 
-// startRunner starts the runner on a free port and waits until its UI
-// answers. A port free when picked can be taken before the runner binds it;
-// the runner then exits with "address already in use" and is started again
-// on a new port, up to three times (CodeRabbit PR #15).
+// lockedBuffer collects the runner's output, which the test reads while the
+// runner writes it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// buildDemo builds the runner and the three services into a temporary
+// directory and returns it.
+func buildDemo(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	build := exec.Command("go", "build", "-o", bin+"/", "./cmd/demo", "./cmd/intake-gw", "./cmd/dispatch-worker", "./cmd/outbox-relay")
+	build.Dir = "../.."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// pickPort picks the runner's UI port: a variable, so a test can hand the
+// runner a port that another server holds.
+var pickPort = func() (string, error) {
+	ports, err := freePorts(1)
+	if err != nil {
+		return "", err
+	}
+	return ports[0], nil
+}
+
+// startRunner starts the runner on a free port and waits until it says it
+// listens there. A port free when picked can be taken before the runner
+// binds it; the runner then exits with "address already in use" and is
+// started again on a new port, up to three times (CodeRabbit PR #15). At
+// cleanup the runner gets SIGTERM, so it stops PostgreSQL and its services.
 func startRunner(t *testing.T, path string, args ...string) *runnerProc {
 	t.Helper()
 	for attempt := 1; ; attempt++ {
-		ports, err := freePorts(1)
+		port, err := pickPort()
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := &runnerProc{done: make(chan struct{}), base: "http://127.0.0.1:" + ports[0]}
-		r.cmd = exec.Command(path, append(args, "--addr", "127.0.0.1:"+ports[0])...)
+		r := &runnerProc{done: make(chan struct{}), addr: "127.0.0.1:" + port, base: "http://127.0.0.1:" + port}
+		r.cmd = exec.Command(path, append(args, "--addr", r.addr)...)
 		r.cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 		r.cmd.Stdout, r.cmd.Stderr = &r.logs, &r.logs
 		if err := r.cmd.Start(); err != nil {
@@ -159,8 +205,9 @@ func startRunner(t *testing.T, path string, args ...string) *runnerProc {
 		go func() { r.err = r.cmd.Wait(); close(r.done) }()
 		if r.up() {
 			t.Cleanup(func() {
-				_ = r.cmd.Process.Kill()
-				<-r.done
+				if !r.stop() {
+					t.Error("the demo did not stop on SIGTERM")
+				}
 				if t.Failed() {
 					t.Logf("runner log:\n%s", r.logs.String())
 				}
@@ -168,30 +215,78 @@ func startRunner(t *testing.T, path string, args ...string) *runnerProc {
 			return r
 		}
 		if attempt == 3 || !strings.Contains(r.logs.String(), "address already in use") {
-			t.Fatalf("the runner exited (attempt %d): %v\n%s", attempt, r.err, r.logs.String())
+			t.Fatalf("the runner did not come up (attempt %d): %v\n%s", attempt, r.err, r.logs.String())
 		}
 	}
 }
 
-// up waits until the runner's UI answers (true) or the runner exits (false).
+// up waits for the runner's own word that it listens on its address, the
+// line it logs only after the bind succeeded (true), or for it to exit or
+// stay silent for 30 s (false). An answer on the port would prove nothing:
+// another server may hold it.
 func (r *runnerProc) up() bool {
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	listening := "demo UI listening"
+	at := "addr=" + r.addr + "\n"
+	deadline := time.After(30 * time.Second)
+	for {
+		if out := r.logs.String(); strings.Contains(out, listening) && strings.Contains(out, at) {
+			return true
+		}
 		select {
 		case <-r.done:
 			return false
-		default:
+		case <-deadline:
+			r.stop()
+			return false
+		case <-time.After(50 * time.Millisecond):
 		}
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, r.base+"/api/state", nil)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			_ = resp.Body.Close()
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
 	}
-	_ = r.cmd.Process.Kill()
-	<-r.done
-	return false
+}
+
+// stop sends SIGTERM and waits a minute for the runner to stop its
+// children and exit; only then does it kill it. It reports whether the
+// runner exited on SIGTERM (or had already exited).
+func (r *runnerProc) stop() bool {
+	_ = r.cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-r.done:
+		return true
+	case <-time.After(time.Minute):
+		_ = r.cmd.Process.Kill()
+		<-r.done
+		return false
+	}
+}
+
+// CodeRabbit PR #15: an answer on the picked port proves nothing, since
+// another server may hold it. startRunner waits for the runner's own word
+// that it listens there, and retries on a new port when it could not bind.
+func TestStartRunnerIgnoresAForeignServer(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("PostgreSQL refuses to run as root")
+	}
+	pg := pgBin(t)
+	bin := buildDemo(t)
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"phase":"ready","run":1}`))
+	}))
+	defer foreign.Close()
+	_, held, err := net.SplitHostPort(foreign.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, picks := pickPort, 0
+	pickPort = func() (string, error) {
+		if picks++; picks == 1 {
+			return held, nil
+		}
+		return old()
+	}
+	t.Cleanup(func() { pickPort = old })
+	r := startRunner(t, filepath.Join(bin, "demo"), "--pg-bin", pg, "--data", t.TempDir(), "--config-dir", "../../config", "--rules-root", "../..")
+	if picks != 2 || r.base == foreign.URL {
+		t.Fatalf("after %d picks the runner is at %s (the foreign server is %s)", picks, r.base, foreign.URL)
+	}
 }
 
 // Scenario 1 through the demo, over HTTP, as a presenter would run it: the
@@ -205,29 +300,11 @@ func TestDemoScenario1OverHTTP(t *testing.T) {
 		t.Skip("PostgreSQL refuses to run as root")
 	}
 	pg := pgBin(t)
-	bin := t.TempDir()
-	build := exec.Command("go", "build", "-o", bin+"/", "./cmd/demo", "./cmd/intake-gw", "./cmd/dispatch-worker", "./cmd/outbox-relay")
-	build.Dir = "../.."
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildDemo(t)
 	data := t.TempDir()
 	r := startRunner(t, filepath.Join(bin, "demo"), "--pg-bin", pg, "--data", data, "--config-dir", "../../config", "--rules-root", "../..")
 	c := client{t: t, base: r.base}
-	ready := func() bool {
-		var s struct{ Phase string }
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, c.base+"/api/state", nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return false
-		}
-		defer resp.Body.Close()
-		_ = json.NewDecoder(resp.Body).Decode(&s)
-		if s.Phase == phaseFailed {
-			t.Fatal("the demo did not start")
-		}
-		return s.Phase == phaseReady
-	}
+	ready := func() bool { p, _ := demoPhase(t, c.base); return p == phaseReady }
 	eventually(t, "the demo to start", 2*time.Minute, ready)
 
 	// 1. The caller completes Tool 1: English, danger yes, injury, 18-59,
