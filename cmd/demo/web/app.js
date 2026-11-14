@@ -160,8 +160,8 @@ class Phone {
     if (idle) {
       this.meta.textContent = "Ready";
       this.text.textContent = this.kind === "caller"
-        ? "Type " + app.codes.caller + " and press Call,\nor use the shortcut below."
-        : "Type " + app.codes.responder + " and press Call\nto open the responder menu.";
+        ? "Dial " + app.codes.caller + "\nto report an emergency."
+        : "Dial " + app.codes.responder + "\nfor the responder menu.";
       this.label.textContent = "Number to dial";
     } else {
       this.meta.textContent = this.mode === "con" ? "USSD" : "USSD — session ended";
