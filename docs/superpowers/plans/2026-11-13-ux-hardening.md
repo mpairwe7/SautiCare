@@ -1050,8 +1050,8 @@ Every task here ships its flag `false`. With the flags off, every screen, prompt
 
 **Interfaces:**
 - `place_readback` on: the screen-8 prompt and the closing text carry `{place}`, which is the landmark name and the ward name, or the ward name only for a free-text or unmatched landmark. The IVR speaks the `ward-*` and `landmark-*` recordings.
-- `place_readback` on, the correction (ADR-0029 rule 4): after the landmark answer, a read-back step offers `1` right and `2` wrong. T2 is already recorded and is never delayed.
-  - `2` changes no ward or landmark answer and re-dispatches nothing. It appends `flagged{needs_location_callback}` and `escalated{place_disputed}` (key `incident.EscalationKey("place_disputed", "")`), then goes on to screen 8. On voice, the controller hands the call over with that reason instead.
+- `place_readback` on, the correction (ADR-0029 rule 4): after the landmark answer, a read-back step offers `1` right and `2` wrong. T2 is already recorded and is never delayed. The flag stays off until M5's relocation tool, or the PI's interim action (R-3), can pass a corrected place to the responders; the PR says so.
+  - `2` changes no ward or landmark answer and re-dispatches nothing. It appends `flagged{needs_location_callback}` and `escalated{place_disputed}` (key `incident.EscalationKey("place_disputed", "")`) on both channels, so the call-back task (Task 1.12) outlives the escalation's acknowledgement. On USSD it then goes on to screen 8. On voice, `AnswerIVR` writes the same batch and returns a turn with `HandOver` set (a new `IVRTurn` field); the controller then hands the call over without calling `HandOver`, because the batch already holds the escalation.
   - `place_disputed` joins the registry (Task 1.1) with PENDING recordings, a runbook row whose responder step reads "Not possible before M5:" (the M5 relocation tool tells the assigned responders), and a line in `docs/reference/events.md`.
   - `1`, or no answer, goes on to screen 8 with nothing written.
 - `suspended_first_aid` on: `dispatch_suspended` may carry `{first_aid}`, and `Validate` requires it.
@@ -1066,7 +1066,7 @@ All four must pass the screen gate with the longest values.
   - `TestNextStepLineWhenFlagged`.
   - `TestScreenOneNamesTheVoiceLineWhenFlagged`.
   - `TestAWrongPlaceEscalatesAndKeepsThePlace` (service): with the flag on, `2` gives one `needs_location_callback` flag and one `place_disputed` escalation; ward, landmark and T2 are unchanged; a retried callback adds nothing.
-  - `TestAWrongPlaceOnVoiceHandsOver` (controller): `2` gives `HandOver(…, "place_disputed")`, then `Continue`.
+  - `TestAWrongPlaceOnVoiceFlagsAndHandsOver` (service and controller): `2` by voice gives one `needs_location_callback` flag and one `place_disputed` escalation, no `voice_handed_over`, then `Continue`.
   - `TestClosingTextsFlagsOffEqualMain`.
 
   Run them. Expected: FAIL.

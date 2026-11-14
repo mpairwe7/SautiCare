@@ -188,7 +188,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Evidence:** T2 is recorded the moment screen 7 is answered (`internal/intake/machine.go:345`); the closing text has no place (`config/gated/tool1.yaml:69`); a different ward or landmark answer is refused later (`db/operational/migrations/0006_tool1_projection.sql:304-306`).
 - **Story:** A bystander means one market and presses the one next to it. Responders go to the wrong ward, and the caller is told help is coming.
 - **Standard:** NENA-STA-020.2-2026 §5.2.1 (a verified location is repeated or confirmed back) · ISO 9241-110 self-descriptiveness.
-- **Decision:** UX-6, behind `place_readback` (default off). The screen-8 prompt and the closing text carry a `{place}` line, within the screen gate. A read-back step takes `1` right or `2` wrong; `2` keeps the recorded place, flags `needs_location_callback` and escalates `place_disputed`, so a person corrects the place and tells the responders, through M5's relocation tool (ADR-0029 rule 4). PENDING copy for the PI and translation.
+- **Decision:** UX-6, behind `place_readback` (default off). The screen-8 prompt and the closing text carry a `{place}` line, within the screen gate. A read-back step takes `1` right or `2` wrong; `2` keeps the recorded place, flags `needs_location_callback` and escalates `place_disputed`, so a person corrects the place and tells the responders, through M5's relocation tool (ADR-0029 rule 4). The flag stays off until that tool, or the PI's interim action (R-3), exists. PENDING copy for the PI and translation.
 
 ### F-52 · High · (b) · A redial resumes another emergency on a shared phone without saying so
 - **Sources:** CU-3, CV-25. **Surfaces:** USSD and IVR resume.
