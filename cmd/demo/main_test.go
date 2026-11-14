@@ -30,7 +30,7 @@ func TestRefusesProductionAndRealProviders(t *testing.T) {
 	for _, bad := range []string{
 		"SAUTI_ENV=production", "SAUTI_ENV=prod",
 		"SAUTI_AT_API_KEY=k", "SAUTI_AT_SMS_URL=https://api.africastalking.com", "SAUTI_AT_USERNAME=sauti",
-		"SAUTI_ARI_URL=http://10.0.0.5:8088", "SAUTI_ARI_PASSWORD=p",
+		"SAUTI_ARI_URL=http://10.0.0.5:8088", "SAUTI_ARI_USER=sauti",
 		"SAUTI_OP_DSN=postgres://op_intake@db/sauti_operational", "SAUTI_AUDIT_DSN=postgres://x@db/sauti_audit",
 	} {
 		environ := []string{"PATH=/usr/bin", bad}
@@ -50,7 +50,7 @@ func TestRefusesProductionAndRealProviders(t *testing.T) {
 	}
 	// The SMS adapter may point only at a loopback fake.
 	for _, u := range []string{"https://api.africastalking.com", "https://api.sandbox.africastalking.com", "http://10.1.2.3:8080",
-		"http://localhost:8080", "http://u:p@127.0.0.1:1", "ftp://127.0.0.1/"} {
+		"http://localhost:8080", "http://demo@127.0.0.1:1", "ftp://127.0.0.1/"} {
 		if checkLoopback(u) == nil {
 			t.Errorf("provider endpoint %s accepted", u)
 		}

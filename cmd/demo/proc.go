@@ -115,17 +115,20 @@ func secret() string {
 	return hex.EncodeToString(b)
 }
 
+// superuser is the cluster's bootstrap role.
+const superuser = "postgres"
+
 // startPostgres initialises a cluster in dir/pgdata with a random superuser
 // password and starts it on a free loopback port with no Unix socket. The
 // data is throwaway, so durability is switched off for speed.
 func startPostgres(ctx context.Context, bin, dir string, log io.Writer) (*proc, string, error) {
-	password := secret()
+	key := secret() // the superuser's, random per run, never logged
 	pwfile := filepath.Join(dir, "pwfile")
-	if err := os.WriteFile(pwfile, []byte(password+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(pwfile, []byte(key+"\n"), 0o600); err != nil {
 		return nil, "", err
 	}
 	data := filepath.Join(dir, "pgdata")
-	initdb := exec.CommandContext(ctx, filepath.Join(bin, "initdb"), "-D", data, "-U", "postgres", "--pwfile", pwfile, //nolint:gosec // G204: --pg-bin is the operator's
+	initdb := exec.CommandContext(ctx, filepath.Join(bin, "initdb"), "-D", data, "-U", superuser, "--pwfile", pwfile, //nolint:gosec // G204: --pg-bin is the operator's
 		"--auth", "scram-sha-256", "-E", "UTF8", "--no-locale", "--no-instructions")
 	initdb.Env = childEnv(nil)
 	w := &prefixed{out: log, prefix: "[initdb] "}
@@ -146,7 +149,7 @@ func startPostgres(ctx context.Context, bin, dir string, log io.Writer) (*proc, 
 	if err != nil {
 		return nil, "", err
 	}
-	admin := (&url.URL{Scheme: "postgres", User: url.UserPassword("postgres", password), Host: "127.0.0.1:" + port,
+	admin := (&url.URL{Scheme: "postgres", User: url.UserPassword(superuser, key), Host: "127.0.0.1:" + port,
 		Path: "/postgres", RawQuery: "sslmode=disable"}).String()
 	deadline := time.Now().Add(60 * time.Second)
 	for {
