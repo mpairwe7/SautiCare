@@ -1,0 +1,18 @@
+# Docker build context of the demo image (Hugging Face Space; ADR-0039).
+# The staging script, scripts/deploy/hf-space-stage.sh, applies the same list.
+
+# CONFIDENTIAL governing documents: never in an image or the Space (ADR-0008).
+*.pdf
+**/*.pdf
+**/*.[Pp][Dd][Ff]
+sa/
+**/sa/
+
+# Repository internals, local keys, secrets and build output.
+.git
+.devkeys
+var/
+.superpowers/
+.env*
+!.env.example
+bin/
