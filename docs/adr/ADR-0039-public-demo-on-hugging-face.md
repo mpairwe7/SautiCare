@@ -15,7 +15,7 @@ Two hard constraints of the Build Prompt (§3) forbid that for real data: person
 
 ## Decision Drivers
 
-* Hard constraints 1 and 13 protect real callers, responders and their data. They do not forbid showing code that holds no real data.
+* Hard constraints 1 and 13 protect real callers, responders and their data; the demo must hold none.
 * A public web page invites people to type real names, numbers and symptoms (hard constraints 5, 6 and 12).
 * A demo image must never become a way to reach real systems: providers, stores or keys.
 * The confidential governing documents never leave the repository owner's machine (ADR-0008).
