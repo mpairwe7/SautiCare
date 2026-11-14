@@ -994,3 +994,35 @@ func TestAdoptAfterTheFlushReportsItsOrphansLost(t *testing.T) {
 		t.Fatalf("lost %d continues %d: want both reported lost and both put through", n, a.count(&a.continues))
 	}
 }
+
+// PR #14 review (round 4): the shutdown deadline passes while Adopt is
+// blocked on one orphan's escalation and others wait behind it; main returns
+// at once. Every orphan was registered before the first was handled, so the
+// flush reports each one lost before it returns, and none twice.
+func TestTheFlushReportsOrphansStillQueuedInAdopt(t *testing.T) {
+	var lost atomic.Int32
+	inHand, release := make(chan struct{}), make(chan struct{})
+	s := &scripted{prompts: prompts()}
+	s.onHand = func(id string) {
+		if id == "ch8" {
+			close(inHand)
+			<-release // the store does not answer before the deadline
+		}
+	}
+	a := &fakeARI{channels: []ari.Channel{{ID: "ch8", App: "sauti-ivr"}, {ID: "ch9", App: "sauti-ivr"}, {ID: "ch10", App: "sauti-ivr"}}}
+	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, OnEscalationLost: func() { lost.Add(1) }})
+	adopted := make(chan error, 1)
+	go func() { adopted <- c.Adopt(context.Background()) }()
+	<-inHand
+	c.FlushLost() // the deadline: main returns after this
+	if n := lost.Load(); n != 3 {
+		t.Fatalf("lost %d at the flush, want all 3 orphans", n)
+	}
+	close(release)
+	if err := <-adopted; err != nil {
+		t.Fatal(err)
+	}
+	if n := lost.Load(); n != 3 || len(s.handedOver()) != 1 {
+		t.Fatalf("lost %d, escalations attempted %v: want each orphan reported once and none started after the flush", n, s.handedOver())
+	}
+}

@@ -114,6 +114,7 @@ type call struct {
 	timerGen  int
 	begun     bool
 	ended     bool
+	pending   *pendingEscalation // its escalation, registered before its hand-over began (adoption)
 }
 
 // worker runs one call: its events in order, one at a time, on its own
@@ -200,14 +201,17 @@ func New(a ARI, in Intake, log *slog.Logger, opt Options) *Controller {
 // (FlushLost); after the flush no attempt starts, and the call's escalation
 // is reported lost at once. A refused attempt is retried in the background.
 func (c *Controller) escalate(ctx context.Context, st *call) {
-	p := &pendingEscalation{ch: st.ch, call: st.turn.Call}
 	c.pendingMu.Lock()
+	p := st.pending
+	if p == nil {
+		p = c.registerLocked(st)
+	}
 	if c.flushed {
 		c.lostLocked(p, errStopping)
+		delete(c.retrying, p)
 		c.pendingMu.Unlock()
 		return
 	}
-	c.retrying[p] = struct{}{}
 	c.pendingMu.Unlock()
 	hctx, cancel := c.op(ctx)
 	err := c.in.HandOver(hctx, p.call, incident.ReasonVoiceHandedOver)
@@ -226,6 +230,14 @@ func (c *Controller) escalate(ctx context.Context, st *call) {
 	}
 }
 
+// registerLocked registers a call's escalation as not yet recorded, so
+// FlushLost reports it. Under pendingMu.
+func (c *Controller) registerLocked(st *call) *pendingEscalation {
+	p := &pendingEscalation{ch: st.ch, call: st.turn.Call}
+	c.retrying[p] = struct{}{}
+	return p
+}
+
 // errStopping is the loss reported for an escalation the flush stopped.
 var errStopping = errors.New("ivr-controller stopped before the escalation was recorded")
 
@@ -236,13 +248,13 @@ type pendingEscalation struct {
 	reported bool // its loss is logged and counted (once)
 }
 
-// FlushLost reports every hand-over escalation not yet recorded (a first
-// attempt in flight or a retry) as lost, at once: logged with its call and
-// incident IDs and counted. main calls it when the shutdown deadline passes
-// before the retries end, so an exit never drops one silently. From then on
-// no escalation starts: a later hand-over (an adoption still working
-// through its orphans, a live call) is reported lost instead. An attempt
-// that succeeds later is not counted again; recovering it is a no-op.
+// FlushLost reports every hand-over escalation not yet recorded (an
+// adoption's orphan still queued, a first attempt in flight or a retry) as
+// lost, at once: logged with its call and incident IDs and counted. main
+// calls it when the shutdown deadline passes before the retries end, then
+// returns, so an exit never drops one silently. From then on no escalation
+// starts: a later hand-over is reported lost instead. An attempt that
+// succeeds later is not counted again; recovering it is a no-op.
 func (c *Controller) FlushLost() {
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
@@ -332,10 +344,21 @@ func (c *Controller) Adopt(ctx context.Context) error {
 		}
 	}
 	c.mu.Unlock()
-	for _, ch := range orphans {
-		c.log.Warn("ivr call found without a worker; handing over", "channel", ch)
+	// Every orphan's escalation is registered before the first is handled:
+	// should the shutdown deadline pass while they are handled one by one,
+	// FlushLost reports the queued ones too.
+	queued := make([]*call, len(orphans))
+	c.pendingMu.Lock()
+	for i, ch := range orphans {
 		// The channel ID is the call ID: HandOver finds the incident from it.
-		if !c.handOver(ctx, &call{ch: ch, turn: intake.IVRTurn{Call: intake.IVRCall{CallID: ch}}}) {
+		queued[i] = &call{ch: ch, turn: intake.IVRTurn{Call: intake.IVRCall{CallID: ch}}}
+		queued[i].pending = c.registerLocked(queued[i])
+	}
+	c.pendingMu.Unlock()
+	for _, st := range queued {
+		ch := st.ch
+		c.log.Warn("ivr call found without a worker; handing over", "channel", ch)
+		if !c.handOver(ctx, st) {
 			// Still in the application: the next adoption tries again.
 			c.mu.Lock()
 			delete(c.adopted, ch)
