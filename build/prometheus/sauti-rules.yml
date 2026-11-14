@@ -1,0 +1,58 @@
+# Sauti's alert rules (ADR-0041 rule 8). Each alert is unit-tested in
+# sauti-rules.test.yml (`promtool test rules`, scripts/ci/promtool.sh) and
+# names its runbook. A rule that pages on a gauge is paired with a rule on the
+# gauge's own freshness. Labels are a closed set and no annotation carries a
+# number, a name or an identifier (hard constraint 5).
+groups:
+  - name: sauti-dead-man
+    rules:
+      # Tier 3 (ADR-0029 rule 8): while ivr-controller is down, this is the
+      # only automated path to a person about an escalation.
+      - alert: SautiEscalationUnacknowledged
+        expr: max(sauti_escalation_oldest_unacknowledged_seconds) > 600
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: An escalation has waited over 10 minutes for a coordinator's acknowledgement.
+          runbook: docs/runbooks/no-eligible-responders.md
+
+      # The age above is fresh only while one intake-gw instance leads and its
+      # last read succeeded; absent covers every intake-gw target gone.
+      - alert: SautiEscalationSignalStale
+        expr: max(sauti_escalation_gauges_leader) < 1 or absent(sauti_escalation_gauges_leader)
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: No intake-gw instance exports a fresh escalation age, so an unacknowledged escalation cannot page.
+          runbook: docs/runbooks/escalation-signal-stale.md
+
+      - alert: SautiDispatchLeaderMissing
+        expr: sum(sauti_dispatch_leader) != 1 or absent(sauti_dispatch_leader)
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: dispatch-worker has no leader, or more than one.
+          runbook: docs/runbooks/dispatch-worker-down.md
+
+      - alert: SautiDispatchOverdueUnreadable
+        expr: min(sauti_dispatch_overdue_read_ok) < 1
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: A dispatch-worker instance cannot read the overdue dispatch wakes, so its overdue age is stale.
+          runbook: docs/runbooks/dispatch-worker-down.md
+
+      # Always firing: it cannot report an outage of the Prometheus and
+      # Alertmanager that send it, so the receiver is a dead man's switch off
+      # the monitoring host that pages when it stops arriving (P0, R-16).
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: Always firing. It proves the path from Prometheus to the receiver; its silence means alerting is down.
+          runbook: docs/runbooks/alerting-pipeline-down.md
