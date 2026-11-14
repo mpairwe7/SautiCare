@@ -545,3 +545,34 @@ threats:
       - internal/platform/ari/client_test.go::TestClientMixingBridge
       - internal/platform/ari/client_test.go::TestClientCallerIDAndRingback
 
+  - id: T-032
+    title: People type real names, numbers or health information into the public demo, hosted outside Uganda (ADR-0039)
+    stride: Information disclosure
+    linddun: Data disclosure
+    asset: personal and health data of anyone using the demo
+    hard_constraints: [1, 5, 6, 12, 13]
+    mitigations:
+      - A permanent banner says the demo is synthetic only, asks for no real names, numbers or health information, and says everything is erased on restart
+      - The phone emulators send only the demo's own synthetic numbers; a reply holding any other phone number is refused before it reaches intake-gw
+      - Nothing persists; PostgreSQL, keys and witness live in one temporary directory per run, deleted on shutdown and on Reset; the Space has no persistent storage
+      - The board reads with op_readonly, which cannot read a number, and masks any number in an event payload again
+    verified_by:
+      - cmd/demo/main_test.go::TestRefusesRealLookingNumbers
+      - cmd/demo/main_test.go::TestBoardMasksNumbers
+      - cmd/demo/main_integration_test.go::TestDemoScenario1OverHTTP
+  - id: T-033
+    title: The demo image is pointed at real systems (a provider, a store, real keys) or carries the confidential governing documents
+    stride: Elevation of privilege
+    asset: provider accounts, the stores, the confidential governing documents
+    hard_constraints: [1, 13]
+    mitigations:
+      - cmd/demo refuses SAUTI_ENV=production and any provider credential or endpoint (SAUTI_AT_*, SAUTI_ARI_*) or store DSN in its environment, before it starts anything
+      - Its child processes get a fresh environment; the SMS adapter points at a loopback fake (checked) behind an egress allowlist of 127.0.0.1; voice is not wired
+      - Every password, token and key is random per run and never committed; development keys refuse production
+      - .dockerignore excludes the PDFs and sa/; scripts/deploy/hf-space-stage.sh stages the committed tree only and refuses any PDF, any sa/ directory or any file over 5 MiB
+    verified_by:
+      - cmd/demo/main_test.go::TestRefusesProductionAndRealProviders
+      - cmd/demo/main_test.go::TestSinkSpeaksTheProviderContract
+      - cmd/demo/main_test.go::TestDockerignoreKeepsConfidentialFilesOut
+      - cmd/demo/main_test.go::TestStagedSpaceHoldsNoConfidentialFiles
+      - internal/platform/devkeys/devkeys_test.go::TestDevkeysRefuseProduction
