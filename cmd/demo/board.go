@@ -225,8 +225,9 @@ func (st *stack) readDispatch(ctx context.Context, ids []string, byID map[string
 	}); err != nil {
 		return err
 	}
+	// A merged or parked incident's timer is 'infinity': it has no wake-up to show.
 	var due time.Time
-	rows, err = st.ro.Query(ctx, `SELECT incident_id::text, due_at FROM op.dispatch_timers WHERE incident_id = ANY($1::uuid[])`, ids)
+	rows, err = st.ro.Query(ctx, `SELECT incident_id::text, due_at FROM op.dispatch_timers WHERE incident_id = ANY($1::uuid[]) AND isfinite(due_at)`, ids)
 	if err != nil {
 		return err
 	}

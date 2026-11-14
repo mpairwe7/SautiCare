@@ -99,7 +99,6 @@ func TestDemoEdgeCases(t *testing.T) {
 			t.Fatalf("both callers were given incident %s", first)
 		}
 		auditOK(t, c)
-		t.Skip(findingBoardInfinity) // both callers are served and the ledger verifies; the board cannot be read
 		eventually(t, "both calls on the board, the second merged into the first", 30*time.Second, func() bool {
 			b := getBoard(c)
 			a, m := byRef(b, first), byRef(b, second)
@@ -328,11 +327,6 @@ func TestDemoEdgeCases(t *testing.T) {
 		}
 	})
 }
-
-// findingBoardInfinity is why PossibleDuplicates is skipped.
-const findingBoardInfinity = "finding F1 (docs/how-to/run-demo-edge-cases.md): once a merge happens, " +
-	"GET /api/board answers 500 until Reset: op.schedule_dispatch stores due_at 'infinity' for an incident with no next wake " +
-	"(a merged one) and cmd/demo/board.go scans due_at into time.Time (\"cannot scan Infinity into *time.Time\")"
 
 var refPattern = regexp.MustCompile(`[0-9]{3} [0-9]{3} [0-9]{4}`)
 
