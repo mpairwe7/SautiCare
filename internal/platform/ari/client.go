@@ -126,10 +126,21 @@ func (c *Client) doBody(ctx context.Context, method, path string, q url.Values) 
 	return body, nil
 }
 
+// ErrNotInStasis reports a channel Asterisk says is gone (404) or no longer
+// in the application (409): another actor has moved it on (the dialplan, a
+// second instance's hand-over, the caller hanging up). It is not a failure
+// to hand the caller over, and the channel must not be hung up for it.
+var ErrNotInStasis = errors.New("ari: the channel is gone or no longer in the application")
+
 // statusError is a request Asterisk answered with a status other than 2xx.
 type statusError struct {
 	method, path string
 	code         int
+}
+
+// Is lets errors.Is match ErrNotInStasis on a 404 or 409.
+func (e *statusError) Is(target error) bool {
+	return target == ErrNotInStasis && (e.code == http.StatusNotFound || e.code == http.StatusConflict)
 }
 
 func (e *statusError) Error() string {

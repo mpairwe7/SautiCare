@@ -6,7 +6,9 @@ package ivr
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -155,7 +157,8 @@ type Controller struct {
 	opt     Options
 	mu      sync.Mutex // guards workers and adopted only: no call's work runs under it
 	workers map[string]*worker
-	adopted map[string]bool // channels the last Adopt handed over
+	adopted map[string]bool // channels Adopt handed over that the last list still showed
+	adoptMu sync.Mutex      // one Adopt at a time
 	pending atomic.Int64    // events queued and not yet handled
 	running sync.WaitGroup  // workers, so Run returns after their hand-overs
 }
@@ -212,6 +215,10 @@ func (c *Controller) Run(ctx context.Context, client *ari.Client) error {
 // events while the stream was down, and would otherwise hear silence
 // (hard constraint 14).
 func (c *Controller) Adopt(ctx context.Context) error {
+	// One adoption at a time: two reconnects in quick succession must not
+	// both hand the same orphan over (review R1).
+	c.adoptMu.Lock()
+	defer c.adoptMu.Unlock()
 	octx, cancel := c.op(ctx)
 	chans, err := c.ari.ListChannels(octx)
 	cancel()
@@ -219,12 +226,23 @@ func (c *Controller) Adopt(ctx context.Context) error {
 		return err
 	}
 	c.mu.Lock()
-	c.adopted = map[string]bool{}
+	listed := map[string]bool{}
 	var orphans []string
 	for _, ch := range chans {
-		if ch.App == c.opt.App && c.workers[ch.ID] == nil {
-			c.adopted[ch.ID] = true // its StasisStart may still be in flight
+		if ch.App != c.opt.App {
+			continue
+		}
+		listed[ch.ID] = true
+		// A channel already handed over is skipped while a list still shows
+		// it; its StasisStart may also still be in flight.
+		if c.workers[ch.ID] == nil && !c.adopted[ch.ID] {
+			c.adopted[ch.ID] = true
 			orphans = append(orphans, ch.ID)
+		}
+	}
+	for ch := range c.adopted {
+		if !listed[ch] {
+			delete(c.adopted, ch) // it has left the application
 		}
 	}
 	c.mu.Unlock()
@@ -333,7 +351,7 @@ func (c *Controller) step(ctx context.Context, st *call, it item) {
 		switch {
 		case it.gen != st.timerGen:
 		case st.turn.Prompt.End:
-			c.hangup(ctx, st) // the closing prompt's end was never reported
+			c.silentHangup(ctx, st) // the closing prompt's end was never reported
 		default:
 			c.noInput(ctx, st)
 		}
@@ -435,7 +453,7 @@ func (c *Controller) noInput(ctx context.Context, st *call) {
 			c.handOver(ctx, st)
 			return
 		}
-		c.hangup(ctx, st)
+		c.silentHangup(ctx, st)
 		return
 	}
 	st.reprompts++
@@ -457,7 +475,12 @@ func (c *Controller) play(ctx context.Context, st *call, sounds []string, end bo
 	}
 	octx, cancel := c.op(ctx)
 	defer cancel()
-	if err := c.ari.Play(octx, st.ch, pb, sounds); err != nil {
+	if err := c.ari.Play(octx, st.ch, pb, sounds); errors.Is(err, ari.ErrNotInStasis) {
+		c.log.Warn("ivr call already left the application", "channel", st.ch)
+		c.stopTimer(st)
+		st.ended = true
+		return
+	} else if err != nil {
 		c.log.Error("ivr play failed", "channel", st.ch, "err", err)
 		if end {
 			c.hangup(ctx, st)
@@ -491,7 +514,13 @@ func (c *Controller) handOver(ctx context.Context, st *call) {
 	c.present(ctx, st)
 	octx, cancel := c.op(ctx)
 	defer cancel()
-	if err := c.ari.Continue(octx, st.ch, FallbackContext, "s", 1); err != nil {
+	if err := c.ari.Continue(octx, st.ch, FallbackContext, "s", 1); errors.Is(err, ari.ErrNotInStasis) {
+		// Another actor has already moved the call on (a second hand-over,
+		// the dialplan) or it has ended: never hang up a caller put through.
+		c.log.Warn("ivr call already left the application; not hung up", "channel", st.ch)
+		st.ended = true
+		return
+	} else if err != nil {
 		c.log.Error("ivr hand-over to the fallback failed; hanging up", "channel", st.ch, "err", err)
 		c.hangup(ctx, st)
 		return
@@ -536,6 +565,24 @@ func (c *Controller) present(ctx context.Context, st *call) {
 	if err := c.ari.SetReference(octx, st.ch, ref.Spoken()); err != nil {
 		c.log.Error("ivr hand-over reference not set", "channel", st.ch, "err", err)
 	}
+}
+
+// silentHangup ends a call that has sent no event for a while. Its silence
+// may mean another instance (whose newer stream took the application) or
+// the dialplan has taken it: a call no longer in this application is left
+// alone, never hung up on a coordinator (review R1). If Asterisk cannot be
+// asked, the call is hung up as before.
+func (c *Controller) silentHangup(ctx context.Context, st *call) {
+	octx, cancel := c.op(ctx)
+	chans, err := c.ari.ListChannels(octx)
+	cancel()
+	if err == nil && !slices.ContainsFunc(chans, func(ch ari.Channel) bool { return ch.ID == st.ch && ch.App == c.opt.App }) {
+		c.log.Warn("ivr call already left the application; not hung up", "channel", st.ch)
+		c.stopTimer(st)
+		st.ended = true
+		return
+	}
+	c.hangup(ctx, st)
 }
 
 func (c *Controller) hangup(ctx context.Context, st *call) {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -338,5 +341,28 @@ func TestDecodePlaybackFailedState(t *testing.T) {
 	e, err := decodeEvent([]byte(`{"type":"PlaybackFinished","playback":{"id":"p","state":"failed","target_uri":"channel:ch1"}}`))
 	if err != nil || e.PlaybackID != "p" || e.ChannelID != "ch1" || e.PlaybackState != PlaybackFailed {
 		t.Fatalf("event %+v, err %v", e, err)
+	}
+}
+
+// Review R1: Asterisk answers 404 (gone) or 409 (not in the application) for
+// a channel another actor has moved on; the controller must tell that from a
+// failure, so the client reports it as ErrNotInStasis.
+func TestClientReportsAChannelNoLongerInTheApplication(t *testing.T) {
+	for _, code := range []int{http.StatusNotFound, http.StatusConflict} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+		c, err := New(Config{BaseURL: srv.URL, User: "sauti", Password: secret(t), App: "sauti-ivr"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Continue(context.Background(), "ch1", "sauti-ivr-fallback", "s", 1); !errors.Is(err, ErrNotInStasis) {
+			t.Errorf("%d: %v, want ErrNotInStasis", code, err)
+		}
+		srv.Close()
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) }))
+	defer srv.Close()
+	c, _ := New(Config{BaseURL: srv.URL, User: "sauti", Password: secret(t), App: "sauti-ivr"})
+	if err := c.Continue(context.Background(), "ch1", "sauti-ivr-fallback", "s", 1); err == nil || errors.Is(err, ErrNotInStasis) {
+		t.Errorf("500: %v", err)
 	}
 }

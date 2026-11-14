@@ -61,9 +61,14 @@ func (f *fakeARI) requests() []string {
 	return slices.Clone(f.seq)
 }
 
+// ListChannels reports channels only when the test set them; otherwise it
+// fails, as an unreachable Asterisk does (a silent call is then hung up).
 func (f *fakeARI) ListChannels(context.Context) ([]ari.Channel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.channels == nil {
+		return nil, errors.New("asterisk: no channel list in this test")
+	}
 	return slices.Clone(f.channels), nil
 }
 
