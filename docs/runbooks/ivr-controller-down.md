@@ -15,6 +15,7 @@ The toll-free line is answered by Asterisk, which hands each call to the `sauti-
 - Every hand-over of a call that belongs to an incident first records an escalation (`voice_handed_over`), so the coordinator line keeps ringing about the incident even if the transfer fails. A refused escalation is retried every 5 s for up to 10 minutes (log `ivr hand-over escalation failed; retrying`, then `ivr hand-over escalation lost`); the caller is put through at once.
 - The fallback masks the caller ID before it answers or dials, on every path into it (a hand-over, the bridge, a Stasis failure): the coordinator's phone shows Sauti's number (`SAUTI_CALLER_ID` in the dialplan's globals) and "SAUTI" with the incident number (`SAUTI_REF`, set by ivr-controller), never the caller's number. With `SAUTI_CALLER_ID` empty (before P0) it shows no number.
 - The fallback tries the coordinators up to 3 times, 30 s each, with a hold message between tries, then plays a closing message and hangs up. The closing message promises no call-back (R-3; its wording is PENDING the PI).
+- A call that another instance or the dialplan has already moved on is never hung up by this one: Asterisk answers 404 or 409 for it, and the controller lets it go (`ivr call already left the application; not hung up`). Only one adoption runs at a time.
 - When ivr-controller stops, it hands every live call over before it exits; when it restarts or its event stream reconnects, it hands over every call left in the application with no worker, escalating it under its call ID.
 - If even the hand-over fails, the call is hung up; the incident and every answer given so far are persisted, the escalation still rings, and a redial within 10 minutes resumes it on either channel.
 
@@ -43,6 +44,12 @@ Also stopped: coordinator escalation calls, responder voice alerts (SMS still go
 4. If Asterisk itself is down, fail over to the second SIP carrier and IVR at Site B (M7 switchover runbook).
 5. If the outage lasts, the carrier forwards the IVR number to the on-call coordinators (Build Prompt §14). The carrier must present Sauti's number, not the caller's, on the forwarded call (rule 5): confirm it with the carrier in P0 before relying on this step. Staff log on paper with pre-issued incident IDs, entered later with the `manual_entry` flag.
 
+
+### A lost hand-over escalation
+Alert: `increase(sauti_ivr_handover_escalation_lost_total[15m]) > 0` (ivr-controller's metric; log line `ivr hand-over escalation lost`, with the call and incident IDs only). The database refused the escalation of a call handed to the coordinators for 10 minutes, so that incident may not be ringing.
+1. Once the database takes writes again, take the call ID from the log line and run, on Sauti's servers, as `op_ivr`: `sautictl incident escalate-handover --dsn <op_ivr DSN> --call <call ID>`. It records the same escalation under the same key, so the coordinator line rings until someone acknowledges it. Running it twice, or for an escalation that was in fact written, changes nothing.
+2. "no voice session has that call ID": the call never opened an incident (intake failed first). Nothing to escalate; the live dial was its only path.
+3. Check with `sautictl escalations` that the incident is listed, and tell the coordinator lead by voice.
 ## Escalation
 Coordinator on duty at once, by voice: they are taking the voice calls. Technical operator if Asterisk or the SIP trunk is down.
 
