@@ -235,16 +235,20 @@ func TestDemoScenario1OverHTTP(t *testing.T) {
 		return len(inbox["caller-a"]) > 0 && strings.Contains(inbox["caller-a"][0].Text, ref)
 	})
 
-	// 5. The audit ledger verifies once the relay has caught up, with a
-	// checkpoint signed and witnessed.
+	// 5. The audit ledger verifies once the relay has caught up, with the
+	// head signed and witnessed (the relay may still append between the
+	// signature and the verification, so wait for a run that saw no append).
 	var audit auditResult
 	eventually(t, "a passing verification of the whole ledger", 30*time.Second, func() bool {
 		if st := c.do(http.MethodPost, "/api/audit", map[string]string{}, &audit); st != http.StatusOK {
 			t.Fatalf("audit: %d", st)
 		}
-		return audit.OK && audit.Pending == 0 && audit.Entries == audit.Events && audit.Entries > 0
+		if !audit.OK {
+			t.Fatalf("audit failed: %+v", audit)
+		}
+		return audit.Pending == 0 && audit.Entries == audit.Events && audit.Entries > 0 && audit.CheckpointSeq == audit.Entries
 	})
-	if audit.CheckpointSeq != audit.Entries || audit.WitnessesOK == 0 || audit.Drift != 0 {
+	if audit.WitnessesOK == 0 || audit.Drift != 0 {
 		t.Fatalf("audit %+v", audit)
 	}
 
