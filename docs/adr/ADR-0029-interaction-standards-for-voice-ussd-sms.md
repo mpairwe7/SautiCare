@@ -72,7 +72,7 @@ Settles: F-02, F-29, F-33, F-36; constrains F-82.
 
 ### 3. Every failure path ends with a person
 
-An automated step that errors, times out or exhausts its retries hands over to a coordinator and records an `incident.escalated` event on the call's incident, so the coordinator line keeps ringing even when the hand-over itself fails. A call with no incident (an unknown number on the bridge, or a voice call whose intake failed before an incident was opened) is handed over live and records nothing: an escalation needs an incident, and opening one outside Tool 1, or keeping a separate record, is the PI's and the DPO's decision. This covers:
+An automated step that errors, times out or exhausts its retries hands over to a coordinator and records an `incident.escalated` event on the call's incident, so the coordinator line keeps ringing even when the hand-over itself fails. A call with no incident (an unknown number on the bridge, or a voice call whose intake failed before an incident was opened) is handed over live and records nothing, as is a call that reaches the fallback while ivr-controller is down, when nothing running can identify its incident: an escalation needs an incident, and opening one outside Tool 1, or keeping a separate record, is the PI's and the DPO's decision. This covers:
 - an intake error or timeout, an unplayable or failed prompt, the no-match limit, and silence after the caller engaged;
 - a fallback dial nobody answers (a bounded retry, then a closing message, while the escalation rings);
 - a caller's bridge call that is not answered, or that finds an incident with no helper yet;
@@ -92,8 +92,9 @@ Settles: F-02, F-03, F-04, F-05, F-07, F-28.
 The place (ward and landmark) and a typed call-back number are critical: an error in either sends help to the wrong place or loses the only contact. Each is shown or spoken back before the closing message, in the caller's language; a spoken number is read in groups. Read-back never delays T2: dispatch starts at the trigger screen as today. Read-back changes Tool 1, so it ships behind `place_readback` and the call-back read-back flag **(flag)**.
 
 A wrong place is corrected by a person, never by re-entry. Once T2 is recorded the projection refuses a second ward or landmark answer (`db/operational/migrations/0006_tool1_projection.sql`), and responders may already be on the way, so an automatic change could send them to a third place unannounced. Behind `place_readback`, the place is read back after the landmark answer with `1` right and `2` wrong:
-- `2` keeps the recorded place, flags the incident `needs_location_callback` and escalates `place_disputed`, so the coordinator line rings (rule 3). On voice the call is also handed over at once, with that reason.
+- `2` keeps the recorded place, flags the incident `needs_location_callback` and escalates `place_disputed`, so the coordinator line rings (rule 3). On voice the same flag and escalation are written, and then the call is handed over at once.
 - The coordinator confirms the place with the caller, corrects the incident and tells the assigned responders through M5's relocation tool. Until M5, the runbook step reads "Not possible before M5:" with the interim action (R-3).
+- `place_readback` stays off until M5's relocation tool exists or the PI sets the interim action (R-3). Before then a dispute would ring a coordinator who cannot pass a corrected place to the responders.
 - `1`, or no answer, continues as today.
 
 The keys, the reason and the copy are PENDING the PI.
