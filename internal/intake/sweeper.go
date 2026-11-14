@@ -104,7 +104,7 @@ func (s *Sweeper) RunOnce(ctx context.Context) (int, error) {
 			batch = append(batch, system(in.ID, incident.EvFlagged, map[string]string{"flag": FlagAbandonedBeforeCategory},
 				key+FlagAbandonedBeforeCategory))
 		}
-		if reason := escalation(in); reason != "" {
+		if reason := AbandonmentEscalation(in); reason != "" {
 			batch = append(batch, system(in.ID, incident.EvEscalated, map[string]string{"reason": reason}, key+"escalate"))
 		}
 		if _, err := s.a.AppendBatch(ctx, batch); err != nil {
@@ -116,12 +116,13 @@ func (s *Sweeper) RunOnce(ctx context.Context) (int, error) {
 	return n, errors.Join(errs...)
 }
 
-// escalation is the reason an abandoned incident goes to a coordinator at
-// once, or "" if it does not: not dispatched, and a danger yes, a red
+// AbandonmentEscalation is the reason an abandoned incident goes to a
+// coordinator at once, or "" if it does not (ListIdle relists an abandoned
+// incident exactly when this is not ""): not dispatched, and a danger yes, a red
 // classification, or a ward given (dispatch never started for a place
 // Sauti knows; whether to dispatch at ward level instead is the PI's
 // choice, R-9).
-func escalation(in Idle) string {
+func AbandonmentEscalation(in Idle) string {
 	switch {
 	case in.Dispatched, in.Ward == location.WardElsewhere: // out of area: escalated when answered, if at all
 		return ""

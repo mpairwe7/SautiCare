@@ -162,3 +162,48 @@ func TestWatchdogEscalatesAnOverdueTimerAfterT3(t *testing.T) {
 		t.Fatalf("dispatch_stalled escalations %d %v, want 1", n, err)
 	}
 }
+
+// Review R2: an abandoned call is listed again exactly when the sweeper
+// would escalate it (intake.AbandonmentEscalation), so the SQL and the Go
+// rule cannot drift apart: a resumed yellow call that gave its ward, then
+// dropped again before T2, is relisted and owed dispatch_not_started.
+func TestListIdleRelistsWhatTheSweeperWouldEscalate(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	want := map[uuid.UUID]bool{}
+	for _, danger := range []string{"no", "yes"} {
+		for _, sev := range []string{"yellow", "red"} {
+			for _, ward := range []string{"", "w01", "elsewhere"} {
+				o, err := s.OpenIncident(ctx, openParams(t))
+				if err != nil {
+					t.Fatal(err)
+				}
+				appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":2,"field":"danger","value":"`+danger+`"}`, "")
+				appendEv(t, s, o.IncidentID, incident.EvFlagged, `{"flag":"abandoned"}`, "")
+				appendEv(t, s, o.IncidentID, incident.EvSessionResumed, `{"channel":"ussd_at"}`, "")
+				appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"`+sev+`"}`, testLogic)
+				if ward != "" {
+					appendEv(t, s, o.IncidentID, incident.EvScreenAnswered, `{"screen":6,"field":"ward","value":"`+ward+`"}`, "")
+				}
+				want[o.IncidentID] = intake.AbandonmentEscalation(intake.Idle{Danger: danger, Severity: incident.Severity(sev), Ward: ward}) != ""
+			}
+		}
+	}
+	if _, err := c.Owner(t, pg.StoreOperational).Exec(ctx, "UPDATE op.incidents SET updated_at = clock_timestamp() - interval '5 minutes'"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ListIdle(ctx, 2*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[uuid.UUID]bool{}
+	for _, in := range got {
+		listed[in.ID] = true
+	}
+	for id, owes := range want {
+		if listed[id] != owes {
+			t.Errorf("incident %s: listed %v, the sweeper would escalate %v", id, listed[id], owes)
+		}
+	}
+}

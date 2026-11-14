@@ -160,14 +160,17 @@ LIMIT 1;
 -- name: ListIdle :many
 -- An idle incident is listed until the sweeper flags it abandoned, and again
 -- while an abandonment owes its escalation: a caller who resumed an
--- abandoned incident, answered danger yes (or was classified red) and
--- dropped again before T2. The flag is never cleared, and escalated is
--- sticky. The second condition is intake.escalation's rule.
+-- abandoned incident, answered danger yes, was classified red or gave a ward
+-- other than "somewhere else", and dropped again before T2. The flag is
+-- never cleared, and escalated is sticky. The second condition is
+-- intake.AbandonmentEscalation's rule; an integration test holds the two
+-- together.
 SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched, ward FROM op.incidents
 WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - sqlc.arg(idle_seconds)::int * interval '1 second'
   AND (NOT ('abandoned' = ANY (flags))
-       OR (NOT escalated AND t2 IS NULL AND (danger = 'yes' OR severity = 'red')))
+       OR (NOT escalated AND t2 IS NULL AND ward IS DISTINCT FROM 'elsewhere'
+           AND (danger = 'yes' OR severity = 'red' OR ward IS NOT NULL)))
 ORDER BY updated_at
 LIMIT 500;
 
