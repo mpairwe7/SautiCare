@@ -233,6 +233,7 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Story:** A change to `triage-rules/` merges with the amendment gate failing, because the gate is advisory.
 - **Standard:** OpenSSF Scorecard, Branch-Protection and Code-Review: https://github.com/ossf/scorecard/blob/main/docs/checks.md · NIST SSDF PW.7: https://doi.org/10.6028/NIST.SP.800-218
 - **Decision:** a repository setting for the owner (R-12).
+- **Status (2026-11-14):** ruleset 27188855 was deleted. Ruleset 27260742 now requires a pull request, resolved review threads and the nine CI jobs as strict checks, and blocks deletion and force pushes. Approval and code-owner review remain the owner's: see V-03 in the [evaluation audit](evaluation-audit-2026-11.md).
 
 ## Findings: Medium and Low, by phase
 
