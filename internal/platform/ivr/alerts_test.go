@@ -36,7 +36,8 @@ type alertARI struct {
 	onOriginate func(channelID string)
 	gone        map[string]bool // channels that no longer exist (ChannelExists)
 	failHangup  map[string]bool // channels Asterisk refuses to hang up
-	existsErr   error           // ChannelExists fails
+	slowPlay    func(sounds []string) bool
+	existsErr   error // ChannelExists fails
 }
 
 func (a *alertARI) StopPlayback(_ context.Context, pb string) error {
@@ -72,6 +73,13 @@ func (a *alertARI) Answer(_ context.Context, ch string) error {
 }
 func (a *alertARI) Play(ctx context.Context, _, pb string, sounds []string) error {
 	a.mu.Lock()
+	slow := a.slowPlay != nil && a.slowPlay(sounds)
+	a.mu.Unlock()
+	if slow { // Asterisk does not answer before the request's deadline
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.failPlay {
 		return errors.New("playback refused")
@@ -99,11 +107,14 @@ func (a *alertARI) played() [][]string {
 	defer a.mu.Unlock()
 	return slices.Clone(a.plays)
 }
-func (a *alertARI) Hangup(_ context.Context, ch string) error {
+func (a *alertARI) Hangup(ctx context.Context, ch string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.failHangup[ch] {
 		return errors.New("asterisk: hangup failed")
+	}
+	if err := ctx.Err(); err != nil {
+		return err // as an HTTP request on an expired context
 	}
 	a.hungUp = append(a.hungUp, ch)
 	return nil
@@ -484,6 +495,23 @@ func TestALostEndOfAnAlertPromptStillCloses(t *testing.T) {
 		synctest.Wait()
 		if a.hangups(ch) != 1 || st.accepted != 0 {
 			t.Fatalf("hangups %d accepted %d: the call stayed open", a.hangups(ch), st.accepted)
+		}
+	})
+}
+
+// PR #14 review (round 3): a closing prompt whose playback request uses up
+// its deadline is followed by a hang-up on a fresh deadline, so the hang-up
+// is not refused and the call does not stay open.
+func TestAClosingPromptThatTimesOutStillHangsUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		a.mu.Lock()
+		a.slowPlay = func(sounds []string) bool { return slices.Contains(sounds, "sauti/en/alert-accepted") }
+		a.mu.Unlock()
+		c.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+		if st.accepted != 1 || a.hangups(ch) != 1 {
+			t.Fatalf("accepted %d hangups %d: the result could not play and the call stayed open", st.accepted, a.hangups(ch))
 		}
 	})
 }

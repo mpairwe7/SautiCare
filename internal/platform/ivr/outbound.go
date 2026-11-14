@@ -854,10 +854,22 @@ func bounded[T any](ctx context.Context, d time.Duration, f func(context.Context
 // cut it off); a prompt that cannot be played ends the call at once.
 func endAfter(ctx context.Context, a AlertARI, ch, pb string, sounds []string) string {
 	if err := a.Play(ctx, ch, pb, sounds); err != nil {
-		_ = a.Hangup(ctx, ch)
+		_ = hangupFresh(ctx, a, ch)
 		return ""
 	}
 	return pb
+}
+
+// hangupTimeout bounds a hang-up made on a deadline of its own.
+const hangupTimeout = 3 * time.Second
+
+// hangupFresh hangs up on a deadline of its own: the operation before it
+// (a playback or a store call) may have used up ctx's, and a refused
+// hang-up would leave the line open.
+func hangupFresh(ctx context.Context, a AlertARI, ch string) error {
+	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hangupTimeout)
+	defer cancel()
+	return a.Hangup(hctx, ch)
 }
 
 // outboundKey reports whether a forwarding or coordinator call takes digit:

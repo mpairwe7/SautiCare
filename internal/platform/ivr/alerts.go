@@ -223,7 +223,7 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		alert, who, err := a.c.Store.AlertForAttempt(op, attempt)
 		if err != nil {
 			a.c.Log.Error("answered alert call without its alert", "err", err)
-			_ = a.c.ARI.Hangup(op, e.ChannelID)
+			_ = hangupFresh(op, a.c.ARI, e.ChannelID) // the store call may have used up op's deadline
 			return
 		}
 		st := &alertCall{attempt: attempt, alert: alert, responder: who}
