@@ -137,7 +137,7 @@ func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor in
 	if err != nil {
 		return err
 	}
-	unacked, _, err := s.HasUnacknowledgedEscalation(ctx, r.IncidentID)
+	unacked, err := s.UnacknowledgedEscalations(ctx, r.IncidentID)
 	if err != nil {
 		return err
 	}
@@ -154,9 +154,13 @@ func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor in
 		events = append(events, incident.AppendParams{IncidentID: survivor.ID, Type: incident.EvSeverityRaised, Payload: cons.Raise,
 			IdemKey: "dedup:raise:" + from})
 	}
-	if cons.Escalate != nil {
-		events = append(events, incident.AppendParams{IncidentID: survivor.ID, Type: incident.EvEscalated, Payload: cons.Escalate,
-			IdemKey: "dedup:escalate:" + from})
+	for _, p := range cons.Escalate {
+		payload, err := p.Payload()
+		if err != nil {
+			return err
+		}
+		events = append(events, incident.AppendParams{IncidentID: survivor.ID, Type: incident.EvEscalated, Payload: payload,
+			IdemKey: intake.MergeEscalationKey(r.IncidentID, p)})
 	}
 	for _, e := range events {
 		e.ActorKind = incident.ActorSystem
@@ -167,14 +171,18 @@ func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor in
 	return nil
 }
 
-// HasUnacknowledgedEscalation reports the reason of the incident's newest
-// escalation no coordinator has acknowledged (op_intake, op_ivr).
-func (s *Store) HasUnacknowledgedEscalation(ctx context.Context, id uuid.UUID) (string, bool, error) {
-	reasons, err := s.q.UnacknowledgedEscalation(ctx, pgID(id))
-	if err != nil || len(reasons) == 0 {
-		return "", false, mapErr(err)
+// UnacknowledgedEscalations lists the incident's escalations no coordinator
+// has acknowledged, one per (reason, role), oldest first (op_intake, op_ivr).
+func (s *Store) UnacknowledgedEscalations(ctx context.Context, id uuid.UUID) ([]intake.EscalationPair, error) {
+	rows, err := s.q.UnacknowledgedEscalation(ctx, pgID(id))
+	if err != nil {
+		return nil, mapErr(err)
 	}
-	return reasons[0], true, nil
+	var out []intake.EscalationPair
+	for _, r := range rows {
+		out = append(out, intake.EscalationPair{Reason: r.Reason, Role: r.Role})
+	}
+	return out, nil
 }
 
 // SplitIncident splits a wrongly merged call off its survivor (coordinator

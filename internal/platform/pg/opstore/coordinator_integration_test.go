@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 )
@@ -104,19 +105,21 @@ func TestOldestUnacknowledgedEscalationGauge(t *testing.T) {
 
 // F-06: a merge reads, in its transaction, whether the absorbed call holds
 // an escalation no coordinator has acknowledged (op_intake and op_ivr).
-func TestHasUnacknowledgedEscalation(t *testing.T) {
+func TestUnacknowledgedEscalations(t *testing.T) {
 	r := newDispatchRig(t)
 	ctx := context.Background()
 	if _, err := r.c.Owner(t, pg.StoreOperational).Exec(ctx, "DELETE FROM op.incident_events WHERE type = 'incident.escalated'"); err != nil {
 		t.Fatal(err)
 	}
-	if reason, ok, err := r.intake.HasUnacknowledgedEscalation(ctx, r.incident); err != nil || ok || reason != "" {
-		t.Fatalf("none: %q %v %v", reason, ok, err)
+	if pairs, err := r.intake.UnacknowledgedEscalations(ctx, r.incident); err != nil || len(pairs) != 0 {
+		t.Fatalf("none: %v %v", pairs, err)
 	}
 	appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"triage_rule_error"}`, "")
+	appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"no_eligible_responder","role":"vht"}`, "")
 	for _, s := range []*opstore.Store{r.intake, r.ivr} {
-		if reason, ok, err := s.HasUnacknowledgedEscalation(ctx, r.incident); err != nil || !ok || reason != "triage_rule_error" {
-			t.Fatalf("unacknowledged: %q %v %v", reason, ok, err)
+		if pairs, err := s.UnacknowledgedEscalations(ctx, r.incident); err != nil ||
+			!slices.Equal(pairs, []intake.EscalationPair{{Reason: "triage_rule_error"}, {Reason: "no_eligible_responder", Role: "vht"}}) {
+			t.Fatalf("unacknowledged: %v %v", pairs, err)
 		}
 	}
 	calls, _ := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10)
@@ -126,8 +129,8 @@ func TestHasUnacknowledgedEscalation(t *testing.T) {
 	if err := r.ivr.AcknowledgeCoordinatorCall(ctx, r.incident, calls[0].Seq); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := r.intake.HasUnacknowledgedEscalation(ctx, r.incident); err != nil || ok {
-		t.Fatalf("acknowledged: %v %v", ok, err)
+	if pairs, err := r.intake.UnacknowledgedEscalations(ctx, r.incident); err != nil || len(pairs) != 0 {
+		t.Fatalf("acknowledged: %v %v", pairs, err)
 	}
 }
 

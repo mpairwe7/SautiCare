@@ -8,6 +8,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -269,10 +270,13 @@ func (m *memIncidents) DispatchOrMerge(_ context.Context, r DispatchRequest) (ou
 	}
 	// No acknowledgement exists in memory: the call's newest escalation is
 	// unacknowledged.
-	unacked := ""
+	var unacked []EscalationPair
 	for _, e := range m.events[r.IncidentID] {
 		if e.Type == incident.EvEscalated {
-			unacked, _, _ = incident.ParseEscalated(e.Payload)
+			reason, role, _ := incident.ParseEscalated(e.Payload)
+			if p := (EscalationPair{reason, role}); !slices.Contains(unacked, p) {
+				unacked = append(unacked, p)
+			}
 		}
 	}
 	cons, err := Consequences(r.Call(), survivor, unacked)
@@ -284,8 +288,9 @@ func (m *memIncidents) DispatchOrMerge(_ context.Context, r DispatchRequest) (ou
 			return DispatchOutcome{}, err
 		}
 	}
-	if cons.Escalate != nil {
-		if _, err := m.appendLocked(survivor.ID, incident.EvEscalated, cons.Escalate, "dedup:escalate:"+r.IncidentID.String(), ""); err != nil {
+	for _, p := range cons.Escalate {
+		payload, _ := p.Payload()
+		if _, err := m.appendLocked(survivor.ID, incident.EvEscalated, payload, MergeEscalationKey(r.IncidentID, p), ""); err != nil {
 			return DispatchOutcome{}, err
 		}
 	}

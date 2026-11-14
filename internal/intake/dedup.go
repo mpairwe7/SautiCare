@@ -108,14 +108,36 @@ func (r DispatchRequest) Call() Candidate {
 // ever escalated (F-06): a merge never silences an alert nobody heard.
 // Payloads only; the store adds keys.
 type MergeConsequences struct {
-	Raise    json.RawMessage // severity_raised payload, or nil
-	Escalate json.RawMessage // escalated payload, or nil
+	Raise    json.RawMessage  // severity_raised payload, or nil
+	Escalate []EscalationPair // escalations to record on the survivor, as recorded on the call
 }
 
-// Consequences computes what absorbing call adds to survivor. unacked is the
-// reason of the call's newest escalation no coordinator has acknowledged, or
-// "" (the store reads it in the merge's transaction).
-func Consequences(call, survivor Candidate, unacked string) (MergeConsequences, error) {
+// EscalationPair is an escalation's reason and role ("" for none).
+type EscalationPair struct{ Reason, Role string }
+
+// Payload is the pair's incident.escalated payload.
+func (p EscalationPair) Payload() (json.RawMessage, error) {
+	if p.Role == "" {
+		return json.Marshal(map[string]string{"reason": p.Reason})
+	}
+	return json.Marshal(map[string]string{"reason": p.Reason, "role": p.Role})
+}
+
+// MergeEscalationKey is the idempotency key of the survivor's copy of one of
+// the absorbed call's escalations: one per merge and pair.
+func MergeEscalationKey(from uuid.UUID, p EscalationPair) string {
+	role := p.Role
+	if role == "" {
+		role = "-"
+	}
+	return "dedup:escalate:" + from.String() + ":" + p.Reason + ":" + role
+}
+
+// Consequences computes what absorbing call adds to survivor. unacked are
+// the call's escalations no coordinator has acknowledged, one per (reason,
+// role) (the store reads them in the merge's transaction): each is recorded
+// on the survivor as it was, since a merged incident is never rung.
+func Consequences(call, survivor Candidate, unacked []EscalationPair) (MergeConsequences, error) {
 	var out MergeConsequences
 	var err error
 	if call.Severity.Rank() > survivor.Severity.Rank() {
@@ -123,11 +145,7 @@ func Consequences(call, survivor Candidate, unacked string) (MergeConsequences, 
 			return out, err
 		}
 	}
-	if unacked != "" {
-		if out.Escalate, err = json.Marshal(map[string]string{"reason": incident.ReasonMergedCallEscalated}); err != nil {
-			return out, err
-		}
-	}
+	out.Escalate = unacked
 	return out, nil
 }
 

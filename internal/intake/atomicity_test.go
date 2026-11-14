@@ -211,12 +211,13 @@ func finished(t *testing.T, c *caller, cls Classifier) {
 		if q, err := incident.Fold(evs); err != nil || (q.LastScreen == 8 && q.T[2] == nil) {
 			t.Fatalf("incident %s finished Tool 1 without T2 (%v)", id, err)
 		}
-		// An escalation counts once per reason: a survivor escalated itself
-		// also takes the merged call's unacknowledged escalation (F-06).
+		// An escalation counts once per reason, its own: a survivor escalated
+		// itself also takes a copy of each of the merged call's
+		// unacknowledged escalations (F-06), keyed by the merge.
 		n, escalations := map[incident.EventType]int{}, map[string]int{}
 		for _, e := range evs {
 			n[e.Type]++
-			if e.Type == incident.EvEscalated {
+			if e.Type == incident.EvEscalated && !strings.HasPrefix(e.IdemKey, "dedup:escalate:") {
 				reason, _, _ := incident.ParseEscalated(e.Payload)
 				escalations[reason]++
 			}

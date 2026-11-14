@@ -36,7 +36,7 @@ It prints each open incident with unacknowledged escalations (reference, severit
 | `no_eligible_responder` | nobody left to try for a role within the search limit (ring 1 in protocol mode, 2.5 km amended) and nobody on the way; once per role |
 | `no_responder_nearby` | amended mode: nobody in ring 1 for a role at T2; the search is widening, so help may still come from further away |
 | `bridge_unanswered` | a caller rang the bridge and reached nobody. Their responder did not answer or was unreachable: the caller was sent to the coordinator line. Or their report is open with nobody assigned yet: the caller heard the same "nothing to connect" as an unknown number and reaches the coordinator line only by pressing 0 or after three silent tries; a caller who hangs up first is not transferred, but the incident is escalated all the same (at most once per 10 minutes): see [bridge-failing.md](bridge-failing.md) |
-| `merged_call_escalated` | a call merged into this incident held an unacknowledged escalation (payload `from_reason`): see [split-wrong-merge.md](split-wrong-merge.md) |
+| `merged_call_escalated` | recorded by merges before PR #14: a call merged into this incident held an unacknowledged escalation. A merge now records the absorbed call's own reasons and roles on this incident instead: see [split-wrong-merge.md](split-wrong-merge.md) |
 | `forwarded_to_facility` | amended mode: 2.5 km reached with a role unaccepted; the nearest health centre is being called |
 | `no_facility_acknowledged` | every forwarding health centre was tried and none acknowledged |
 | `dispatch_suspended` | dispatch is suspended: see [suspension-and-resumption.md](suspension-and-resumption.md) |

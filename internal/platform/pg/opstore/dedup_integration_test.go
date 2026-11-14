@@ -86,6 +86,7 @@ func TestMergeCarriesSeverityAndEscalation(t *testing.T) {
 		t.Fatalf("after the yellow call: %+v", p)
 	}
 	red := classifiedAs(t, s, "trauma", incident.SevRed, true)
+	appendEv(t, s, red.IncidentID, incident.EvEscalated, `{"reason":"no_eligible_responder","role":"vht"}`, "")
 	for range 2 {
 		if out, err := dispatchAs(s, red, "trauma", incident.SevRed, true, incident.QualityFuzzy, 903); err != nil || !out.Merged ||
 			out.Survivor != survivor.IncidentID {
@@ -108,14 +109,15 @@ func TestMergeCarriesSeverityAndEscalation(t *testing.T) {
 		case incident.EvSeverityRaised:
 			raised = append(raised, string(e.Payload))
 		case incident.EvEscalated:
-			escalations++
+			escalations++ // each pair the red call held, as it was recorded (PR #14 review)
 			var pl map[string]string
-			if json.Unmarshal(e.Payload, &pl) != nil || len(pl) != 1 || pl["reason"] != "merged_call_escalated" {
+			if json.Unmarshal(e.Payload, &pl) != nil || !(pl["reason"] == "triage_rule_error" && len(pl) == 1 ||
+				pl["reason"] == "no_eligible_responder" && pl["role"] == "vht" && len(pl) == 2) {
 				t.Errorf("escalation payload %s", e.Payload)
 			}
 		}
 	}
-	if len(raised) != 2 || escalations != 1 {
+	if len(raised) != 2 || escalations != 2 {
 		t.Fatalf("severity_raised %v, escalations %d", raised, escalations)
 	}
 	if _, drift, err := opstore.VerifyProjections(ctx, storeAs(t, c, "op_readonly")); err != nil || len(drift) != 0 {

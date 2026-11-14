@@ -101,15 +101,17 @@ ORDER BY i.updated_at DESC
 LIMIT 1;
 
 -- name: UnacknowledgedEscalation :many
--- The reason of an incident's newest escalation no coordinator has
--- acknowledged (op.acknowledge_coordinator_call), if any: a merge carries it
--- to the survivor (F-06).
-SELECT coalesce(e.payload ->> 'reason', '')::text AS reason
-FROM op.incident_events e
-LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
-WHERE e.incident_id = sqlc.arg(id)::uuid AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
-ORDER BY e.seq DESC
-LIMIT 1;
+-- An incident's escalations no coordinator has acknowledged
+-- (op.acknowledge_coordinator_call), one row per (reason, role), oldest
+-- first: a merge carries each to the survivor as it was recorded (F-06).
+SELECT d.reason::text AS reason, d.role::text AS role FROM (
+    SELECT DISTINCT ON (e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''))
+           coalesce(e.payload ->> 'reason', '') AS reason, coalesce(e.payload ->> 'role', '') AS role, e.seq
+      FROM op.incident_events e
+      LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
+     WHERE e.incident_id = sqlc.arg(id)::uuid AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+     ORDER BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''), e.seq) d
+ORDER BY d.seq;
 
 -- name: ListOpenEscalations :many
 -- sautictl escalations (op_readonly; F-08): every open incident with an

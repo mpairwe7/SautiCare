@@ -1177,30 +1177,37 @@ func (q *Queries) StoreIdentifier(ctx context.Context, arg StoreIdentifierParams
 }
 
 const unacknowledgedEscalation = `-- name: UnacknowledgedEscalation :many
-SELECT coalesce(e.payload ->> 'reason', '')::text AS reason
-FROM op.incident_events e
-LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
-WHERE e.incident_id = $1::uuid AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
-ORDER BY e.seq DESC
-LIMIT 1
+SELECT d.reason::text AS reason, d.role::text AS role FROM (
+    SELECT DISTINCT ON (e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''))
+           coalesce(e.payload ->> 'reason', '') AS reason, coalesce(e.payload ->> 'role', '') AS role, e.seq
+      FROM op.incident_events e
+      LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
+     WHERE e.incident_id = $1::uuid AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+     ORDER BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''), e.seq) d
+ORDER BY d.seq
 `
 
-// The reason of an incident's newest escalation no coordinator has
-// acknowledged (op.acknowledge_coordinator_call), if any: a merge carries it
-// to the survivor (F-06).
-func (q *Queries) UnacknowledgedEscalation(ctx context.Context, id pgtype.UUID) ([]string, error) {
+type UnacknowledgedEscalationRow struct {
+	Reason string
+	Role   string
+}
+
+// An incident's escalations no coordinator has acknowledged
+// (op.acknowledge_coordinator_call), one row per (reason, role), oldest
+// first: a merge carries each to the survivor as it was recorded (F-06).
+func (q *Queries) UnacknowledgedEscalation(ctx context.Context, id pgtype.UUID) ([]UnacknowledgedEscalationRow, error) {
 	rows, err := q.db.Query(ctx, unacknowledgedEscalation, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []string
+	var items []UnacknowledgedEscalationRow
 	for rows.Next() {
-		var reason string
-		if err := rows.Scan(&reason); err != nil {
+		var i UnacknowledgedEscalationRow
+		if err := rows.Scan(&i.Reason, &i.Role); err != nil {
 			return nil, err
 		}
-		items = append(items, reason)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
