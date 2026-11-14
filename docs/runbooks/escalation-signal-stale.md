@@ -17,7 +17,7 @@ intake-gw's leader exports the age of the oldest unacknowledged escalation: the 
 - No instance leads: no intake-gw holds advisory lock 7347003, and every instance exports `sauti_escalation_gauges_leader 0`.
 - The leader's read of the escalations fails. The leader gauge is 0 until a read succeeds, and the log shows `escalation gauges not updated`.
 
-A failover between instances takes about 5 seconds and does not page.
+When the leader stops or restarts cleanly, the standby takes the lock within about 5 seconds, and nothing pages. A leader whose host dies keeps the lock until PostgreSQL drops its session. If that takes longer than 2 minutes, the alert pages, because the signal really is stale.
 
 ## Impact
 Tier 3 is blind: an escalation that no coordinator acknowledges pages nobody. Tiers 1 and 2 (the coordinator line, rung by ivr-controller) still work. If ivr-controller is down too, nothing automated reaches a person about an escalation.
