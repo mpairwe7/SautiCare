@@ -238,23 +238,49 @@ class MergeGateTest(unittest.TestCase):
         g = self.gate({"check-runs": {"argv": ["api", "check-runs"], **ok(check_runs(runs))}})
         self.assertRefused(g, "governance and living docs")
 
-    def test_a_failing_or_pending_check_refuses(self):
+    def test_a_failing_or_pending_required_check_refuses(self):
         def with_(extra, drop=None):
             return check_runs([run(n) for n in EXPECTED if n != drop] + extra)
         cases = {
-            "an expected check failed": with_([run("unit tests (race)", conclusion="failure")], "unit tests (race)"),
-            "an expected check is pending": with_([run("fuzz smoke", "in_progress", None)], "fuzz smoke"),
-            "an expected check was skipped": with_([run("fuzz smoke", conclusion="skipped")], "fuzz smoke"),
-            "GitGuardian failed": with_([run("GitGuardian Security Checks", conclusion="failure", app=46505)]),
-            "CodeRabbit is reviewing": with_([run("CodeRabbit", "in_progress", None, app=347564)]),
-            "an expected name from another app": with_([run("unit tests (race)", app=999)], "unit tests (race)"),
+            "an expected check failed": (with_([run("unit tests (race)", conclusion="failure")], "unit tests (race)"),
+                                         "unit tests (race): failure"),
+            "an expected check is pending": (with_([run("fuzz smoke", "in_progress", None)], "fuzz smoke"),
+                                             "fuzz smoke: in_progress"),
+            "an expected check was skipped": (with_([run("fuzz smoke", conclusion="skipped")], "fuzz smoke"),
+                                              "fuzz smoke: skipped"),
+            "an expected name from another app": (with_([run("unit tests (race)", app=999)], "unit tests (race)"),
+                                                  "app 999"),
+            "an unreadable check outside the list": (with_([{"name": "GitGuardian Security Checks",
+                                                             "status": "completed", "conclusion": "failure"}]),
+                                                     "`app` is missing"),
         }
-        for name, page in cases.items():
+        for name, (page, reason) in cases.items():
             with self.subTest(name):
-                self.assertRefused(self.gate({"check-runs": {"argv": ["api", "check-runs"], **ok(page)}}))
+                self.assertRefused(self.gate({"check-runs": {"argv": ["api", "check-runs"], **ok(page)}}), reason)
+        with self.subTest("an expected name as a commit status"):
+            bad = statuses([{"context": "fuzz smoke", "state": "success"}])
+            self.assertRefused(self.gate({"statuses": {"argv": ["api", "/status?"], **ok(bad)}}), "fuzz smoke")
+
+    def test_a_failing_check_outside_the_required_list_only_warns(self):
+        """O-1: only the CI pipeline's required checks block. Any other check
+        or status that failed or is pending is a printed warning."""
+        cases = {
+            "GitGuardian failed": run("GitGuardian Security Checks", conclusion="failure", app=46505),
+            "CodeRabbit is reviewing": run("CodeRabbit", "in_progress", None, app=347564),
+        }
+        for name, extra in cases.items():
+            with self.subTest(name):
+                page = check_runs([run(n) for n in EXPECTED] + [extra])
+                g = self.gate({"check-runs": {"argv": ["api", "check-runs"], **ok(page)}})
+                self.assertEqual(g.code, 0, g.err + g.out)
+                self.assertEqual(len(g.merges()), 1)
+                self.assertIn(f"WARNING: {extra['name']}: {extra['conclusion'] or extra['status']}", g.out)
         with self.subTest("a failing commit status"):
             bad = statuses([{"context": "ci/other", "state": "failure"}])
-            self.assertRefused(self.gate({"statuses": {"argv": ["api", "/status?"], **ok(bad)}}), "ci/other")
+            g = self.gate({"statuses": {"argv": ["api", "/status?"], **ok(bad)}})
+            self.assertEqual(g.code, 0, g.err + g.out)
+            self.assertEqual(len(g.merges()), 1)
+            self.assertIn("WARNING: ci/other: failure", g.out)
 
     def test_a_skipped_check_outside_the_expected_list_is_allowed(self):
         page = check_runs([run(n) for n in EXPECTED] + [run("optional", conclusion="skipped", app=1)])

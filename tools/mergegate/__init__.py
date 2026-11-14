@@ -9,7 +9,8 @@ evaluation audit V-02).
     resolved review threads;
   * main's own CI passed on main's head;
   * every expected check passed on the PR's head commit, from the app the
-    ruleset names, and no other check or status failed or is pending;
+    ruleset names; any other check or status that failed or is pending is
+    printed as a WARNING and does not block (owner decision O-1);
   * CodeRabbit's latest review is of the head commit, and CodeRabbit has
     been quiet for QUIET;
   * every review thread is settled by its last word: CodeRabbit's, and a
@@ -228,31 +229,34 @@ def check_main_green(repo: str) -> None:
         raise Refused(f"main's CI on {sha[:7]} is {run['status']}/{run.get('conclusion')}, not completed/success")
 
 
-def check_checks(repo: str, head: str, required: dict[str, Any]) -> None:
-    """Every required check passed on head, from the app the ruleset names;
-    every other check run and commit status passed, was skipped or neutral."""
-    problems, passed = [], set()
+def check_checks(repo: str, head: str, required: dict[str, Any]) -> list[str]:
+    """Every required check passed on head, from the app the ruleset names.
+    Any other check run or commit status that failed or is pending does not
+    block (owner decision O-1): it is returned as a warning."""
+    problems, warnings, passed = [], [], set()
     for r in counted(f"repos/{repo}/commits/{head}/check-runs?per_page=100", "check_runs"):
         name = get(r, "name", str, "a check run")
         status, conclusion = get(r, "status", str, name), r.get("conclusion")
         app = get(get(r, "app", dict, name), "id", int, name)
+        bad = problems if name in required else warnings
         if name in required and required[name] is not None and app != required[name]:
             problems.append(f"{name}: reported by app {app}, not the app main's ruleset names")
         elif status != "completed":
-            problems.append(f"{name}: {status}")
+            bad.append(f"{name}: {status}")
         elif conclusion == "success":
             passed.add(name)
         elif name in required or conclusion not in ("neutral", "skipped"):
-            problems.append(f"{name}: {conclusion}")
+            bad.append(f"{name}: {conclusion}")
     for s in counted(f"repos/{repo}/commits/{head}/status?per_page=100", "statuses"):
         ctx, state = get(s, "context", str, "a commit status"), get(s, "state", str, "a commit status")
         if ctx in required:
             problems.append(f"{ctx}: a commit status, not a check run")
         elif state != "success":
-            problems.append(f"{ctx}: {state}")
+            warnings.append(f"{ctx}: {state}")
     problems += [f"{n}: missing" for n in required if n not in passed]
     if problems:
         raise Refused(f"checks on {head[:7]}: " + "; ".join(problems))
+    return warnings
 
 
 def when(s: Any) -> datetime:
@@ -505,8 +509,9 @@ def main(argv: list[str]) -> int:
         say(f"main's ruleset requires the {len(required)} expected checks and resolved threads")
         check_main_green(repo)
         say("main's CI passed on main's head")
-        check_checks(repo, head, required)
-        say(f"every check passed on {head[:7]}")
+        for w in check_checks(repo, head, required):
+            say(f"WARNING: {w} (not a required check; it does not block)")
+        say(f"every required check passed on {head[:7]}")
         changes_requested = check_review(repo, pr, head)
         say(f"CodeRabbit reviewed {head[:7]} and has been quiet for {int(QUIET.total_seconds() // 60)} minutes")
         to_resolve, deferred = check_threads(repo, pr, args.dry_run, deferrals)
