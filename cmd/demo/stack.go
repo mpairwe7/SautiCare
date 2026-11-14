@@ -183,7 +183,7 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 	}
 
 	// Ports, and a fresh token and key for this run.
-	picked, err := freePorts(4)
+	sinkLn, picked, err := runListeners(ctx, 4)
 	if err != nil {
 		return st, err
 	}
@@ -192,10 +192,6 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 	intakeURL := "http://127.0.0.1:" + ports["intake"]
 	local := egress.NewClient([]string{"127.0.0.1"}, 5*time.Second)
 	st.sink = &smsSink{apiKey: apiKey, report: deliveryReporter(sctx, local, intakeURL+"/v1/sms/delivery/at/"+deliveryToken)}
-	sinkLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return st, err
-	}
 	st.sinkSrv = &http.Server{Handler: st.sink, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = st.sinkSrv.Serve(sinkLn) }()
 	smsURL := "http://" + sinkLn.Addr().String()
@@ -243,6 +239,21 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 		st.routes[code] = sim.NewUSSD(intakeURL, pathToken, code, network)
 	}
 	return st, nil
+}
+
+// runListeners binds the fake SMS endpoint's listener first and keeps it
+// open while it picks n service ports, so no service is given the sink's port.
+func runListeners(ctx context.Context, n int) (net.Listener, []string, error) {
+	sink, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, nil, err
+	}
+	ports, err := freePorts(n)
+	if err != nil {
+		_ = sink.Close()
+		return nil, nil, err
+	}
+	return sink, ports, nil
 }
 
 func handleOf(label string) string { return strings.ReplaceAll(strings.ToLower(label), " ", "-") }

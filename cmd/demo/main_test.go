@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -209,6 +211,21 @@ func TestFreePortsAreDistinct(t *testing.T) {
 			t.Fatalf("port %s picked twice in one run", p)
 		}
 		seen[p] = true
+	}
+}
+
+// CodeRabbit PR #15: the fake SMS endpoint's listener is bound before the
+// service ports are picked and stays bound, so no service is given its port.
+func TestServicePortsNeverTakeTheSinkPort(t *testing.T) {
+	for range 20 {
+		sink, ports, err := runListeners(context.Background(), 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := strconv.Itoa(sink.Addr().(*net.TCPAddr).Port); slices.Contains(ports, p) {
+			t.Fatalf("service ports %v include the sink's %s", ports, p)
+		}
+		_ = sink.Close()
 	}
 }
 
