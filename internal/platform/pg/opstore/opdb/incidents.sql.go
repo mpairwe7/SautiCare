@@ -317,6 +317,34 @@ func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentR
 	return i, err
 }
 
+const iVRCallIncident = `-- name: IVRCallIncident :many
+SELECT s.incident_id::uuid AS incident_id FROM op.sessions s
+WHERE s.channel = 'ivr' AND s.provider_session_id = $1::text
+LIMIT 1
+`
+
+// The incident of a voice call, from its call ID (the IVR session's provider
+// ID): ivr-controller escalates a call it adopted after a restart (op_ivr).
+func (q *Queries) IVRCallIncident(ctx context.Context, callID string) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, iVRCallIncident, callID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var incident_id pgtype.UUID
+		if err := rows.Scan(&incident_id); err != nil {
+			return nil, err
+		}
+		items = append(items, incident_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const latestUSSDStep = `-- name: LatestUSSDStep :many
 SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text

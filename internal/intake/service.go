@@ -105,6 +105,9 @@ type Incidents interface {
 type Reader interface {
 	Projection(ctx context.Context, id uuid.UUID) (incident.Projection, error)
 	FindResumable(ctx context.Context, macs []crypto.MAC, window time.Duration) (uuid.UUID, bool, error)
+	// IVRCallIncident finds the incident of a voice call from its call ID
+	// (the IVR session's provider ID).
+	IVRCallIncident(ctx context.Context, callID string) (uuid.UUID, bool, error)
 }
 
 // Keys computes keyed hashes for step keys and redial lookup

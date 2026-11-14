@@ -169,6 +169,13 @@ func (m *memIncidents) FindResumable(_ context.Context, macs []crypto.MAC, windo
 	return best, found, nil
 }
 
+func (m *memIncidents) IVRCallIncident(_ context.Context, callID string) (uuid.UUID, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.sessions[string(incident.ChannelIVR)+"|"+callID]
+	return id, ok, nil
+}
+
 func (m *memIncidents) allEvents() []incident.Event {
 	m.mu.Lock()
 	defer m.mu.Unlock()

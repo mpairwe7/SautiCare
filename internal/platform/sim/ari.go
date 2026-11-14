@@ -29,34 +29,34 @@ import (
 // with SetPlaybackDuration, when stopped (DELETE /ari/playbacks/{id}), or
 // when the test calls FinishPlayback.
 type FakeARI struct {
-	originated  []url.Values
-	srv         *httptest.Server
-	user, pass  string
-	mu          sync.Mutex
-	requests    []string
-	plays       map[string][][]string
-	hungUp      map[string]bool
-	continued   map[string]string
-	conns       []*websocket.Conn
-	connected   chan struct{}
-	duration    time.Duration
-	active      map[string]string   // channel → playback playing
-	queued      map[string][]string // channel → playbacks waiting
-	playbackCh  map[string]string   // playback → channel (until it finishes)
-	bridges     map[string][]string // bridge → channels added
-	bridgeQ     map[string]url.Values
-	destroyed   map[string]bool
-	callerIDs   map[string]string
-	callerNames map[string]string
-	live        map[string]bool   // channels that exist: placed or started, not yet ended
-	apps        map[string]string // channel → the Stasis application it is parked in
+	originated []url.Values
+	srv        *httptest.Server
+	user, pass string
+	mu         sync.Mutex
+	requests   []string
+	plays      map[string][][]string
+	hungUp     map[string]bool
+	continued  map[string]string
+	conns      []*websocket.Conn
+	connected  chan struct{}
+	duration   time.Duration
+	active     map[string]string   // channel → playback playing
+	queued     map[string][]string // channel → playbacks waiting
+	playbackCh map[string]string   // playback → channel (until it finishes)
+	bridges    map[string][]string // bridge → channels added
+	bridgeQ    map[string]url.Values
+	destroyed  map[string]bool
+	callerIDs  map[string]string
+	refs       map[string]string // channel → SAUTI_REF
+	live       map[string]bool   // channels that exist: placed or started, not yet ended
+	apps       map[string]string // channel → the Stasis application it is parked in
 }
 
 // NewFakeARI starts the fake.
 func NewFakeARI(user, pass string) *FakeARI {
 	f := &FakeARI{user: user, pass: pass, plays: map[string][][]string{}, hungUp: map[string]bool{}, continued: map[string]string{},
 		connected: make(chan struct{}, 16), active: map[string]string{}, queued: map[string][]string{}, playbackCh: map[string]string{},
-		bridges: map[string][]string{}, bridgeQ: map[string]url.Values{}, destroyed: map[string]bool{}, callerIDs: map[string]string{}, callerNames: map[string]string{}, live: map[string]bool{}, apps: map[string]string{}}
+		bridges: map[string][]string{}, bridgeQ: map[string]url.Values{}, destroyed: map[string]bool{}, callerIDs: map[string]string{}, refs: map[string]string{}, live: map[string]bool{}, apps: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	return f
 }
@@ -242,9 +242,9 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 			f.mu.Lock()
 			f.callerIDs[parts[2]] = r.URL.Query().Get("value")
 			f.mu.Unlock()
-		case "CALLERID(name)":
+		case "SAUTI_REF":
 			f.mu.Lock()
-			f.callerNames[parts[2]] = r.URL.Query().Get("value")
+			f.refs[parts[2]] = r.URL.Query().Get("value")
 			f.mu.Unlock()
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -371,11 +371,11 @@ func (f *FakeARI) CallerID(channelID string) string {
 	return f.callerIDs[channelID]
 }
 
-// CallerName returns the caller name Sauti set on a channel ("" if none).
-func (f *FakeARI) CallerName(channelID string) string {
+// Reference returns the SAUTI_REF Sauti set on a channel ("" if none).
+func (f *FakeARI) Reference(channelID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.callerNames[channelID]
+	return f.refs[channelID]
 }
 
 // Bridged returns the channels added to a bridge, in order.

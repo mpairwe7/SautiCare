@@ -186,3 +186,26 @@ func TestHandOverEscalatesOncePerCall(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Task 1.2 amendment: a call adopted after a restart carries only its call
+// ID (the channel). HandOver finds its incident from the call's voice
+// session; a call with no session has nothing to escalate.
+func TestHandOverFindsTheIncidentByCallID(t *testing.T) {
+	r := newRig(t, nil, nil)
+	v := r.callIVR(t, "ch9", "+256772123456")
+	if err := r.svc.HandOver(context.Background(), IVRCall{CallID: "ch9"}, incident.ReasonVoiceHandedOver); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.svc.HandOver(context.Background(), IVRCall{CallID: "nobody"}, incident.ReasonVoiceHandedOver); err != nil {
+		t.Fatal(err)
+	}
+	var on []string
+	for _, e := range r.inc.allEvents() {
+		if e.Type == incident.EvEscalated {
+			on = append(on, e.IncidentID.String())
+		}
+	}
+	if !slices.Equal(on, []string{v.call.IncidentID.String()}) {
+		t.Fatalf("escalations on %v, want one on %s", on, v.call.IncidentID)
+	}
+}

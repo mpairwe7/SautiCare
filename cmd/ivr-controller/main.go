@@ -141,11 +141,10 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Sauti's number: every call Sauti places presents it, and a coordinator
-	// taking a handed-over call sees it instead of the caller's (rule 5).
-	callerID := os.Getenv("SAUTI_ARI_CALLER_ID")
+	// A handed-over call's caller ID is masked by the fallback dialplan
+	// (SAUTI_CALLER_ID in extensions.conf), never by an ARI request (rule 5).
 	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2, MaxNoMatch: 3,
-		OpTimeout: 3 * time.Second, PromptMax: 30 * time.Second, App: env.Default("SAUTI_ARI_APP", "sauti-ivr"), CallerID: callerID})
+		OpTimeout: 3 * time.Second, PromptMax: 30 * time.Second, App: env.Default("SAUTI_ARI_APP", "sauti-ivr")})
 
 	reg := metrics.NewRegistry()
 	admin := http.NewServeMux()
@@ -179,6 +178,7 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		callerID := os.Getenv("SAUTI_ARI_CALLER_ID")
 		noInput, err := noInputSetting(os.Getenv("SAUTI_OUTBOUND_NO_INPUT"))
 		if err != nil {
 			return err

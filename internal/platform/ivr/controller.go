@@ -39,8 +39,7 @@ type ARI interface {
 	Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error
 	Hangup(ctx context.Context, channelID string) error
 	ListChannels(ctx context.Context) ([]ari.Channel, error)
-	SetCallerID(ctx context.Context, channelID, number string) error
-	SetCallerName(ctx context.Context, channelID, name string) error
+	SetReference(ctx context.Context, channelID, ref string) error
 }
 
 // Intake is the voice side of intake.Service.
@@ -78,9 +77,6 @@ type Options struct {
 	// App is the Stasis application the controller serves (default
 	// sauti-ivr): Adopt hands over the calls parked in it.
 	App string
-	// CallerID is Sauti's number (SAUTI_ARI_CALLER_ID), shown to the
-	// coordinator who takes a handed-over call instead of the caller's.
-	CallerID string
 }
 
 // maxCallbackDigits bounds a typed callback number (E.164 is at most 15).
@@ -234,7 +230,8 @@ func (c *Controller) Adopt(ctx context.Context) error {
 	c.mu.Unlock()
 	for _, ch := range orphans {
 		c.log.Warn("ivr call found without a worker; handing over", "channel", ch)
-		c.handOver(ctx, &call{ch: ch})
+		// The channel ID is the call ID: HandOver finds the incident from it.
+		c.handOver(ctx, &call{ch: ch, turn: intake.IVRTurn{Call: intake.IVRCall{CallID: ch}}})
 	}
 	return nil
 }
@@ -478,14 +475,17 @@ func (c *Controller) play(ctx context.Context, st *call, sounds []string, end bo
 // recorded message, then the on-call coordinators; hard constraint 14). The
 // incident and every answer given so far are already persisted, and a
 // redial resumes them. The escalation is recorded first, so the coordinator
-// line rings even if the transfer fails; the coordinator is shown Sauti's
-// number and the reference, never the caller's. If the transfer fails, the
-// call is hung up rather than left in silence.
+// line rings even if the transfer fails; one the store refuses is retried in
+// the background, never holding the caller back. The fallback masks the
+// caller ID: the coordinator sees Sauti's number and "SAUTI" with the
+// reference, never the caller's. If the transfer fails, the call is hung up
+// rather than left in silence.
 func (c *Controller) handOver(ctx context.Context, st *call) {
 	c.stopTimer(st)
 	hctx, hcancel := c.op(ctx)
 	if err := c.in.HandOver(hctx, st.turn.Call, incident.ReasonVoiceHandedOver); err != nil {
-		c.log.Error("ivr hand-over escalation failed", "channel", st.ch, "err", err)
+		c.log.Error("ivr hand-over escalation failed; retrying", "channel", st.ch, "err", err)
+		go c.retryHandOver(context.WithoutCancel(ctx), st.ch, st.turn.Call)
 	}
 	hcancel()
 	c.present(ctx, st)
@@ -500,23 +500,41 @@ func (c *Controller) handOver(ctx context.Context, st *call) {
 	st.ended = true
 }
 
-// present sets what the coordinator's phone shows: Sauti's number and
-// "SAUTI" with the reference. A failure is logged and the hand-over goes
-// ahead: reaching a person comes first (hard constraint 14).
-func (c *Controller) present(ctx context.Context, st *call) {
-	octx, cancel := c.op(ctx)
-	defer cancel()
-	if c.opt.CallerID != "" {
-		if err := c.ari.SetCallerID(octx, st.ch, c.opt.CallerID); err != nil {
-			c.log.Error("ivr hand-over caller ID failed", "channel", st.ch, "err", err)
+// retryHandOver records a refused hand-over escalation, every 5 s for up to
+// 10 minutes; its key (the call) keeps it to one event. A durable retry is
+// not possible: the store that refused it is the only place it could go,
+// and a database outage pages through P0 alerting.
+func (c *Controller) retryHandOver(ctx context.Context, ch string, call intake.IVRCall) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	until := time.Now().Add(10 * time.Minute) // a local timer, not a recorded time
+	for range t.C {
+		octx, cancel := c.op(ctx)
+		err := c.in.HandOver(octx, call, incident.ReasonVoiceHandedOver)
+		cancel()
+		if err == nil {
+			return
+		}
+		if !time.Now().Before(until) {
+			c.log.Error("ivr hand-over escalation lost", "channel", ch, "incident", call.IncidentID, "err", err)
+			return
 		}
 	}
-	name := "SAUTI"
-	if ref := st.turn.Call.Reference; ref != "" {
-		name += " " + ref.Spoken()
+}
+
+// present gives the fallback the reference to show the coordinator after
+// "SAUTI". A failure is logged and the hand-over goes ahead (the coordinator
+// then sees "SAUTI" alone): reaching a person comes first (hard constraint
+// 14). The caller ID is the dialplan's to mask, never this request's.
+func (c *Controller) present(ctx context.Context, st *call) {
+	ref := st.turn.Call.Reference
+	if ref == "" {
+		return
 	}
-	if err := c.ari.SetCallerName(octx, st.ch, name); err != nil {
-		c.log.Error("ivr hand-over caller name failed", "channel", st.ch, "err", err)
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	if err := c.ari.SetReference(octx, st.ch, ref.Spoken()); err != nil {
+		c.log.Error("ivr hand-over reference not set", "channel", st.ch, "err", err)
 	}
 }
 

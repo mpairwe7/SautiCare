@@ -55,11 +55,16 @@ func (s *Service) StartIVR(ctx context.Context, callID string, phone pii.Phone) 
 // HandOver records that the voice line is handing the call to a
 // coordinator: an incident.escalated event, once per call, so the
 // coordinator line rings even if the transfer itself fails (ADR-0029 rule
-// 3). A call with no incident, or whose incident is closed or merged, has
-// nothing to escalate.
+// 3). A call known only by its ID (adopted after a restart) is found from
+// its voice session. A call with no incident, or whose incident is closed or
+// merged, has nothing to escalate.
 func (s *Service) HandOver(ctx context.Context, call IVRCall, reason string) error {
 	if call.IncidentID == (uuid.UUID{}) {
-		return nil
+		id, ok, err := s.d.Reader.IVRCallIncident(ctx, call.CallID)
+		if err != nil || !ok {
+			return err
+		}
+		call.IncidentID = id
 	}
 	p, err := s.d.Reader.Projection(ctx, call.IncidentID)
 	if err != nil || p.State.Terminal() {

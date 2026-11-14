@@ -313,20 +313,21 @@ func TestClientStreamReportsEachConnect(t *testing.T) {
 	}
 }
 
-// A handed-over call shows the coordinator "SAUTI" and the reference as the
-// caller name (rule 5); a name is letters, digits and spaces only.
-func TestClientSetsCallerName(t *testing.T) {
+// A handed-over call carries its reference in SAUTI_REF, which the fallback
+// dialplan shows the coordinator after "SAUTI" (rule 5): digits and spaces
+// only.
+func TestClientSetsReference(t *testing.T) {
 	f, c := newPair(t)
 	ctx := context.Background()
-	if err := c.SetCallerName(ctx, "chan-1", "SAUTI 123 456 7894"); err != nil {
+	if err := c.SetReference(ctx, "chan-1", "123 456 7894"); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.CallerName("chan-1"); got != "SAUTI 123 456 7894" {
-		t.Fatalf("caller name %q", got)
+	if got := f.Reference("chan-1"); got != "123 456 7894" {
+		t.Fatalf("reference %q", got)
 	}
-	for _, bad := range []string{"", "x\"<1>", "SAUTI\n"} {
-		if err := c.SetCallerName(ctx, "chan-1", bad); err == nil {
-			t.Fatalf("name %q was sent", bad)
+	for _, bad := range []string{"", "x\"<1>", "123\n", "SAUTI 123"} {
+		if err := c.SetReference(ctx, "chan-1", bad); err == nil {
+			t.Fatalf("reference %q was sent", bad)
 		}
 	}
 }

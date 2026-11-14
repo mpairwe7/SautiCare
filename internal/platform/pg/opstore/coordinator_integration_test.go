@@ -156,3 +156,28 @@ func TestClaimReturnsEachRoleOfAReason(t *testing.T) {
 		t.Fatalf("claim %+v %v", calls, err)
 	}
 }
+
+// Task 1.2 amendment: the incident of a voice call, from its call ID (the
+// IVR session's provider ID), as op_ivr; a USSD session with the same
+// provider ID is not a voice call.
+func TestIVRCallIncident(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	voice := openParams(t)
+	voice.Channel, voice.ProviderSessionID = incident.ChannelIVR, "ch-ivr-1"
+	o, err := r.intake.OpenIncident(ctx, voice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ussd := openParams(t)
+	ussd.ProviderSessionID = "ch-ussd-1"
+	if _, err := r.intake.OpenIncident(ctx, ussd); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, err := r.ivr.IVRCallIncident(ctx, "ch-ivr-1"); err != nil || !ok || id != o.IncidentID {
+		t.Fatalf("voice call: %v %v %v", id, ok, err)
+	}
+	if _, ok, err := r.ivr.IVRCallIncident(ctx, "ch-ussd-1"); err != nil || ok {
+		t.Fatalf("a USSD session taken for a voice call: %v %v", ok, err)
+	}
+}

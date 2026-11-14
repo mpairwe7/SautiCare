@@ -150,6 +150,13 @@ ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THE
 -- idempotency key that carries it repeats only within the window.
 SELECT floor(extract(epoch FROM clock_timestamp()) / sqlc.arg(seconds)::int)::bigint AS bucket;
 
+-- name: IVRCallIncident :many
+-- The incident of a voice call, from its call ID (the IVR session's provider
+-- ID): ivr-controller escalates a call it adopted after a restart (op_ivr).
+SELECT s.incident_id::uuid AS incident_id FROM op.sessions s
+WHERE s.channel = 'ivr' AND s.provider_session_id = sqlc.arg(call_id)::text
+LIMIT 1;
+
 -- name: ListIdle :many
 -- An idle incident is listed until the sweeper flags it abandoned, and again
 -- while an abandonment owes its escalation: a caller who resumed an

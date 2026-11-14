@@ -93,6 +93,16 @@ func (s *Store) ListIdle(ctx context.Context, idleFor time.Duration) ([]intake.I
 	return out, nil
 }
 
+// IVRCallIncident finds the incident of a voice call from its call ID
+// (op_ivr; the IVR session's provider ID).
+func (s *Store) IVRCallIncident(ctx context.Context, callID string) (uuid.UUID, bool, error) {
+	ids, err := s.q.IVRCallIncident(ctx, callID)
+	if err != nil || len(ids) == 0 {
+		return uuid.UUID{}, false, mapErr(err)
+	}
+	return uuid.UUID(ids[0].Bytes), true, nil
+}
+
 // ListOverdueDispatch lists dispatching incidents whose dispatch timer is
 // overdue by after and unleased (intake-gw's watchdog, F-05).
 func (s *Store) ListOverdueDispatch(ctx context.Context, after time.Duration) ([]intake.Overdue, error) {

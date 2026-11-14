@@ -35,21 +35,30 @@ type fakeARI struct {
 	failPlay     func(sounds []string) bool
 	ctrl         *Controller
 	channels     []ari.Channel // what ListChannels reports
-	seq          []string      // caller ID, name and continue requests, in order
+	seq          []string      // reference, hand-over escalation and continue requests, in order
+	failRef      bool
 }
 
-func (f *fakeARI) SetCallerID(_ context.Context, ch, number string) error {
+func (f *fakeARI) SetReference(_ context.Context, ch, ref string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.seq = append(f.seq, "id "+ch+" "+number)
+	if f.failRef {
+		return errors.New("asterisk: variable refused")
+	}
+	f.seq = append(f.seq, "ref "+ch+" "+ref)
 	return nil
 }
 
-func (f *fakeARI) SetCallerName(_ context.Context, ch, name string) error {
+func (f *fakeARI) note(s string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.seq = append(f.seq, "name "+ch+" "+name)
-	return nil
+	f.seq = append(f.seq, s)
+}
+
+func (f *fakeARI) requests() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.seq)
 }
 
 func (f *fakeARI) ListChannels(context.Context) ([]ari.Channel, error) {
@@ -140,12 +149,21 @@ type scripted struct {
 	block     map[string]chan struct{}
 	invalid   map[string]bool // inputs that re-prompt the same question with a notice
 	handovers []string        // HandOver reasons
+	failHand  int             // HandOver fails this many times first
+	log       *fakeARI        // where HandOver notes itself among the ARI requests
 }
 
 func (s *scripted) HandOver(_ context.Context, c intake.IVRCall, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handovers = append(s.handovers, c.CallID+" "+reason)
+	if s.log != nil {
+		s.log.note("handover " + c.CallID)
+	}
+	if s.failHand > 0 {
+		s.failHand--
+		return errors.New("store down")
+	}
 	return nil
 }
 
@@ -665,18 +683,96 @@ func TestHandOverRecordsAnEscalationEvenWhenContinueFails(t *testing.T) {
 	}
 }
 
-// The coordinator taking a handed-over call sees Sauti and the reference,
-// never the caller's number (rule 5; ADR-0029 rule 6).
+// The coordinator taking a handed-over call sees "SAUTI" and the reference:
+// the controller sets only the reference, and the fallback dialplan masks
+// the caller ID itself, so no failed request can show the caller's number
+// (rule 5; ADR-0029 rule 6).
 func TestHandOverShowsSautiAndTheReference(t *testing.T) {
 	s := &scripted{prompts: prompts(), failOn: "1"}
 	a := &fakeARI{}
-	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, CallerID: "+256800100100"})
+	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
 	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
 	started(t, c, a, "ch1")
 	send(t, c, key("ch1", "1"))
-	want := []string{"id ch1 +256800100100", "name ch1 SAUTI 123 456 7894", "continue ch1"}
-	if !slices.Equal(a.seq, want) {
-		t.Fatalf("requests %v, want %v", a.seq, want)
+	want := []string{"ref ch1 123 456 7894", "continue ch1"}
+	if !slices.Equal(a.requests(), want) {
+		t.Fatalf("requests %v, want %v", a.requests(), want)
+	}
+}
+
+// A reference Asterisk will not set does not hold the caller back: the
+// dialplan then shows "SAUTI" alone.
+func TestHandOverGoesAheadWhenTheReferenceCannotBeSet(t *testing.T) {
+	s := &scripted{prompts: prompts(), failOn: "1"}
+	a := &fakeARI{failRef: true}
+	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	started(t, c, a, "ch1")
+	send(t, c, key("ch1", "1"))
+	if !slices.Equal(a.continues, []string{"ch1 sauti-ivr-fallback,s,1"}) || a.count(&a.hangups) != 0 {
+		t.Fatalf("continues %v hangups %v", a.continues, a.hangups)
+	}
+}
+
+// A hand-over escalation the store refuses is retried in the background
+// every 5 s (up to 10 minutes) with the same call, so its key keeps it to
+// one event; the caller is put through at once.
+func TestAFailedHandOverEscalationIsRetried(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &scripted{prompts: prompts(), failOn: "1", failHand: 2}
+		a := &fakeARI{}
+		c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		synctest.Wait()
+		pb, _ := a.lastPlay()
+		c.Handle(ctx, Event{Type: EventPlaybackStarted, ChannelID: "ch1", PlaybackID: pb})
+		c.Handle(ctx, key("ch1", "1"))
+		synctest.Wait()
+		if a.count(&a.continues) != 1 || len(s.handedOver()) != 1 {
+			t.Fatalf("continues %v handovers %v: the call waited for the escalation", a.continues, s.handovers)
+		}
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		if got := s.handedOver(); !slices.Equal(got, []string{"ch1 voice_handed_over", "ch1 voice_handed_over", "ch1 voice_handed_over"}) {
+			t.Fatalf("handovers %v, want three of the same call", got)
+		}
+		time.Sleep(15 * time.Minute)
+		synctest.Wait()
+		if n := len(s.handedOver()); n != 3 {
+			t.Fatalf("retried after success: %d", n)
+		}
+	})
+}
+
+// Task 1.2 amendment: a call adopted after a restart is escalated as a live
+// hand-over is, under its call ID (the channel), before the transfer.
+func TestAdoptEscalatesBeforeItHandsOver(t *testing.T) {
+	s := &scripted{prompts: prompts()}
+	c, a, _ := newController(t, s)
+	s.log = a
+	a.channels = []ari.Channel{{ID: "ch9", App: "sauti-ivr"}}
+	if err := c.Adopt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.requests(); !slices.Equal(got, []string{"handover ch9", "continue ch9"}) || !slices.Equal(s.handedOver(), []string{"ch9 voice_handed_over"}) {
+		t.Fatalf("requests %v handovers %v", got, s.handovers)
+	}
+}
+
+// The escalation stands when the adopted call cannot be transferred: the
+// coordinator line still rings, and the call is hung up, not left silent.
+func TestAdoptEscalatesWhenTheFallbackFails(t *testing.T) {
+	s := &scripted{prompts: prompts()}
+	a := &fakeARI{failContinue: true}
+	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+	a.channels = []ari.Channel{{ID: "ch9", App: "sauti-ivr"}}
+	if err := c.Adopt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.handedOver(), []string{"ch9 voice_handed_over"}) || !slices.Equal(a.hangups, []string{"ch9"}) {
+		t.Fatalf("handovers %v hangups %v", s.handovers, a.hangups)
 	}
 }
 

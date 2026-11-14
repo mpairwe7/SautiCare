@@ -246,20 +246,21 @@ func (c *Client) SetCallerID(ctx context.Context, channelID, number string) erro
 
 var callerIDNumber = regexp.MustCompile(`^\+?[0-9]{3,15}$`)
 
-// SetCallerName sets the caller name a channel presents. A call handed to a
-// coordinator shows "SAUTI" and the reference, so the coordinator knows
-// which incident it is without seeing the caller's number (rule 5).
-func (c *Client) SetCallerName(ctx context.Context, channelID, name string) error {
+// SetReference sets the channel variable SAUTI_REF to an incident
+// reference. The fallback dialplan shows the coordinator "SAUTI" and it as
+// the caller name; the dialplan, not this client, masks the caller ID, so a
+// failed request here can never show the caller's number (rule 5).
+func (c *Client) SetReference(ctx context.Context, channelID, ref string) error {
 	if err := ids(channelID); err != nil {
 		return err
 	}
-	if !callerName.MatchString(name) {
-		return errors.New("ari: a caller name is letters, digits and spaces")
+	if !reference.MatchString(ref) {
+		return errors.New("ari: a reference is digits and spaces")
 	}
-	return c.do(ctx, http.MethodPost, "/ari/channels/"+channelID+"/variable", url.Values{"variable": {"CALLERID(name)"}, "value": {name}})
+	return c.do(ctx, http.MethodPost, "/ari/channels/"+channelID+"/variable", url.Values{"variable": {"SAUTI_REF"}, "value": {ref}})
 }
 
-var callerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ]{0,39}$`)
+var reference = regexp.MustCompile(`^[0-9][0-9 ]{0,19}$`)
 
 // CreateBridge creates a mixing bridge for the masked bridge (Build Prompt
 // §10.5, ADR-0028): the two legs hear each other, and nothing is recorded —
