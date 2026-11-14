@@ -863,6 +863,13 @@ func endAfter(ctx context.Context, a AlertARI, ch, pb string, sounds []string) s
 // hangupTimeout bounds a hang-up made on a deadline of its own.
 const hangupTimeout = 3 * time.Second
 
+// hangupRetry is how often an alert call's final hang-up that Asterisk
+// refused is tried again, and hangupGiveUp for how long.
+const (
+	hangupRetry  = 5 * time.Second
+	hangupGiveUp = 2 * time.Minute
+)
+
 // hangupFresh hangs up on a deadline of its own: the operation before it
 // (a playback or a store call) may have used up ctx's, and a refused
 // hang-up would leave the line open.

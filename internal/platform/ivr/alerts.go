@@ -17,6 +17,7 @@ import (
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/pii"
+	"sautihealth.com/sauti/internal/platform/ari"
 )
 
 // Outbound voice alerts (M2 Part B Task 10; Build Prompt §10.4; scenario 9).
@@ -87,9 +88,10 @@ type alertCall struct {
 	reasons   bool // the reason list is being heard
 	plays     int
 	done      bool
-	current   string // the prompt being heard: a key cuts it
-	hangupOn  string // the closing prompt: hang up once it has been heard
-	replays   int    // menus heard again after no input
+	current   string    // the prompt being heard: a key cuts it
+	hangupOn  string    // the closing prompt: hang up once it has been heard
+	replays   int       // menus heard again after no input
+	refused   time.Time // when Asterisk first refused the final hang-up
 	timer     *time.Timer
 	timerGen  int // bumped whenever the timer is armed or stopped: a stale one does nothing
 }
@@ -101,9 +103,11 @@ type AlertCalls struct {
 	calls map[string]*alertCall
 	run   sync.Mutex // serialises the calls' events and their no-input timers
 	// lead is the leader term's context of the latest event (under run): a
-	// timer neither starts nor acts once it is cancelled, so between the
-	// lock's loss and the term's clean-up (DisarmAll) no old timer plays or
-	// closes a call the next leader may serve.
+	// timer neither starts nor acts once it is cancelled, and a timer's
+	// requests run on deadlines derived from it, so losing the lock aborts
+	// them. Between the lock's loss and the term's clean-up (DisarmAll) no
+	// old timer plays or closes a call the next leader may serve, except a
+	// request Asterisk had already received: cancellation cannot retract it.
 	lead context.Context
 }
 
@@ -272,8 +276,7 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		}
 		switch {
 		case (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)):
-			a.disarm(st)
-			_ = a.c.ARI.Hangup(op, e.ChannelID)
+			a.end(e.ChannelID, st)
 		case current && !st.done:
 			a.arm(e.ChannelID, st, a.c.NoInput) // the menu was heard: wait for a key
 		}
@@ -331,10 +334,10 @@ func (a *AlertCalls) noInput(lead context.Context, ch string, st *alertCall, gen
 	if !live || st.timerGen != gen || lead.Err() != nil {
 		return
 	}
-	op, cancel := context.WithTimeout(context.WithoutCancel(lead), a.c.OpTimeout) // the wait outlived the event
+	op, cancel := context.WithTimeout(lead, a.c.OpTimeout) // aborted if leadership is lost
 	defer cancel()
-	if st.done { // the closing prompt's end was never reported
-		_ = a.c.ARI.Hangup(op, ch)
+	if st.done { // the closing prompt's end was never reported, or its hang-up was refused
+		a.end(ch, st)
 		return
 	}
 	if st.replays == 0 {
@@ -422,7 +425,7 @@ func (a *AlertCalls) decline(ctx context.Context, ch string, st *alertCall, reas
 // on a fresh one.
 func (a *AlertCalls) menuAgain(ctx context.Context, ch string, st *alertCall) {
 	st.reasons = false
-	op, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.c.OpTimeout)
+	op, cancel := context.WithTimeout(a.lead, a.c.OpTimeout) // a fresh deadline: ctx's may be used up
 	defer cancel()
 	a.play(op, ch, st, a.alertSounds(st.alert))
 }
@@ -432,11 +435,42 @@ func (a *AlertCalls) menuAgain(ctx context.Context, ch string, st *alertCall) {
 func (a *AlertCalls) finish(ctx context.Context, ch string, st *alertCall, sounds ...string) {
 	st.done = true
 	st.plays++
-	st.hangupOn = endAfter(ctx, a.c.ARI, ch, fmt.Sprintf("%s-a%d", ch, st.plays), sounds)
-	st.current = st.hangupOn
-	if st.hangupOn != "" {
-		a.arm(ch, st, a.c.PromptMax+a.c.NoInput) // the hang-up happens even if the end event is lost
+	pb := fmt.Sprintf("%s-a%d", ch, st.plays)
+	if err := a.c.ARI.Play(ctx, ch, pb, sounds); err != nil {
+		a.end(ch, st)
+		return
 	}
+	st.hangupOn, st.current = pb, pb
+	a.arm(ch, st, a.c.PromptMax+a.c.NoInput) // the hang-up happens even if the end event is lost
+}
+
+// end hangs up a call whose closing prompt was heard or could not play. A
+// hang-up Asterisk refuses is tried again every hangupRetry, through the
+// call's timer, until it is taken, the call's end event removes the call,
+// or hangupGiveUp has passed (logged). Nothing is requested once the term's
+// leadership is lost. Under run.
+func (a *AlertCalls) end(ch string, st *alertCall) {
+	st.done = true
+	a.disarm(st)
+	if a.lead.Err() != nil {
+		return
+	}
+	hctx, cancel := context.WithTimeout(a.lead, hangupTimeout) // its own deadline: the caller's may be used up
+	defer cancel()
+	err := a.c.ARI.Hangup(hctx, ch)
+	if err == nil || errors.Is(err, ari.ErrNotInStasis) {
+		return
+	}
+	now := time.Now()
+	if st.refused.IsZero() {
+		st.refused = now
+	}
+	if now.Sub(st.refused) >= hangupGiveUp {
+		a.c.Log.Error("alert call hang-up refused; giving up", "alert", st.alert.AlertID, "err", err)
+		return
+	}
+	a.c.Log.Warn("alert call hang-up refused; retrying", "alert", st.alert.AlertID, "err", err)
+	a.arm(ch, st, hangupRetry)
 }
 
 // whereToGo speaks the incident number, then the ward and the landmark when
