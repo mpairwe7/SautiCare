@@ -38,6 +38,7 @@ type fakeARI struct {
 	channels     []ari.Channel // what ListChannels reports
 	seq          []string      // reference, hand-over escalation and continue requests, in order
 	failRef      bool
+	failHangup   bool
 }
 
 func (f *fakeARI) SetReference(_ context.Context, ch, ref string) error {
@@ -120,6 +121,9 @@ func (f *fakeARI) Continue(_ context.Context, ch, dialContext, ext string, prio 
 func (f *fakeARI) Hangup(_ context.Context, ch string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failHangup {
+		return errors.New("asterisk: hangup failed")
+	}
 	f.hangups = append(f.hangups, ch)
 	return nil
 }
@@ -853,6 +857,60 @@ func TestALostHandOverEscalationIsCounted(t *testing.T) {
 		synctest.Wait()
 		if lost.Load() != 1 || len(s.handedOver()) != n {
 			t.Fatalf("lost %d, retries went on: %d then %d", lost.Load(), n, len(s.handedOver()))
+		}
+	})
+}
+
+// PR #14 review: a call whose intake fails after its session opened is
+// escalated under its call ID (the channel), so HandOver finds the incident
+// the failed start left behind.
+func TestAStartFailureEscalatesUnderTheCallID(t *testing.T) {
+	s := &scripted{prompts: prompts(), failStart: true}
+	c := New(&fakeARI{}, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	if got := s.handedOver(); !slices.Equal(got, []string{"ch1 voice_handed_over"}) {
+		t.Fatalf("handovers %v", got)
+	}
+}
+
+// PR #14 review: an orphan whose transfer and hang-up both failed (Asterisk
+// briefly unreachable) is still in the application; the next adoption tries
+// it again rather than skipping it for ever.
+func TestAdoptRetriesAnOrphanItCouldNotMove(t *testing.T) {
+	s := &scripted{prompts: prompts()}
+	a := &fakeARI{failContinue: true, failHangup: true, channels: []ari.Channel{{ID: "ch9", App: "sauti-ivr"}}}
+	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+	if err := c.Adopt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.failContinue, a.failHangup = false, false
+	a.mu.Unlock()
+	if err := c.Adopt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(a.continues, []string{"ch9 sauti-ivr-fallback,s,1"}) {
+		t.Fatalf("continues %v", a.continues)
+	}
+}
+
+// PR #14 review: a hand-over escalation the store refuses while the
+// controller stops is not left to a retry the exit would kill: one last try
+// is made at once, and if it fails the loss is logged and counted before
+// the worker set lets the process exit.
+func TestAnEscalationRefusedAtShutdownIsCountedBeforeExit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &scripted{prompts: prompts(), failHand: 1 << 20}
+		a := &fakeARI{}
+		var lost atomic.Int32
+		c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, OnEscalationLost: func() { lost.Add(1) }})
+		ctx, cancel := context.WithCancel(t.Context())
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		synctest.Wait()
+		cancel() // the controller stops with the call live
+		c.Wait()
+		if lost.Load() != 1 || len(s.handedOver()) != 2 {
+			t.Fatalf("lost %d, attempts %d: want the shutdown hand-over, one last try, then the loss", lost.Load(), len(s.handedOver()))
 		}
 	})
 }
