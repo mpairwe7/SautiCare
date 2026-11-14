@@ -17,10 +17,11 @@ import (
 )
 
 type forwardStore struct {
-	due     []dispatch.ForwardCall
-	claimed map[string]bool
-	settled []string
-	acked   []string
+	due      []dispatch.ForwardCall
+	claimed  map[string]bool
+	settled  []string
+	acked    []string
+	slowRead bool // MessageFacts answers only when its deadline has passed
 }
 
 func (s *forwardStore) DueForwardCalls(context.Context, int) ([]dispatch.ForwardCall, error) {
@@ -43,7 +44,11 @@ func (s *forwardStore) FinishForwardAttempt(_ context.Context, _ uuid.UUID, stat
 	s.settled = append(s.settled, status)
 	return true, nil
 }
-func (s *forwardStore) MessageFacts(context.Context, uuid.UUID) (dispatch.MessageFacts, error) {
+func (s *forwardStore) MessageFacts(ctx context.Context, _ uuid.UUID) (dispatch.MessageFacts, error) {
+	if s.slowRead {
+		<-ctx.Done()
+		return dispatch.MessageFacts{}, ctx.Err()
+	}
 	return dispatch.MessageFacts{Reference: "1234567894", Severity: incident.SevRed, Category: "trauma"}, nil
 }
 func (s *forwardStore) AcknowledgeForward(_ context.Context, _ uuid.UUID, facility string) (bool, error) {
@@ -660,4 +665,21 @@ func TestALateCallThatCannotBeHungUpKeepsItsLine(t *testing.T) {
 	if !held || len(a.originated) != 3 {
 		t.Fatalf("the ringing call holds a line %v; rang %v", held, a.originated)
 	}
+}
+
+// PR #14 review (round 3): an answered forwarding call whose facts cannot be
+// read before the deadline is hung up on a deadline of its own, not left open.
+func TestAForwardCallWhoseFactsTimeOutIsHungUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := &alertARI{}
+		fs := &forwardStore{claimed: map[string]bool{}, slowRead: true}
+		fc, err := NewForwardCalls(ForwardCallsConfig{ARI: a, Store: fs, Dial: "PJSIP/{number}@sauti-trunk", Gazetteer: gazetteer(t)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fc.Handle(t.Context(), Event{Type: EventStasisStart, ChannelID: "fwd-1", Args: []string{"forward", uuid.NewV7().String(), "hc_test_1"}})
+		if a.hangups("fwd-1") != 1 {
+			t.Fatal("the call stayed open: its hang-up used the expired deadline")
+		}
+	})
 }

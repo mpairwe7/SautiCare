@@ -346,7 +346,7 @@ func (f *ForwardCalls) play(ctx context.Context, ch string, st *forwardCall, sou
 	}
 }
 
-func (f *ForwardCalls) hangup(ctx context.Context, ch string) { _ = f.c.ARI.Hangup(ctx, ch) }
+func (f *ForwardCalls) hangup(ctx context.Context, ch string) { _ = hangupFresh(ctx, f.c.ARI, ch) }
 
 // CoordinatorStore is the store as coordinator calls see it (op_ivr).
 type CoordinatorStore interface {
@@ -828,7 +828,7 @@ func (k *CoordinatorCalls) play(ctx context.Context, ch string, st *coordinatorC
 	}
 }
 
-func (k *CoordinatorCalls) hangup(ctx context.Context, ch string) { _ = k.c.ARI.Hangup(ctx, ch) }
+func (k *CoordinatorCalls) hangup(ctx context.Context, ch string) { _ = hangupFresh(ctx, k.c.ARI, ch) }
 
 // originateTimeout bounds placing an outbound call (Asterisk creates the
 // channel and answers at once; the ring itself is not waited for).
