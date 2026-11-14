@@ -4,14 +4,14 @@
 |---|---|
 | Owner | coordinator on duty |
 | Severity | SEV-2 per incident; SEV-1 if it repeats in one area within an hour |
-| Alert / trigger | the coordinator line rings about an `incident.escalated` event (every reason in the table below); `sautictl escalations`; `sauti_escalation_oldest_unacknowledged_seconds` (intake-gw) |
+| Alert / trigger | the coordinator line rings about an `incident.escalated` event (every reason in the table below); `sautictl escalations`; the page `SautiEscalationUnacknowledged` (intake-gw's `sauti_escalation_oldest_unacknowledged_seconds` over 600 s for 1 minute) |
 | Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
 Dispatch never ends silently (review focus 3). When nobody can be alerted for a role, dispatch records an escalation for the coordinator at once. This happens when the registry is empty, ring 1 holds nobody available, or everyone has declined or not answered. Red incidents are also escalated at 3 minutes without an acceptance. In amended mode (decision 2), the search widens to 2.5 km and then forwards to the nearest health centre, and an escalation is recorded at that moment ([ADR-0024](../adr/ADR-0024-dispatch-planners-and-postgresql-scheduler.md)).
 
-**Every escalation rings the coordinator line** until a coordinator presses 1 ([ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md), [ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)). One call announces every reason on the incident that nobody has acknowledged, most urgent first, each with its role (health worker or transport) where it has one, and pressing 1 acknowledges exactly those; a reason recorded later rings again. The line is rung every 2 minutes. After `escalation.backup_after_calls` unanswered rings (3, PENDING the PI), the backup line (`SAUTI_COORDINATOR_BACKUP_DIAL`) rings as well, and the first 1 on either stops both. intake-gw exports the age of the oldest unacknowledged escalation for the on-call engineer's page (tier 3): page when `max(sauti_escalation_oldest_unacknowledged_seconds) > 600`, or when `max(sauti_escalation_gauges_leader) < 1 or absent(sauti_escalation_gauges_leader)` holds for 2 minutes (no instance is exporting fresh values: a former leader resets its gauges to 0, a failed read sets the leader gauge to 0, and `absent` covers every intake-gw target gone).
+**Every escalation rings the coordinator line** until a coordinator presses 1 ([ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md), [ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)). One call announces every reason on the incident that nobody has acknowledged, most urgent first, each with its role (health worker or transport) where it has one, and pressing 1 acknowledges exactly those; a reason recorded later rings again. The line is rung every 2 minutes. After `escalation.backup_after_calls` unanswered rings (3, PENDING the PI), the backup line (`SAUTI_COORDINATOR_BACKUP_DIAL`) rings as well, and the first 1 on either stops both. intake-gw exports the age of the oldest unacknowledged escalation for the on-call engineer's page (tier 3), and two rules in `build/prometheus/sauti-rules.yml` read it: `SautiEscalationUnacknowledged` pages when `max(sauti_escalation_oldest_unacknowledged_seconds) > 600` for 1 minute, and `SautiEscalationSignalStale` pages when `max(sauti_escalation_gauges_leader) < 1 or absent(sauti_escalation_gauges_leader)` holds for 2 minutes. That second rule means no instance exports fresh values: a former leader resets its gauges to 0, a failed read sets the leader gauge to 0, and `absent` covers every intake-gw target gone ([escalation-signal-stale.md](escalation-signal-stale.md)).
 
 ## Triggers and detection
 The escalation is an `incident.escalated` event with its reason and, where there is one, the role (`vht` or `transporter`). The coordinator line rings about it. When ivr-controller is down the line does not ring ([ivr-controller-down.md](ivr-controller-down.md)): the coordinator on duty then lists the open escalations at least every minute, on Sauti's servers, as `op_readonly`:
@@ -21,6 +21,11 @@ sautictl escalations --dsn "$SAUTI_DSN"   # add --json for a machine-readable li
 ```
 
 It prints each open incident with unacknowledged escalations (reference, severity, reasons most urgent first, age, rings) and the open location call-back tasks. It prints references only, never a number.
+
+**The page `SautiEscalationUnacknowledged`** reaches the on-call engineer when an escalation has waited over 10 minutes. It means the coordinator line did not get the escalation acknowledged.
+1. Call the coordinator on duty by voice, run `sautictl escalations` together, and act on each line as the table below says.
+2. If the coordinator line did not ring, ivr-controller is down or cannot ring out: follow [ivr-controller-down.md](ivr-controller-down.md), with the coordinator listing escalations every minute.
+3. If it rang and nobody answered, call the coordinator lead (Escalation).
 
 | Reason | Meaning |
 |---|---|

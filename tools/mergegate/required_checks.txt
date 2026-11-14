@@ -10,3 +10,4 @@ vulnerabilities and licences
 secret scan (full history)
 CycloneDX SBOM
 governance and living docs
+alert rules (promtool)

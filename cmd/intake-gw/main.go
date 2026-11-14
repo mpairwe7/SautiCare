@@ -169,29 +169,17 @@ func run(log *slog.Logger) error {
 	watchdog := intake.NewWatchdog(store, built.Incidents, intake.DispatchWatchdogAfter)
 	// Tier 3 (ADR-0029 rule 8): the dead-man gauges, exported from here
 	// because intake-gw survives an ivr-controller outage.
-	gauges := newEscalationGauges(reg)
+	lt := term{store: store, gauges: newEscalationGauges(reg), every: sweepEvery,
+		watchdog: func(ctx context.Context) error {
+			return watchdog.Run(ctx, sweepEvery, func(err error) { log.Error("dispatch watchdog failed", "err", err) })
+		},
+		sweeper: func(ctx context.Context) error {
+			return sweeper.Run(ctx, sweepEvery, func(err error) { log.Error("abandonment sweep failed", "err", err) })
+		},
+		onErr: func(err error) { log.Error("escalation gauges not updated", "err", err) },
+	}
 	go func() {
-		_ = pg.RunAsLeader(ctx, pool, sweeperLeaderKey, 5*time.Second, func(lctx context.Context) error {
-			go func() {
-				_ = watchdog.Run(lctx, sweepEvery, func(err error) { log.Error("dispatch watchdog failed", "err", err) })
-			}()
-			go func() {
-				t := time.NewTicker(sweepEvery)
-				defer t.Stop()
-				defer gauges.reset()
-				for {
-					if err := gauges.update(lctx, store); err != nil && lctx.Err() == nil {
-						log.Error("escalation gauges not updated", "err", err)
-					}
-					select {
-					case <-lctx.Done():
-						return
-					case <-t.C:
-					}
-				}
-			}()
-			return sweeper.Run(lctx, sweepEvery, func(err error) { log.Error("abandonment sweep failed", "err", err) })
-		})
+		_ = pg.RunAsLeader(ctx, pool, sweeperLeaderKey, 5*time.Second, func(lctx context.Context) error { return leaderTerm(lctx, lt) })
 	}()
 	log.Info("intake-gw listening", "env", senv, "config", cfg.Fingerprint, "protocol", cfg.ProtocolStatus,
 		"triage", built.Triage.LogicVersion(), "gazetteer", built.Gazetteer.Version)
@@ -208,6 +196,42 @@ func run(log *slog.Logger) error {
 	_ = public.Shutdown(sctx)
 	_ = adminSrv.Shutdown(sctx)
 	return nil
+}
+
+// term is what one leader term of intake-gw runs: the dispatch watchdog, the
+// dead-man gauge loop and the abandonment sweeper.
+type term struct {
+	store             escalationAges
+	gauges            escalationGauges
+	every             time.Duration
+	watchdog, sweeper func(context.Context) error
+	onErr             func(error) // a failed gauge read
+}
+
+// leaderTerm starts the watchdog and the gauge loop for the term and returns
+// the sweeper's result; RunAsLeader ends the term's context when it returns.
+func leaderTerm(ctx context.Context, t term) error {
+	go func() { _ = t.watchdog(ctx) }()
+	go runEscalationGauges(ctx, t.store, t.gauges, t.every, t.onErr)
+	return t.sweeper(ctx)
+}
+
+// runEscalationGauges reads the dead-man signal at once and then every
+// interval until the term ends, when it clears the gauges.
+func runEscalationGauges(ctx context.Context, store escalationAges, g escalationGauges, every time.Duration, onErr func(error)) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	defer g.reset()
+	for {
+		if err := g.update(ctx, store); err != nil && ctx.Err() == nil {
+			onErr(err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // escalationAges reads the dead-man signal (the operational store, op_intake).

@@ -5,8 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/platform/africastalking"
@@ -121,7 +124,7 @@ func TestEscalationGaugesResetWhenTheTermEnds(t *testing.T) {
 		reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 		return rec.Body.String()
 	}
-	if body := scrape(); !strings.Contains(body, "sauti_escalation_gauges_leader 1") {
+	if body := scrape(); !hasSample(body, "sauti_escalation_gauges_leader 1") {
 		t.Fatalf("leading:\n%s", body)
 	}
 	g.reset()
@@ -131,6 +134,65 @@ func TestEscalationGaugesResetWhenTheTermEnds(t *testing.T) {
 			t.Fatalf("after the term, %q missing:\n%s", want, body)
 		}
 	}
+}
+
+// hasSample reports whether the exposition holds this exact sample line; the
+// leader gauge's HELP text begins with "1 while", so a substring would match it.
+func hasSample(body, line string) bool { return slices.Contains(strings.Split(body, "\n"), line) }
+
+// V-01 (EO-1): tier 3 is the leader term's gauge loop. Its test reads what
+// /metrics serves: the audit's mutant M3 (the update call removed), a loop
+// that is never started, or one that reads once and freezes, leaves no
+// signal or a stale one, and fails here. The dispatch watchdog starts with
+// the term.
+func TestTheLeaderTermExportsTheGauges(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		reg := metrics.NewRegistry()
+		scrape := func() string {
+			rec := httptest.NewRecorder()
+			reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			return rec.Body.String()
+		}
+		ages, reads := []float64{700, 715}, 0
+		store := escalationAgeFunc(func(context.Context) (float64, int, error) {
+			age := ages[min(reads, len(ages)-1)]
+			reads++
+			return age, 2, nil
+		})
+		watching := false
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			done <- leaderTerm(ctx, term{store: store, gauges: newEscalationGauges(reg), every: sweepEvery,
+				watchdog: func(ctx context.Context) error { watching = true; <-ctx.Done(); return ctx.Err() },
+				sweeper:  func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() },
+				onErr:    func(err error) { t.Errorf("gauge read reported %v", err) }})
+		}()
+		synctest.Wait()
+		body := scrape()
+		for _, want := range []string{"sauti_escalation_gauges_leader 1", "sauti_escalations_unacknowledged 2",
+			"sauti_escalation_oldest_unacknowledged_seconds 700"} {
+			if !hasSample(body, want) {
+				t.Fatalf("leading, %q missing:\n%s", want, body)
+			}
+		}
+		if !watching {
+			t.Fatal("the dispatch watchdog did not start with the term")
+		}
+		time.Sleep(sweepEvery)
+		synctest.Wait()
+		if body := scrape(); !hasSample(body, "sauti_escalation_oldest_unacknowledged_seconds 715") {
+			t.Fatalf("after one tick the age is not read again (a frozen signal):\n%s", body)
+		}
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("the term returned %v, want the sweeper's result", err)
+		}
+		synctest.Wait()
+		if body := scrape(); !hasSample(body, "sauti_escalation_gauges_leader 0") {
+			t.Fatalf("after the term:\n%s", body)
+		}
+	})
 }
 
 // PR #14 review: a read that fails leaves no value looking fresh. The leader
