@@ -49,14 +49,21 @@ func (s Stores) SuperDSN(store pg.Store) string {
 	return u.String()
 }
 
+// provisionTimeout bounds a whole Provision call (a variable so tests can
+// shorten it).
+var provisionTimeout = 2 * time.Minute
+
 // Provision creates the five stores under a random suffix on the server that
 // adminConn (a superuser connection to adminDSN) is connected to, migrates
 // each as its owner and loads the gazetteer of configDir. Every role gets
 // password: on a shared server it must be the server's established one, since
 // roles are server-global. DBs is set as soon as the databases exist, even
-// when a later step fails, so the caller can drop them. Development and test
+// when a later step fails, so the caller can drop them. The call is bounded
+// by provisionTimeout, or the caller's earlier deadline. Development and test
 // only: bootstrap refuses any other senv.
 func Provision(ctx context.Context, adminConn *pgx.Conn, adminDSN, senv, password, configDir string) (Stores, error) {
+	ctx, cancel := context.WithTimeout(ctx, provisionTimeout)
+	defer cancel()
 	admin, err := url.Parse(adminDSN)
 	if err != nil || admin.Scheme == "" {
 		return Stores{}, errors.New("demo: admin DSN must be a postgres:// URL")
