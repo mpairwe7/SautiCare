@@ -46,7 +46,7 @@ Also stopped: coordinator escalation calls, responder voice alerts (SMS still go
 
 
 ### A lost hand-over escalation
-Alert: `increase(sauti_ivr_handover_escalation_lost_total[15m]) > 0` (ivr-controller's metric; log line `ivr hand-over escalation lost`, with the call and incident IDs only). The database refused the escalation of a call handed to the coordinators for 10 minutes, so that incident may not be ringing.
+Alert: `increase(sauti_ivr_handover_escalation_lost_total[15m]) > 0` (ivr-controller's metric; log line `ivr hand-over escalation lost`, with the call and incident IDs only). The database refused the escalation of a call handed to the coordinators for 10 minutes, or ivr-controller stopped before it was recorded, so that incident may not be ringing. Recording it again is a no-op if it was in fact written.
 1. Once the database takes writes again, take the call ID from the log line and run, on Sauti's servers, as `op_ivr`: `sautictl incident escalate-handover --dsn <op_ivr DSN> --call <call ID>`. It records the same escalation under the same key, so the coordinator line rings until someone acknowledges it. Running it twice, or for an escalation that was in fact written, changes nothing.
 2. "no voice session has that call ID": the call never opened an incident (intake failed first). Nothing to escalate; the live dial was its only path.
 3. Check with `sautictl escalations` that the incident is listed, and tell the coordinator lead by voice.
