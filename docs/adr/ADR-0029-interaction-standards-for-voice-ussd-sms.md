@@ -91,6 +91,13 @@ Settles: F-02, F-03, F-04, F-05, F-07, F-28.
 
 The place (ward and landmark) and a typed call-back number are critical: an error in either sends help to the wrong place or loses the only contact. Each is shown or spoken back before the closing message, in the caller's language; a spoken number is read in groups. Read-back never delays T2: dispatch starts at the trigger screen as today. Read-back changes Tool 1, so it ships behind `place_readback` and the call-back read-back flag **(flag)**.
 
+A wrong place is corrected by a person, never by re-entry. Once T2 is recorded the projection refuses a second ward or landmark answer (`db/operational/migrations/0006_tool1_projection.sql`), and responders may already be on the way, so an automatic change could send them to a third place unannounced. Behind `place_readback`, the place is read back after the landmark answer with `1` right and `2` wrong:
+- `2` keeps the recorded place, flags the incident `needs_location_callback` and escalates `place_disputed`, so the coordinator line rings (rule 3). On voice the call is also handed over at once, with that reason.
+- The coordinator confirms the place with the caller, corrects the incident and tells the assigned responders through M5's relocation tool. Until M5, the runbook step reads "Not possible before M5:" with the interim action (R-3).
+- `1`, or no answer, continues as today.
+
+The keys, the reason and the copy are PENDING the PI.
+
 Source: NENA-STA-020.2-2026 §5.2.1 (a verified location is repeated or confirmed back; a different call-back number is asked again).
 
 Settles: F-51, F-54.

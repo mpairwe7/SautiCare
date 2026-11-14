@@ -1029,12 +1029,16 @@ Every task here ships its flag `false`. With the flags off, every screen, prompt
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `feat(intake): optional confirmation before out-of-area, flag off (UX-6 Task 2)`.
 
-### Task 6.3: Closing and opening texts: the place, first aid while suspended, what happens next, the voice line (F-51, F-57, F-58, F-59)
+### Task 6.3: Closing and opening texts: the place and its correction, first aid while suspended, what happens next, the voice line (F-51, F-57, F-58, F-59)
 
 **Files:** Modify `internal/intake/machine.go:200-212` (closing renders), `internal/config/tool1.go:240-260` (allowed placeholders), `config/gated/tool1.yaml` (`help_coming_readback`, `dispatch_suspended_first_aid`, `next_step_line`, `language.prompt_with_voice_line`: PENDING-UX and PENDING-MD-PI), and `internal/platform/ivr/sounds.go`. Test `machine_test.go` and `service_test.go`.
 
 **Interfaces:**
 - `place_readback` on: the screen-8 prompt and the closing text carry `{place}`, which is the landmark name and the ward name, or the ward name only for a free-text or unmatched landmark. The IVR speaks the `ward-*` and `landmark-*` recordings.
+- `place_readback` on, the correction (ADR-0029 rule 4): after the landmark answer, a read-back step offers `1` right and `2` wrong. T2 is already recorded and is never delayed.
+  - `2` changes no ward or landmark answer and re-dispatches nothing. It appends `flagged{needs_location_callback}` and `escalated{place_disputed}` (key `incident.EscalationKey("place_disputed", "")`), then goes on to screen 8. On voice, the controller hands the call over with that reason instead.
+  - `place_disputed` joins the registry (Task 1.1) with PENDING recordings, a runbook row whose responder step reads "Not possible before M5:" (the M5 relocation tool tells the assigned responders), and a line in `docs/reference/events.md`.
+  - `1`, or no answer, goes on to screen 8 with nothing written.
 - `suspended_first_aid` on: `dispatch_suspended` may carry `{first_aid}`, and `Validate` requires it.
 - `closing_next_step` on: one reserved PENDING line in `help_coming`.
 - `voice_line_on_screen1` on: `language.prompt` carries `{voice_line}`, filled from configuration (P0 number).
@@ -1046,6 +1050,8 @@ All four must pass the screen gate with the longest values.
   - `TestSuspendedClosingCarriesFirstAidWhenFlagged`.
   - `TestNextStepLineWhenFlagged`.
   - `TestScreenOneNamesTheVoiceLineWhenFlagged`.
+  - `TestAWrongPlaceEscalatesAndKeepsThePlace` (service): with the flag on, `2` gives one `needs_location_callback` flag and one `place_disputed` escalation; ward, landmark and T2 are unchanged; a retried callback adds nothing.
+  - `TestAWrongPlaceOnVoiceHandsOver` (controller): `2` gives `HandOver(…, "place_disputed")`, then `Continue`.
   - `TestClosingTextsFlagsOffEqualMain`.
 
   Run them. Expected: FAIL.
