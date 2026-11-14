@@ -39,20 +39,26 @@ from typing import Any
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 CHECKS_FILE = Path(__file__).with_name("required_checks.txt")
-REVIEWER = "coderabbitai"            # CodeRabbit's login in GraphQL
+REVIEWER = "coderabbitai"            # CodeRabbit's login in GraphQL, as a Bot
 REVIEWER_REST = "coderabbitai[bot]"  # and in REST
 # CodeRabbit answers a reply up to 22 minutes later (PR #13: 1324 s), often
 # after first marking the finding addressed; its last word must be final.
 QUIET = timedelta(minutes=30)
-# CodeRabbit's own edit of its finding once it judges it fixed.
-MARKED = re.compile(r"✅ (Addressed in (commits? |the latest)|Confirmed as addressed by )")
-WITHDRAWN = "<!-- <review_comment_withdrawn> -->"
+# CodeRabbit's own edit of its finding once it judges it fixed: the last
+# visible line, in one of the four forms seen on PRs #2-#18 (228 of 228).
+MARKED = re.compile(r"✅ (Addressed in commits? [0-9a-f]{7,40}( to [0-9a-f]{7,40})?|Addressed in the latest update"
+                    r"|Confirmed as addressed by @[\w-]+)")
+WITHDRAWN = "<!-- <review_comment_withdrawn> -->"  # counts only at the top level of a reply
 CONCEDES = re.compile(r"✅ Addressed in commit|Review thread resolved|\bLGTM\b"
                       r"|\b(is|are|has been|have been) (now )?(addressed|resolved)\b")
 OBJECTS = re.compile(r"(?i)\b(not|no longer|still|remains?|however|but|unverified|missing|unresolved"
                      r"|rate.limit\w*)\b|please|\?")
-# Collapsed analysis (innermost first) and hidden markers are not its word.
-COLLAPSED = re.compile(r"<details\b[^>]*>(?:(?!<details\b).)*?</details>|<!--.*?-->", re.S)
+# What a reader does not see as the comment's own word: code fences (an
+# unclosed one runs to the end), collapsed sections (innermost first; an
+# unclosed one hides the rest), HTML comments, and quoted lines.
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[ \t]*$|\Z)", re.M | re.S)
+DETAILS = re.compile(r"<details\b[^>]*>(?:(?!<details\b).)*?</details>", re.S)
+COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
 DEFER = re.compile(r"^(\d+)=(\d+)$")
 THREADS = """query($owner: String!, $name: String!, $n: Int!, $after: String) {
   repository(owner: $owner, name: $name) { pullRequest(number: $n) {
@@ -60,7 +66,8 @@ THREADS = """query($owner: String!, $name: String!, $n: Int!, $after: String) {
       pageInfo { hasNextPage endCursor }
       nodes { id isResolved comments(first: 100) {
         pageInfo { hasNextPage }
-        nodes { author { login } editor { login } body url createdAt lastEditedAt } } } } } } }"""
+        nodes { author { login __typename } editor { login __typename } body url createdAt lastEditedAt }
+      } } } } } }"""
 RESOLVE = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
 UNRESOLVE = "mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
 
@@ -272,7 +279,7 @@ def check_review(repo: str, pr: int, head: str) -> bool:
     mine.sort(key=lambda r: when(r["submitted_at"]))
     # A thread reply or a command approval is a review with an empty body,
     # stamped with whatever the head was: it is not a review of the code.
-    real = [r for r in mine if prose(get(r, "body", str, "a CodeRabbit review"))]
+    real = [r for r in mine if visible(get(r, "body", str, "a CodeRabbit review")).strip()]
     if not real:
         raise Refused(f"CodeRabbit has not reviewed PR #{pr}")
     if (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
@@ -290,11 +297,21 @@ def check_review(repo: str, pr: int, head: str) -> bool:
     return bool(decisive) and decisive[-1] == "CHANGES_REQUESTED"
 
 
-def prose(body: str) -> str:
-    """What a comment says, without its collapsed sections or hidden markers."""
-    while (stripped := COLLAPSED.sub("", body)) != body:
+def visible(body: str, keep_markers: bool = False) -> str:
+    """The comment's own visible text: no code fences, collapsed sections or
+    quoted lines, and no HTML comments unless keep_markers."""
+    body = FENCE.sub("", body)
+    while (stripped := DETAILS.sub("", body)) != body:
         body = stripped
-    return " ".join(body.split())
+    body = body.split("<details", 1)[0]
+    if not keep_markers:
+        body = COMMENT.sub("", body)
+    return "\n".join(line for line in body.splitlines() if not line.lstrip().startswith(">"))
+
+
+def is_reviewer(actor: Any) -> bool:
+    """CodeRabbit itself: its login as a Bot, not a user account of that name."""
+    return isinstance(actor, dict) and actor.get("login") == REVIEWER and actor.get("__typename") == "Bot"
 
 
 def last_words(thread: dict) -> list[tuple[int, dict, bool]]:
@@ -309,26 +326,33 @@ def last_words(thread: dict) -> list[tuple[int, dict, bool]]:
         if cm.get("lastEditedAt") is not None:
             t = max(t, when(cm["lastEditedAt"]))
         get(cm, "body", str, what)
-        events.append((t, i, cm, login(cm, "author") == REVIEWER and login(cm, "editor") in (None, REVIEWER)))
+        events.append((t, i, cm, is_reviewer(cm.get("author")) and (cm.get("editor") is None
+                                                                      or is_reviewer(cm["editor"]))))
     latest = max((e[0] for e in events), default=None)
     return [(i, cm, mine) for t, i, cm, mine in events if t == latest]
 
 
 def judge_thread(thread: dict) -> bool:
     """True when the thread is settled: every latest word is CodeRabbit's and
-    concedes, as its mark on its own finding (first comment) or, in a reply,
-    its withdrawal marker or a concession with no objection. Resolution is not
-    a word: the resolve command resolves every thread, objections included."""
+    concedes. On its finding (the first comment), its own edit must end the
+    visible text with its mark. In a reply, its visible text must concede,
+    or carry its top-level withdrawal marker, and must not object.
+    Deliberately conservative: any other wording is open, and a person reads
+    it. Resolution is not a word: the resolve command resolves every thread,
+    objections included."""
     words = last_words(thread)
     for i, cm, mine in words:
         if not mine:
             return False
         if i == 0:
-            if not MARKED.search(cm["body"]):
+            lines = [ln.strip() for ln in visible(cm["body"]).splitlines() if ln.strip()]
+            if not (cm.get("lastEditedAt") and is_reviewer(cm.get("editor"))
+                    and lines and MARKED.fullmatch(lines[-1])):
                 return False
-        elif WITHDRAWN not in cm["body"]:
-            said = prose(cm["body"])
-            if not CONCEDES.search(said) or OBJECTS.search(said):
+        else:
+            said = " ".join(visible(cm["body"]).split())
+            conceded = WITHDRAWN in visible(cm["body"], keep_markers=True) or CONCEDES.search(said)
+            if not conceded or OBJECTS.search(said):
                 return False
     return bool(words)
 
@@ -371,7 +395,7 @@ def deferral(repo: str, t: dict, issue: int) -> str:
     nothing more is needed in this PR). Returns the record of it."""
     url = thread_url(t)
     words = last_words(t)
-    said = prose(words[-1][1]["body"]) if words else ""
+    said = " ".join(visible(words[-1][1]["body"]).split()) if words else ""
     if len(words) != 1 or words[0][0] == 0 or not words[0][2] or re.search(r"(?i)rate.limit", said):
         raise Refused(f"--defer: the last word in {url} is not a CodeRabbit reply that evaluated it; "
                       "a deferral rests on what CodeRabbit itself said")

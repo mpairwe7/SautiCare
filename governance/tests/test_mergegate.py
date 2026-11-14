@@ -83,8 +83,14 @@ def activity(created="2026-11-14T09:30:00Z", updated="2026-11-14T10:30:00Z", use
     return {"user": {"login": user}, "created_at": created, "updated_at": updated}
 
 
-def c(author, body, at, edited=None, editor=None, n=0):
-    return {"author": {"login": author} if author else None, "editor": {"login": editor} if editor else None,
+def actor(login, kind=None):
+    return {"login": login, "__typename": kind or ("Bot" if login == CR else "User")} if login else None
+
+
+def c(author, body, at, edited=None, editor=None, n=0, kind=None, editor_kind=None):
+    """A thread comment as GraphQL returns it; kind overrides the author's
+    __typename (a user account could be named like the bot)."""
+    return {"author": actor(author, kind), "editor": actor(editor, editor_kind),
             "body": body, "url": f"https://github.com/o/r/pull/9999#discussion_r{n}",
             "createdAt": at, "lastEditedAt": edited}
 
@@ -417,6 +423,58 @@ class MergeGateTest(unittest.TestCase):
         for name, t, settled in table:
             with self.subTest(name):
                 self.assertEqual(mergegate.judge_thread(t), settled)
+
+    def test_a_concession_counts_only_as_codeRabbits_visible_word(self):
+        """A mark or marker inside a fence, collapsed section, HTML comment
+        or quote, mid-prose, unedited, or from another account, is not a
+        concession: the thread is open, and a person reads it."""
+        t0, t1, t2 = "2026-11-14T09:00:00Z", "2026-11-14T09:10:00Z", "2026-11-14T09:20:00Z"
+        tag = "✅ Addressed in commit abc1234"
+        withdrawn = "<!-- <review_comment_withdrawn> -->"
+
+        def marked(body, **kw):
+            return thread("T", c(CR, body, t0, kw.pop("edited", t2), kw.pop("editor", CR), **kw),
+                          c("dev", "Fixed.", t1))
+
+        def replied(body, **kw):
+            return thread("T", c(CR, FINDING, t0), c("dev", "Fixed.", t1), c(CR, body, t2, **kw))
+
+        real_finding = (FINDING + "\n\n```suggestion\nescalate()\n```\n\n<details>\n<summary>Prompt for AI Agents"
+                        "</summary>\n\n```\nVerify each finding.\n```\n\n</details>\n\n<!-- This is an "
+                        "auto-generated reply by CodeRabbit -->\n\n")
+        open_ = {
+            "mark inside a collapsed section": marked(FINDING + f"\n<details><summary>Prompt</summary>\n{tag}\n</details>\n"),
+            "mark inside a code fence": marked(FINDING + f"\n```\n{tag}\n```\n"),
+            "mark inside an unclosed code fence": marked(FINDING + f"\n```\n{tag}\n"),
+            "mark inside an HTML comment": marked(FINDING + f"\n<!-- {tag} -->\n"),
+            "mark inside a quote": marked(FINDING + f"\n> {tag}\n"),
+            "mark mid-prose, then an objection": marked(FINDING + f"\n{tag}\nOne race remains in the timer path.\n"),
+            "mark in the original text, not an edit": thread("T", c(CR, FINDING + MARK, t0)),
+            "mark edited in by a user account named like the bot": marked(FINDING + MARK, editor_kind="User"),
+            "mark on a comment by a user account named like the bot": marked(FINDING + MARK, kind="User"),
+            "mark on another author's comment": thread("T", c("dev", FINDING + MARK, t0, t2, "dev"), c("dev", "x", t1)),
+            "withdrawal marker inside a code fence": replied(f"```\n{withdrawn}\n```\nThanks."),
+            "withdrawal marker inside a collapsed section": replied(f"<details>{withdrawn}</details>\nThanks."),
+            "withdrawal marker inside a quote": replied(f"> {withdrawn}\nThanks."),
+            "a withdrawal, then a point that remains": replied(f"{withdrawn}\nI withdraw that part. One point remains."),
+            "a concession only inside a quote": replied("> This is addressed.\n\nSee the earlier note."),
+            "a concession by a user account named like the bot": replied("This is addressed.", kind="User"),
+        }
+        for name, t in open_.items():
+            with self.subTest(name):
+                self.assertFalse(mergegate.judge_thread(t))
+        settled = {
+            "CodeRabbit's real shape: the mark last, after a suggestion and its prompt":
+                marked(real_finding + "✅ Addressed in commits abc1234 to def5678\n\n"
+                       "<!-- This is an auto-generated comment by CodeRabbit -->"),
+            "confirmed as addressed": marked(real_finding + "✅ Confirmed as addressed by @dev\n"),
+            "addressed in the latest update": marked(real_finding + "✅ Addressed in the latest update\n"),
+            "a top-level withdrawal with no objection":
+                replied(f"`@dev` Thanks.\n\n{withdrawn}\nI withdraw the finding: the path is outside the gate."),
+        }
+        for name, t in settled.items():
+            with self.subTest(name):
+                self.assertTrue(mergegate.judge_thread(t))
 
     def test_open_threads_are_reopened_and_refuse(self):
         objection = thread("PRRT_5", c(CR, FINDING, "2026-11-14T09:30:00Z", n=501),
