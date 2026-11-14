@@ -17,7 +17,11 @@ All intelligence sits on the server, and all personal data stays in Uganda.
 ```bash
 scripts/ci/unit.sh                                         # unit tests
 go test -tags integration -count=1 -v ./tests/e2e/         # M0 demo on embedded PostgreSQL 18.6
+go build -o bin/ ./cmd/... && bin/demo --pg-bin <PostgreSQL 18 bin directory> --addr 127.0.0.1:7860
+                                                           # the whole system behind a web UI, synthetic data only
 ```
+
+The last line is the MVP demo, also packaged for a Hugging Face Space: see [the demo runbook](docs/runbooks/demo-hf-space.md) and [ADR-0039](docs/adr/ADR-0039-public-demo-on-hugging-face.md).
 
 See [the local development tutorial](docs/tutorials/local-development.md) for the gates CI runs.
 
@@ -25,13 +29,14 @@ See [the local development tutorial](docs/tutorials/local-development.md) for th
 
 | Path | Contents |
 |---|---|
-| `cmd/` | one binary per process: `intake-gw`, `outbox-relay`, `sautictl` (more per milestone) |
+| `cmd/` | one binary per process: `intake-gw`, `dispatch-worker`, `outbox-relay`, `ivr-controller`, `sautictl`, and `demo` (the MVP demo runner) |
 | `internal/` | bounded contexts (`incident`, `audit`, `crypto`, `config`, `intake`, `pii`) and adapters (`internal/platform/`) |
 | `db/` | forward-only, checksummed SQL migrations and sqlc queries for the five stores |
 | `config/` | versioned behavioural configuration; `config/gated/` is frozen during the study window |
 | `docs/` | Diátaxis documentation, ADRs, runbooks, traceability, Model Card |
 | `governance/`, `threat-model/` | AI risk register and AIBOM, amendment records, STRIDE/LINDDUN threat model and their gates |
 | `scripts/ci/` | CI logic shared by GitHub Actions now and Forgejo Actions (P0) |
+| `Dockerfile`, `deploy/hf-space/`, `scripts/deploy/` | the demo image, its Hugging Face Space card and the upload staging script (ADR-0039) |
 | `tools/` | `archcheck` (module boundaries), `amendgate` (protocol change control), `freshness` (docs as code) |
 
 ## Engineering rules

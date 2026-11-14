@@ -74,6 +74,18 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 | 16 | Withdrawal then analytic restore: suppression replayed | M6 |
 | 17 | Follow-up: 3 failed attempts, 50 h contact late | M5 |
 
+## Public MVP demo (ADR-0039)
+
+The demo (`cmd/demo`, a Hugging Face Space) runs the real services on synthetic data outside Uganda. It is no proof of hard constraints 1 or 13. These tests prove the conditions that make it acceptable (threats T-032 and T-033).
+
+| Condition | Proof |
+|---|---|
+| Scenario 1 runs end to end over HTTP: Tool 1 on USSD, the alert SMS, acceptance on the responder menu, the board and the ledger verifier. No response reveals the caller's number; Reset and SIGTERM erase the run. | `cmd/demo/main_integration_test.go::TestDemoScenario1OverHTTP` |
+| No production, no provider credential, endpoint or store DSN; children get a fresh environment; SMS reaches only a loopback fake that the real adapter talks to | `cmd/demo/main_test.go::TestRefusesProductionAndRealProviders`, `::TestSinkSpeaksTheProviderContract` |
+| A typed phone number other than the demo's own is refused | `cmd/demo/main_test.go::TestRefusesRealLookingNumbers` |
+| The board masks any number in a payload | `cmd/demo/main_test.go::TestBoardMasksNumbers` |
+| The confidential documents never enter the image or the Space | `cmd/demo/main_test.go::TestDockerignoreKeepsConfidentialFilesOut`, `::TestStagedSpaceHoldsNoConfidentialFiles` |
+
 ## Review focus (M0 plan)
 
 | Input class | Proof |
