@@ -554,7 +554,7 @@ threats:
     mitigations:
       - A permanent banner says the demo is synthetic only, asks for no real names, numbers or health information, and says everything is erased on restart
       - The phone emulators send only the demo's own synthetic numbers; a reply holding any other phone number is refused before it reaches intake-gw
-      - Nothing persists; PostgreSQL, keys and witness live in one temporary directory per run, deleted on shutdown and on Reset; the Space has no persistent storage
+      - Nothing persists after a normal shutdown; PostgreSQL, keys and witness live in one temporary directory per run, deleted on SIGINT, SIGTERM and Reset; the Space has no persistent storage. A SIGKILL or a crash skips the cleanup, so that run's sauti-demo-* directory can remain under the --data path until it is deleted by hand
       - The board reads with op_readonly, which cannot read a number, and masks any number in an event payload again
     verified_by:
       - cmd/demo/main_test.go::TestRefusesRealLookingNumbers

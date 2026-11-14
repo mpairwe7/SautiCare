@@ -33,7 +33,7 @@ bin/demo --pg-bin /usr/lib/postgresql/18/bin --addr 127.0.0.1:7860
 go run ./cmd/demo --pg-bin /usr/lib/postgresql/18/bin --bin-dir bin --addr 127.0.0.1:7860
 ```
 
-Open http://127.0.0.1:7860. The UI answers at once and shows "Starting the system…" for a few seconds. Flags: `--data` (writable base directory, default the system temporary directory), `--bin-dir` (the three services; default the runner's own directory, then `$PATH`), `--config-dir` (default `config`) and `--rules-root` (default `.`). Ctrl-C or SIGTERM stops every child and deletes the run's `sauti-demo-*` directory.
+Open http://127.0.0.1:7860. The UI answers at once and shows "Starting the system…" for a few seconds. Flags: `--data` (writable base directory, default the system temporary directory), `--bin-dir` (the three services; default the runner's own directory, then `$PATH`), `--config-dir` (default `config`) and `--rules-root` (default `.`). Ctrl-C or SIGTERM stops every child and deletes the run's `sauti-demo-*` directory. A SIGKILL or a crash skips that cleanup: delete any leftover `sauti-demo-*` directory under `--data` by hand.
 
 The runner refuses to start when `SAUTI_ENV` is anything but `dev` or `test`, or when any `SAUTI_AT_*`, `SAUTI_ARI_*`, `SAUTI_OP_DSN` or `SAUTI_AUDIT_DSN` is set. Unset them; the demo sets its own.
 
