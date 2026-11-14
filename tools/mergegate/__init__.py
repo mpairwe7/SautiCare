@@ -90,19 +90,36 @@ def _show(args) -> str:
     return " ".join(a if len(a) <= 60 else a[:57] + "..." for a in args)
 
 
+# A network blip against api.github.com (2026-11-14). The same read is retried,
+# bounded; a write never is, because a lost answer may mean it happened.
+TRANSIENT = re.compile(r"error connecting to api\.github\.com|i/o timeout|TLS handshake timeout"
+                       r"|connection reset by peer|unexpected EOF|HTTP 50[234]")
+
+
+def _is_write(args: tuple[str, ...]) -> bool:
+    return args[:2] in (("pr", "merge"), ("pr", "comment")) or any(a.startswith("query=mutation") for a in args)
+
+
 def gh(*args: str) -> str:
     """Run gh; any failure to get a clean answer refuses."""
     cmd = shlex.split(os.environ.get("MERGEGATE_GH", "gh")) + list(args)
     timeout = float(os.environ.get("MERGEGATE_TIMEOUT", "120"))
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise Refused(f"gh {_show(args)}: timed out after {timeout:g} s") from None
-    except OSError as e:
-        raise Refused(f"gh {_show(args)}: could not run: {e}") from None
-    if p.returncode != 0:
+    retries = 0 if _is_write(args) else int(os.environ.get("MERGEGATE_RETRIES", "4"))
+    wait = float(os.environ.get("MERGEGATE_RETRY_WAIT", "10"))
+    for attempt in range(retries + 1):
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise Refused(f"gh {_show(args)}: timed out after {timeout:g} s") from None
+        except OSError as e:
+            raise Refused(f"gh {_show(args)}: could not run: {e}") from None
+        if p.returncode == 0:
+            return p.stdout
+        if attempt < retries and TRANSIENT.search(p.stderr):
+            time.sleep(wait * (attempt + 1))
+            continue
         raise Refused(f"gh {_show(args)}: exit {p.returncode}: {p.stderr.strip() or '(no stderr)'}")
-    return p.stdout
+    raise AssertionError("unreachable")
 
 
 def gh_json(*args: str) -> Any:

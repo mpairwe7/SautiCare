@@ -166,7 +166,7 @@ class Gate:
             log = Path(tmp) / "calls.jsonl"
             scen.write_text(json.dumps(list(rules.values()) if isinstance(rules, dict) else rules))
             e = dict(os.environ, MERGEGATE_GH=f"{shlex.quote(sys.executable)} {shlex.quote(str(STUB))}",
-                     MERGEGATE_NOW=NOW, MERGEGATE_POLL="0", MERGEGATE_APPROVAL_WAIT="0", STUB_GH_SCENARIO=str(scen), STUB_GH_LOG=str(log))
+                     MERGEGATE_NOW=NOW, MERGEGATE_POLL="0", MERGEGATE_APPROVAL_WAIT="0", MERGEGATE_RETRY_WAIT="0", STUB_GH_SCENARIO=str(scen), STUB_GH_LOG=str(log))
             e.update(env or {})
             p = subprocess.run([sys.executable, "-m", "tools.mergegate", "--repo", "o/r", "9999", *args],
                                cwd=ROOT, env=e, capture_output=True, text=True, timeout=30)
@@ -692,6 +692,40 @@ class MergeGateTest(unittest.TestCase):
         g = self.gate({"merge": {"argv": ["pr", "merge", "--match-head-commit"], "exit": 1, "stderr": "Head branch was modified"}})
         self.assertEqual(g.code, 2, g.err)
         self.assertIn("Head branch was modified", g.err)
+
+    # A network blip against api.github.com (seen on 2026-11-14: "error
+    # connecting to api.github.com", "i/o timeout") retries the same read,
+    # bounded; it refuses once the retries run out, and never retries a write.
+    NET = "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n"
+
+    def blip(self, times=None, argv=("pr", "view", "9999")):
+        rule = {"argv": list(argv), "exit": 1, "stderr": self.NET}
+        if times is not None:
+            rule["times"] = times
+        return [rule, *clean().values()]
+
+    def test_a_transient_read_error_is_retried(self):
+        g = Gate(self.blip(times=2), env={"MERGEGATE_RETRY_WAIT": "0"})
+        self.assertEqual(g.code, 0, g.err)
+        self.assertEqual(len(g.merges()), 1)
+
+    def test_a_persistent_network_error_refuses(self):
+        g = Gate(self.blip(), env={"MERGEGATE_RETRY_WAIT": "0", "MERGEGATE_RETRIES": "3"})
+        self.assertEqual(g.code, 2, g.err)
+        self.assertEqual(g.merges(), [])
+        self.assertEqual(len([c for c in g.calls if c[:3] == ["pr", "view", "9999"]]), 4, "one try and three retries")
+        self.assertIn("error connecting to api.github.com", g.err)
+
+    def test_a_non_network_error_is_not_retried(self):
+        rules = [{"argv": ["pr", "view", "9999"], "exit": 1, "stderr": "HTTP 404: Not Found"}, *clean().values()]
+        g = Gate(rules, env={"MERGEGATE_RETRY_WAIT": "0"})
+        self.assertEqual(g.code, 2, g.err)
+        self.assertEqual(len([c for c in g.calls if c[:3] == ["pr", "view", "9999"]]), 1)
+
+    def test_a_write_is_never_retried(self):
+        g = Gate(self.blip(argv=("pr", "merge", "--match-head-commit")), env={"MERGEGATE_RETRY_WAIT": "0"})
+        self.assertEqual(g.code, 2, g.err)
+        self.assertEqual(len(g.merges()), 1, "a merge whose answer was lost may have happened: never resent")
 
     def test_dry_run_writes_nothing(self):
         g = self.gate(None, "--dry-run")
