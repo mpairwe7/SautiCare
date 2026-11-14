@@ -35,7 +35,8 @@ async function api(method, path, body) {
 }
 
 const app = {
-  phase: "",
+  phase: "", // the last phase the server reported; a failed poll leaves it as it was
+  lost: false, // the last state poll failed
   phones: [],
   codes: { caller: "*384*1#", responder: "*384*2#" },
   inbox: {},
@@ -181,7 +182,7 @@ class Phone {
     this.label.hidden = this.input.hidden = this.mode === "end";
     this.input.setAttribute("inputmode", idle ? "tel" : "text");
     this.callBtn.textContent = idle ? "Call" : this.mode === "con" ? "Send" : "OK";
-    for (const b of [this.callBtn, this.endBtn, this.quick, ...this.keypad.children]) b.disabled = this.busy || !p || app.phase !== "ready";
+    for (const b of [this.callBtn, this.endBtn, this.quick, ...this.keypad.children]) b.disabled = this.busy || !p || !live();
     this.quick.hidden = !idle;
   }
 
@@ -355,7 +356,7 @@ async function verify() {
   out.replaceChildren(h("p", { text: "Signing a checkpoint and verifying the ledger…" }));
   const gen = app.gen;
   const { status, data: r } = await api("POST", "api/audit", {});
-  btn.disabled = app.phase !== "ready";
+  btn.disabled = !live();
   if (gen !== app.gen) return; // the run was reset while the ledger was verified
   if (status !== 200) {
     out.className = "audit fail";
@@ -403,27 +404,38 @@ function clearRun() {
 
 // ---------- Polling ----------
 
+// live: the server last said ready, and is still answering.
+function live() {
+  return app.phase === "ready" && !app.lost;
+}
+
 function showPhase(down) {
   const s = $("#status");
-  const ready = app.phase === "ready";
-  const text = {
+  const ready = live();
+  const text = app.lost ? "Connection lost; retrying…" : {
     starting: "Starting the system…", resetting: "Resetting: erasing and starting again…",
     failed: "The system did not start. Try Reset.", ready: "Live: intake-gw, dispatch-worker and outbox-relay running",
   }[app.phase] || "Connecting…";
   s.textContent = down && down.length ? "Stopped: " + down.join(", ") + ". Press Reset." : text;
-  s.className = "status " + (ready && !(down && down.length) ? "ok" : app.phase === "failed" || (down && down.length) ? "bad" : "");
+  s.className = "status " + (ready && !(down && down.length) ? "ok" : app.lost || app.phase === "failed" || (down && down.length) ? "bad" : "");
   $("#audit-btn").disabled = !ready;
   $("#reset-btn").disabled = app.phase === "starting" || app.phase === "resetting";
   callerPhone.render();
   respPhone.render();
 }
 
+// The page's sessions, inboxes, board and audit result belong to one ready
+// run, named by the server's run counter. Any other state the server reports
+// ends that run on the page: a reset here or in another browser, a start
+// that failed, a run the page has not seen. A failed poll changes nothing,
+// so the next successful one still sees whatever happened meanwhile.
 async function pollState() {
   const { status, data } = await api("GET", "api/state");
-  if (status !== 200) { app.phase = ""; showPhase(); return; }
+  app.lost = status !== 200;
+  if (app.lost) { showPhase(); return; }
   const was = app.phase;
   app.phase = data.phase;
-  if ((was === "ready" && data.phase !== "ready") || (app.run !== undefined && data.run !== app.run)) clearRun();
+  if (data.phase !== "ready" || data.run !== app.run) clearRun();
   app.run = data.run;
   if (data.codes) app.codes = data.codes;
   if (data.phase === "ready" && data.phones) {
@@ -441,7 +453,7 @@ async function pollState() {
 }
 
 async function pollData() {
-  if (app.phase !== "ready") return;
+  if (!live()) return;
   const gen = app.gen;
   const [sms, board] = await Promise.all([api("GET", "api/sms"), api("GET", "api/board")]);
   if (gen !== app.gen) return; // started before a reset: the data belongs to the old run
