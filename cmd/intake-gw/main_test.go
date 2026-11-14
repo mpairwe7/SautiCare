@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/platform/africastalking"
+	"sautihealth.com/sauti/internal/platform/metrics"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 )
 
@@ -75,5 +78,77 @@ func TestServiceCodesMustNotOverlap(t *testing.T) {
 	}
 	if _, err := responderCodeSet([]string{"*384*1#", "*384*2#"}, []string{"*384*2#"}); err == nil || !strings.Contains(err.Error(), "*384*2#") {
 		t.Fatalf("overlap accepted: %v", err)
+	}
+}
+
+type escalationAgeFunc func(context.Context) (float64, int, error)
+
+func (f escalationAgeFunc) OldestUnacknowledgedEscalation(ctx context.Context) (float64, int, error) {
+	return f(ctx)
+}
+
+// Tier 3 (F-01): the leader exports how many incidents hold an
+// unacknowledged escalation and the age of the oldest; a failed read leaves
+// the last values and is reported.
+func TestEscalationGaugesExportTheDeadManSignal(t *testing.T) {
+	reg := metrics.NewRegistry()
+	g := newEscalationGauges(reg)
+	if err := g.update(context.Background(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 420, 2, nil })); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "sauti_escalations_unacknowledged 2") || !strings.Contains(body, "sauti_escalation_oldest_unacknowledged_seconds 420") {
+		t.Fatalf("metrics:\n%s", body)
+	}
+	if err := g.update(context.Background(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 0, 0, errors.New("db down") })); err == nil {
+		t.Fatal("a failed read was not reported")
+	}
+}
+
+// Review R4: a former leader does not keep exporting the last values it
+// read: when its term ends the gauges go to 0 and the leader gauge to 0, so
+// the alert sees which instance exports and never a stale age.
+func TestEscalationGaugesResetWhenTheTermEnds(t *testing.T) {
+	reg := metrics.NewRegistry()
+	g := newEscalationGauges(reg)
+	if err := g.update(context.Background(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 420, 2, nil })); err != nil {
+		t.Fatal(err)
+	}
+	scrape := func() string {
+		rec := httptest.NewRecorder()
+		reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		return rec.Body.String()
+	}
+	if body := scrape(); !strings.Contains(body, "sauti_escalation_gauges_leader 1") {
+		t.Fatalf("leading:\n%s", body)
+	}
+	g.reset()
+	body := scrape()
+	for _, want := range []string{"sauti_escalations_unacknowledged 0", "sauti_escalation_oldest_unacknowledged_seconds 0", "sauti_escalation_gauges_leader 0"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("after the term, %q missing:\n%s", want, body)
+		}
+	}
+}
+
+// PR #14 review: a read that fails leaves no value looking fresh. The leader
+// gauge drops to 0 until a read succeeds again, so the alert on it fires
+// while the age cannot be read.
+func TestAFailedReadMarksTheGaugesStale(t *testing.T) {
+	reg := metrics.NewRegistry()
+	g := newEscalationGauges(reg)
+	ok := escalationAgeFunc(func(context.Context) (float64, int, error) { return 30, 1, nil })
+	if err := g.update(context.Background(), ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.update(context.Background(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 0, 0, errors.New("db down") })); err == nil {
+		t.Fatal("the failed read was not reported")
+	}
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "sauti_escalation_gauges_leader 0") {
+		t.Fatalf("after a failed read:\n%s", rec.Body.String())
 	}
 }

@@ -16,7 +16,7 @@ threats:
     verified_by:
       - internal/platform/egress/egress_test.go::TestEgressDeniesUnlistedHost
       - internal/platform/egress/egress_test.go::TestEgressDeniesRedirectToUnlistedHost
-      - "planned:M2 SMS template content test (no patient name or clinical field)"
+      - internal/config/sms_test.go::TestSMSTemplatesAreCompliant
       - "planned:P0 nftables default-deny drill"
 
   - id: T-002
@@ -60,7 +60,7 @@ threats:
       - internal/incident/tool1_test.go::TestApplyRefusesAChangedAnswer
       - internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRefusesAChangedAnswer
       - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
-      - "planned:M1 rule-signature verification test"
+      - internal/triage/triage_test.go::TestLoadRejectsBadSignature
 
   - id: T-004
     title: Protocol timestamps forged by a handset or application clock
@@ -76,7 +76,7 @@ threats:
       - "planned:P0 clock offset alarm under 10 ms"
 
   - id: T-005
-    title: Caller's number exposed to a responder, a log or a payload
+    title: Caller's number exposed to a responder, a coordinator, a log or a payload
     linddun: Identifying
     asset: caller phone number
     hard_constraints: [5, 8]
@@ -84,12 +84,17 @@ threats:
       - pii.Phone masks every generic rendering; numbers stored only as AES-256-GCM ciphertext bound to their row
       - Log handler redacts number-like runs, including inside errors
       - Masked bridge on Asterisk (M2)
+      - "UX-1 (ADR-0034): every call put through to a coordinator passes the fallback dialplan, which sets CALLERID(num) to SAUTI_CALLER_ID and the name to SAUTI and the reference before it answers or dials, on every path (a voice hand-over, the bridge's hand-over, a Stasis failure); ivr-controller sets no caller ID itself, so a failed ARI request cannot unmask the caller; an empty SAUTI_CALLER_ID shows no number. The trunk's identity headers (PAI, ANI) and any carrier-level forwarding of the voice number are confirmed in P0"
     verified_by:
       - internal/pii/pii_test.go::TestPhoneMasksEverywhere
       - internal/platform/logging/redact_test.go::TestRedactionMasksPhoneInsideErrorValues
       - internal/crypto/crypto_test.go::TestOpenFailsWithSwappedAAD
       - internal/crypto/crypto_test.go::TestSealAndOpenRequireACompleteLocation
-      - "planned:M2 responder-facing payload scan and masked bridge test"
+      - internal/platform/ivr/bridge_test.go::TestBridgeResponderToCaller
+      - internal/platform/ivr/controller_test.go::TestHandOverShowsSautiAndTheReference
+      - internal/platform/ivr/dialplan_test.go::TestFallbackMasksTheCallerBeforeAnyDial
+      - internal/platform/ivr/controller_test.go::TestHandOverGoesAheadWhenTheReferenceCannotBeSet
+      - internal/platform/ari/client_test.go::TestClientSetsReference
 
   - id: T-006
     title: Coordinator overrides dispatch outside the defined exceptions
@@ -483,7 +488,8 @@ threats:
       - Every attempt is claimed once per channel before the provider call; an unknown outcome is never re-sent, and the next rung covers it
       - An alert is delivered only while its responder is still eligible (available, gates in force); a responder who switched off is not rung
       - SMS at 0 s, voice at 20 s, the responder menu at any time; the cascade moves on regardless of channel failures
-      - Every escalation rings the coordinator line, retried every 2 minutes until a coordinator presses 1
+      - Every escalation rings the coordinator line, retried every 2 minutes until a coordinator presses 1; one call announces every reason not yet acknowledged and its acknowledgement covers exactly those; after escalation.backup_after_calls unanswered rings the backup line rings too; intake-gw exports the age of the oldest unacknowledged escalation (ADR-0034)
+      - "UX-1 (ADR-0034): every voice hand-over, an unanswered bridge caller, an incident with a ward but no T2 and an overdue dispatch timer record an escalation; a failed or lost prompt, a restart and a shutdown hand live calls over; an answered alert call times out; a merge carries an unacknowledged escalation; one failing incident never stops the sweeper or the watchdog; a caller already put through is never hung up (404/409 from Asterisk; one adoption at a time); each role is announced before an acknowledgement covers it; a hand-over escalation lost after 10 minutes of retries is counted (sauti_ivr_handover_escalation_lost_total) and recorded again by sautictl incident escalate-handover under the same key; a former leader resets the dead-man gauges"
       - An incident's messages go out as soon as it is planned; a later incident's slow or failing plan never holds them back
       - A coordinator line is held only while its call lasts; an early answer keeps it, an answered call with no key is hung up after the no-input time, and each new term frees lines whose channel Asterisk reports gone (never one it cannot be asked about)
       - A closed or merged incident's forward is neither texted nor called (the claim is ordered against the closure)
@@ -498,6 +504,30 @@ threats:
       - internal/platform/pg/opstore/forward_integration_test.go::TestCoordinatorCalls
       - internal/platform/ivr/alerts_test.go::TestAlertCallsDialDueAlertsOnce
       - internal/platform/wiring/voice_integration_test.go::TestScenario9VoiceAt20Seconds
+      - internal/platform/pg/opstore/coordinator_integration_test.go::TestClaimAnnouncesEveryUnacknowledgedReason
+      - internal/platform/pg/opstore/coordinator_integration_test.go::TestAReasonAfterTheClaimRingsAgain
+      - internal/platform/pg/opstore/coordinator_integration_test.go::TestOldestUnacknowledgedEscalationGauge
+      - internal/platform/ivr/outbound_test.go::TestBackupLineRingsAfterThreeUnansweredCalls
+      - internal/platform/ivr/controller_test.go::TestHandOverRecordsAnEscalationEvenWhenContinueFails
+      - internal/platform/ivr/controller_test.go::TestShutdownHandsOverLiveCalls
+      - internal/platform/ivr/controller_test.go::TestReconnectHandsOverOrphanedChannels
+      - internal/platform/ivr/bridge_test.go::TestBridgeCallerNoAnswerGoesToACoordinator
+      - internal/platform/ivr/alerts_test.go::TestAnUnansweredAlertCallRepeatsThenHangsUp
+      - internal/intake/sweeper_test.go::TestSweeperEscalatesALocatedYellowCallWithoutT2
+      - internal/intake/sweeper_test.go::TestOneFailingIncidentDoesNotStopTheSweep
+      - internal/intake/watchdog_test.go::TestOneFailingIncidentDoesNotStopTheWatchdog
+      - internal/platform/pg/opstore/idle_integration_test.go::TestWatchdogEscalatesAnOverdueTimerAfterT3
+      - internal/intake/dedup_test.go::TestMergedUnacknowledgedEscalationRingsOnTheSurvivor
+      - internal/platform/ivr/handover_race_test.go::TestOverlappingAdoptsHandOverOnce
+      - internal/platform/ivr/handover_race_test.go::TestACallThatLeftTheApplicationIsNotHungUp
+      - internal/platform/pg/opstore/idle_integration_test.go::TestListIdleRelistsWhatTheSweeperWouldEscalate
+      - internal/platform/ivr/controller_test.go::TestALongClosingPromptIsNotCutOff
+      - cmd/intake-gw/main_test.go::TestEscalationGaugesResetWhenTheTermEnds
+      - internal/platform/ivr/outbound_test.go::TestAnAnsweredBackupCallKeepsTheLineFree
+      - internal/platform/ivr/outbound_test.go::TestAcknowledgementCoversOnlyAnnouncedRoles
+      - tests/e2e/m1_ivr_test.go::TestAnAdoptedCallIsEscalatedWhateverTheFallbackDialDoes
+      - internal/platform/ivr/controller_test.go::TestALostHandOverEscalationIsCounted
+      - cmd/sautictl/escalations_integration_test.go::TestIncidentEscalateHandoverRecordsTheLostEscalationOnce
       - internal/platform/wiring/forward_integration_test.go::TestScenario7ForwardAcknowledged
       - internal/platform/wiring/forward_integration_test.go::TestScenario11RuleErrorRingsTheCoordinator
   - id: T-029
@@ -523,9 +553,14 @@ threats:
     hard_constraints: [5]
     mitigations:
       - The bridge connects only a number whose keyed hash matches a responder with an open assignment, or a number that a session of an open incident (or of a report merged into it, until a split) came from; anyone else hears the same "nothing to connect" message, so the bridge reveals nobody's registration
+      - "UX-1 (ADR-0034): a caller handed to a coordinator from the bridge (unanswered, key 0, three silent tries, a failure) goes through the fallback dialplan, which masks the caller ID before it dials"
+      - "UX-1 (ADR-0034): a number whose report is open with nobody assigned yet hears exactly what an unknown number hears (the same prompts, the same key 0 for a coordinator, the same timing and hand-over), so the bridge is no oracle for whether a number has reported an emergency; the open report is escalated quietly (bridge_unanswered), off the call's path, at most once per incident per 10-minute window on the database's clock"
       - Neither party ever learns the other's number; a spoofed caller ID reaches only the voice of the other party, never a number or a record
     verified_by:
       - internal/platform/ivr/bridge_test.go::TestBridgeUnknownNumber
+      - internal/platform/ivr/bridge_test.go::TestBridgeOpenIncidentIsIndistinguishableFromAnUnknownNumber
+      - internal/platform/ivr/dialplan_test.go::TestFallbackMasksTheCallerBeforeAnyDial
+      - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeOpenIncidentForCallerAndEscalate
       - internal/platform/ivr/bridge_test.go::TestBridgeCallerCallsBack
       - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeTargetsAndLog
       - internal/platform/pg/opstore/bridge_integration_test.go::TestBridgeCallerOfAMergedReport

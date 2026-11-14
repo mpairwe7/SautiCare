@@ -1,13 +1,13 @@
 package ivr
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -280,10 +280,11 @@ func (f *ForwardCalls) Handle(ctx context.Context, e Event) {
 		if st == nil {
 			return
 		}
-		if st.current == e.PlaybackID {
+		current := st.current == e.PlaybackID
+		if current {
 			st.current = ""
 		}
-		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+		if (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)) {
 			f.hangup(op, e.ChannelID)
 		}
 	case EventStasisEnd, EventHangupRequest:
@@ -345,7 +346,7 @@ func (f *ForwardCalls) play(ctx context.Context, ch string, st *forwardCall, sou
 	}
 }
 
-func (f *ForwardCalls) hangup(ctx context.Context, ch string) { _ = f.c.ARI.Hangup(ctx, ch) }
+func (f *ForwardCalls) hangup(ctx context.Context, ch string) { _ = hangupFresh(ctx, f.c.ARI, ch) }
 
 // CoordinatorStore is the store as coordinator calls see it (op_ivr).
 type CoordinatorStore interface {
@@ -375,6 +376,11 @@ type CoordinatorCallsConfig struct {
 	Log       *slog.Logger
 	OpTimeout time.Duration
 	NoInput   time.Duration // an answered call with no key it offers for this long is hung up (default DefaultNoInput)
+	// BackupEndpoint is tier 2 (SAUTI_COORDINATOR_BACKUP_DIAL): rung as well
+	// once an escalation has rung BackupAfterCalls times unanswered
+	// (escalation.backup_after_calls; default 3). "" is no tier 2.
+	BackupEndpoint   string
+	BackupAfterCalls int
 }
 
 // ringMargin is how long after the ring time an unanswered call still holds
@@ -384,7 +390,7 @@ const ringMargin = 10 * time.Second
 type coordinatorCall struct {
 	incident  uuid.UUID
 	seq       int64
-	reason    string
+	pairs     []pair // what the call announces, most urgent first
 	reference incident.Reference
 	plays     int
 	done      bool
@@ -404,6 +410,13 @@ type CoordinatorCalls struct {
 	// StasisEnd, a hang-up after no input, or a new term finding the channel
 	// gone (reconcile).
 	busy map[string]time.Time
+	// rounds holds each incident's tier-2 rounds still live (the line and
+	// the backup rung together), by the seq they announce, so an
+	// acknowledgement hangs up only the calls it covers, and a call placed
+	// after it is hung up at once.
+	// shortcut: rounds never acknowledged stay until the process restarts
+	// (at most maxRounds per incident); prune by age if tier 2 rings often.
+	rounds map[uuid.UUID][]*tierRound
 }
 
 // NewCoordinatorCalls validates the wiring.
@@ -424,7 +437,10 @@ func NewCoordinatorCalls(c CoordinatorCallsConfig) (*CoordinatorCalls, error) {
 	if c.NoInput <= 0 {
 		c.NoInput = DefaultNoInput
 	}
-	return &CoordinatorCalls{c: c, calls: map[string]*coordinatorCall{}, busy: map[string]time.Time{}}, nil
+	if c.BackupAfterCalls <= 0 {
+		c.BackupAfterCalls = 3
+	}
+	return &CoordinatorCalls{c: c, calls: map[string]*coordinatorCall{}, busy: map[string]time.Time{}, rounds: map[uuid.UUID][]*tierRound{}}, nil
 }
 
 // RunOnce rings the coordinator line about each escalation due now.
@@ -450,29 +466,113 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for _, d := range due {
-		reason := d.Reason
-		if !reasonCode.MatchString(reason) {
-			reason = "other"
+		args := []string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reasonPairs(d.Reasons, d.Roles), string(d.Reference)}
+		// Tier 2: after BackupAfterCalls unanswered rings the backup rings
+		// too, from the next ring on (Calls counts the ring being placed). It
+		// takes none of the line's calls.
+		endpoints := []string{k.c.Endpoint}
+		if k.c.BackupEndpoint != "" && d.Calls > k.c.BackupAfterCalls {
+			endpoints = append(endpoints, k.c.BackupEndpoint)
 		}
-		ch, err := bounded(ctx, originateTimeout, func(c context.Context) (string, error) {
-			return k.c.ARI.Originate(c, k.c.Endpoint, k.c.CallerID,
-				[]string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reason, string(d.Reference)}, k.c.Ring)
-		})
-		if err != nil {
-			// The claim stands: the line is rung again after the retry interval.
-			k.c.Log.Error("coordinator call not placed", "incident", d.IncidentID, "calls", d.Calls, "err", err)
-			continue
+		var round *tierRound
+		if len(endpoints) > 1 {
+			round = k.beginRound(d.IncidentID, d.Seq)
 		}
-		k.mu.Lock()
-		// The answer may already have been handled (StasisStart can arrive
-		// before Originate returns): its mark stands, or the reservation
-		// would lapse while the call is under way.
-		if until, answered := k.busy[ch]; !answered || !until.IsZero() {
-			k.busy[ch] = now.Add(k.c.Ring + ringMargin)
+		for i, endpoint := range endpoints {
+			if round != nil && round.isAcked(&k.mu) {
+				break // acknowledged on an earlier call of this round
+			}
+			legArgs := args
+			if i > 0 {
+				legArgs = append(slices.Clone(args), backupArg)
+			}
+			ch, err := bounded(ctx, originateTimeout, func(c context.Context) (string, error) {
+				return k.c.ARI.Originate(c, endpoint, k.c.CallerID, legArgs, k.c.Ring)
+			})
+			if err != nil {
+				// The claim stands: the line is rung again after the retry interval.
+				k.c.Log.Error("coordinator call not placed", "incident", d.IncidentID, "calls", d.Calls, "tier", i+1, "err", err)
+				continue
+			}
+			// The round was acknowledged while this call was placed: hang it
+			// up. A call to the line whose hang-up fails is still ringing and
+			// keeps its reservation below.
+			if round != nil && !k.addLeg(round, ch) && (k.hangUpLeg(ctx, ch) || i > 0) {
+				continue
+			}
+			if i > 0 {
+				continue
+			}
+			k.mu.Lock()
+			// The answer may already have been handled (StasisStart can arrive
+			// before Originate returns): its mark stands, or the reservation
+			// would lapse while the call is under way.
+			if until, answered := k.busy[ch]; !answered || !until.IsZero() {
+				k.busy[ch] = now.Add(k.c.Ring + ringMargin)
+			}
+			k.mu.Unlock()
 		}
-		k.mu.Unlock()
 	}
 	return len(due), nil
+}
+
+// backupArg marks a tier-2 call in its arguments.
+const backupArg = "backup"
+
+// pair is one thing a coordinator call announces: a reason and the role it
+// was recorded for ("" for none).
+type pair struct{ reason, role string }
+
+// roleCodes are the roles an escalation may carry (incident.ParseEscalated),
+// one character each in the call's arguments.
+var roleCodes = map[string]byte{"": '-', "vht": 'v', "transporter": 't'}
+
+// reasonPairs carries the claimed (reason, role) pairs in the call's
+// arguments, most urgent first: two characters each, the reason's place in
+// the registry (base 32) and the role, so every pair the registry allows
+// fits one argument. Free of any text; a reason outside the registry is
+// spoken as "other".
+func reasonPairs(reasons, roles []string) string {
+	type code struct{ rank, role int }
+	var codes []code
+	for i, r := range reasons {
+		role := ""
+		if i < len(roles) {
+			role = roles[i]
+		}
+		rc, ok := roleCodes[role]
+		if !ok {
+			rc = '-' // not a role an escalation may carry: the reason alone
+		}
+		codes = append(codes, code{incident.ReasonRank(r), strings.IndexByte("-vt", rc)})
+	}
+	slices.SortFunc(codes, func(a, b code) int { return cmp.Or(cmp.Compare(a.rank, b.rank), cmp.Compare(a.role, b.role)) })
+	var b strings.Builder
+	for _, c := range slices.Compact(codes) {
+		b.WriteString(strconv.FormatInt(int64(c.rank), 32))
+		b.WriteByte("-vt"[c.role])
+	}
+	return b.String()
+}
+
+// pairsOf reads reasonPairs back; anything else is spoken as "other".
+func pairsOf(arg string) []pair {
+	var out []pair
+	for i := 0; i+1 < len(arg); i += 2 {
+		p := pair{reason: "other"}
+		if n, err := strconv.ParseInt(arg[i:i+1], 32, 8); err == nil && int(n) < len(incident.EscalationReasons) {
+			p.reason = incident.EscalationReasons[n]
+		}
+		for role, c := range roleCodes {
+			if arg[i+1] == c {
+				p.role = role
+			}
+		}
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Run rings due escalations every interval until ctx ends. It first frees
@@ -564,7 +664,8 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 	defer cancel()
 	switch e.Type {
 	case EventStasisStart:
-		if len(e.Args) != 5 {
+		backup := len(e.Args) == 6 && e.Args[5] == backupArg
+		if len(e.Args) != 5 && !backup {
 			k.hangup(op, e.ChannelID)
 			return
 		}
@@ -574,11 +675,14 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 			k.hangup(op, e.ChannelID)
 			return
 		}
-		st := &coordinatorCall{incident: inc, seq: seq, reason: e.Args[3], reference: incident.Reference(e.Args[4])}
+		st := &coordinatorCall{incident: inc, seq: seq, pairs: pairsOf(e.Args[3]), reference: incident.Reference(e.Args[4])}
 		k.mu.Lock()
 		// Answered: the line is busy until the call ends, whether or not
-		// RunOnce has stored the call yet (CodeRabbit PR #11).
-		k.busy[e.ChannelID] = time.Time{}
+		// RunOnce has stored the call yet (CodeRabbit PR #11). The backup
+		// line is another phone: its call holds none of the line's calls.
+		if !backup {
+			k.busy[e.ChannelID] = time.Time{}
+		}
 		k.calls[e.ChannelID] = st
 		k.mu.Unlock()
 		k.arm(ctx, e.ChannelID, st) // the no-input time runs from the answer
@@ -607,6 +711,7 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 			st.hangupOn = endAfter(op, k.c.ARI, e.ChannelID, fmt.Sprintf("%s-c%d", e.ChannelID, st.plays),
 				[]string{"sauti/" + k.c.Language + "/escalation-acknowledged"})
 			st.current = st.hangupOn
+			k.hangUpOtherLegs(op, st.incident, st.seq, e.ChannelID)
 		case "3":
 			k.play(op, e.ChannelID, st, k.sounds(st))
 		}
@@ -617,10 +722,11 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 		if st == nil {
 			return
 		}
-		if st.current == e.PlaybackID {
+		current := st.current == e.PlaybackID
+		if current {
 			st.current = ""
 		}
-		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
+		if (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)) {
 			k.hangup(op, e.ChannelID)
 		}
 	case EventStasisEnd, EventHangupRequest:
@@ -628,10 +734,90 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 	}
 }
 
+// hangUpOtherLegs ends the other tier's call about an acknowledged incident.
+func (k *CoordinatorCalls) hangUpOtherLegs(ctx context.Context, inc uuid.UUID, seq int64, acked string) {
+	k.mu.Lock()
+	var legs []string
+	var live []*tierRound
+	for _, r := range k.rounds[inc] {
+		if r.seq > seq {
+			live = append(live, r) // a newer escalation, not acknowledged
+			continue
+		}
+		r.acked, r.ackedBy = true, acked
+		legs = append(legs, r.legs...)
+	}
+	k.rounds[inc] = live
+	k.mu.Unlock()
+	for _, ch := range legs {
+		if ch != acked {
+			k.hangUpLeg(ctx, ch)
+		}
+	}
+}
+
+// tierRound is one tier-2 round: the calls placed for one claimed seq.
+type tierRound struct {
+	seq     int64
+	legs    []string
+	acked   bool
+	ackedBy string // the call that acknowledged it: never hung up for it
+}
+
+// maxRounds bounds the rounds kept per incident.
+const maxRounds = 4
+
+func (k *CoordinatorCalls) beginRound(inc uuid.UUID, seq int64) *tierRound {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	r := &tierRound{seq: seq}
+	k.rounds[inc] = append(k.rounds[inc], r)
+	if n := len(k.rounds[inc]); n > maxRounds {
+		k.rounds[inc] = k.rounds[inc][n-maxRounds:]
+	}
+	return r
+}
+
+func (r *tierRound) isAcked(mu *sync.Mutex) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return r.acked
+}
+
+// addLeg records a call placed for the round. It reports false for a call
+// to hang up: the round was acknowledged meanwhile, on another call.
+func (k *CoordinatorCalls) addLeg(r *tierRound, ch string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if r.acked {
+		return ch == r.ackedBy
+	}
+	r.legs = append(r.legs, ch)
+	return true
+}
+
+// hangUpLeg ends another call of an acknowledged round and reports whether
+// Asterisk took the hang-up. Its line is freed only then; a call still live
+// keeps its line and its no-input time.
+func (k *CoordinatorCalls) hangUpLeg(ctx context.Context, ch string) bool {
+	if _, err := bounded(context.WithoutCancel(ctx), k.c.OpTimeout, func(c context.Context) (struct{}, error) { return struct{}{}, k.c.ARI.Hangup(c, ch) }); err != nil {
+		k.c.Log.Error("hanging up the other coordinator call failed; its line stays held", "err", err)
+		return false
+	}
+	k.release(ch, nil)
+	return true
+}
+
 func (k *CoordinatorCalls) sounds(st *coordinatorCall) []string {
 	b := "sauti/" + k.c.Language + "/"
 	out := append([]string{b + "escalation-intro"}, digits(st.reference)...)
-	return append(out, escalationReasonSound(k.c.Language, st.reason), b+"escalation-options")
+	for _, p := range st.pairs {
+		out = append(out, escalationReasonSound(k.c.Language, p.reason))
+		if p.role != "" {
+			out = append(out, b+"role-"+p.role) // which role nobody can reach
+		}
+	}
+	return append(out, b+"escalation-options")
 }
 
 func (k *CoordinatorCalls) play(ctx context.Context, ch string, st *coordinatorCall, sounds []string) {
@@ -642,7 +828,7 @@ func (k *CoordinatorCalls) play(ctx context.Context, ch string, st *coordinatorC
 	}
 }
 
-func (k *CoordinatorCalls) hangup(ctx context.Context, ch string) { _ = k.c.ARI.Hangup(ctx, ch) }
+func (k *CoordinatorCalls) hangup(ctx context.Context, ch string) { _ = hangupFresh(ctx, k.c.ARI, ch) }
 
 // originateTimeout bounds placing an outbound call (Asterisk creates the
 // channel and answers at once; the ring itself is not waited for).
@@ -668,16 +854,41 @@ func bounded[T any](ctx context.Context, d time.Duration, f func(context.Context
 // cut it off); a prompt that cannot be played ends the call at once.
 func endAfter(ctx context.Context, a AlertARI, ch, pb string, sounds []string) string {
 	if err := a.Play(ctx, ch, pb, sounds); err != nil {
-		_ = a.Hangup(ctx, ch)
+		_ = hangupFresh(ctx, a, ch)
 		return ""
 	}
 	return pb
+}
+
+// hangupTimeout bounds a hang-up made on a deadline of its own.
+const hangupTimeout = 3 * time.Second
+
+// hangupRetry is how often an alert call's final hang-up that Asterisk
+// refused is tried again, and hangupGiveUp for how long.
+const (
+	hangupRetry  = 5 * time.Second
+	hangupGiveUp = 2 * time.Minute
+)
+
+// hangupFresh hangs up on a deadline of its own: the operation before it
+// (a playback or a store call) may have used up ctx's, and a refused
+// hang-up would leave the line open.
+func hangupFresh(ctx context.Context, a AlertARI, ch string) error {
+	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hangupTimeout)
+	defer cancel()
+	return a.Hangup(hctx, ch)
 }
 
 // outboundKey reports whether a forwarding or coordinator call takes digit:
 // 1 acknowledges, 3 repeats. Any other key is ignored, leaving the prompt
 // playing rather than cutting it to silence.
 func outboundKey(digit string) bool { return digit == "1" || digit == "3" }
+
+// failed reports a prompt Asterisk could not play (F-03). On an outbound
+// call nobody heard what to do: the call ends unanswered, and the alert,
+// forward or escalation goes on as for a call that was not picked up (its
+// attempt was settled when the call was placed).
+func failed(e Event) bool { return e.PlaybackState == playbackFailed }
 
 // cut stops the prompt being heard when a key the menu offers is pressed, so
 // the answer is spoken at once rather than queued behind it.
@@ -688,18 +899,10 @@ func cut(ctx context.Context, a AlertARI, current *string) {
 	}
 }
 
-var reasonCode = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-
-// EscalationReasons are the reasons with their own recording; any other is
-// spoken as "other".
-var EscalationReasons = []string{
-	"triage_rule_error", "abandoned_after_danger_yes", "abandoned_red_before_dispatch", "merged_call_escalated",
-	"no_eligible_responder", "no_responder_nearby", "red_no_acceptance", "forwarded_to_facility",
-	"no_facility_acknowledged", "dispatch_suspended", "dispatch_error", "dispatch_stalled", "assigned_follow_up",
-}
-
+// escalationReasonSound is the reason's recording; a reason outside the
+// registry is spoken as "other".
 func escalationReasonSound(lang, reason string) string {
-	if !slices.Contains(EscalationReasons, reason) {
+	if !slices.Contains(incident.EscalationReasons, reason) {
 		reason = "other"
 	}
 	return "sauti/" + lang + "/escalation-reason-" + reason
@@ -722,8 +925,9 @@ func OutboundSounds(copy config.Responder) []string {
 	for _, lang := range copy.Languages {
 		b := "sauti/" + lang + "/"
 		out = append(out, b+"forward-intro", b+"forward-options", b+"forward-acknowledged",
-			b+"escalation-intro", b+"escalation-options", b+"escalation-acknowledged", b+"escalation-reason-other")
-		for _, r := range EscalationReasons {
+			b+"escalation-intro", b+"escalation-options", b+"escalation-acknowledged", b+"escalation-reason-other",
+			b+"role-vht", b+"role-transporter")
+		for _, r := range incident.EscalationReasons {
 			out = append(out, b+"escalation-reason-"+r)
 		}
 	}

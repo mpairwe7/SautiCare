@@ -10,6 +10,7 @@ import (
 	"go.yaml.in/yaml/v4"
 
 	"sautihealth.com/sauti/internal/config"
+	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/location"
 )
@@ -103,6 +104,34 @@ func TestPromptCatalogueIsComplete(t *testing.T) {
 	missing, extra := diff(want, cat.Sounds), diff(cat.Sounds, want)
 	if len(missing) > 0 || len(extra) > 0 {
 		t.Fatalf("catalogue out of date (run with -update):\nmissing %s\nextra %s", strings.Join(missing, ", "), strings.Join(extra, ", "))
+	}
+}
+
+// Every escalation reason has its recording in both languages and a row in
+// the coordinator's runbook, so no reason is spoken as "other" or met with
+// no instructions (F-11).
+func TestEveryEscalationReasonHasARecordingAndARunbookRow(t *testing.T) {
+	raw, err := os.ReadFile(cataloguePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cat catalogue
+	if err := yaml.Unmarshal(raw, &cat); err != nil {
+		t.Fatal(err)
+	}
+	runbook, err := os.ReadFile("../../../docs/runbooks/no-eligible-responders.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range incident.EscalationReasons {
+		for _, lang := range []string{"en", "lg"} {
+			if s := "sauti/" + lang + "/escalation-reason-" + r; !slices.Contains(cat.Sounds, s) {
+				t.Errorf("catalogue lacks %s", s)
+			}
+		}
+		if !strings.Contains(string(runbook), "| `"+r+"` |") {
+			t.Errorf("runbook reason table lacks a row for `%s`", r)
+		}
 	}
 }
 

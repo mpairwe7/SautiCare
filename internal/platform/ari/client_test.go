@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -268,5 +271,113 @@ func TestClientChannelExists(t *testing.T) {
 	}
 	if ok, err := wrong.ChannelExists(ctx, "chan-9"); err == nil || ok {
 		t.Fatalf("a refused request read as an answer: %v %v", ok, err)
+	}
+}
+
+// ListChannels names each channel's Stasis application, so ivr-controller can
+// find the calls parked in its own application after a reconnect.
+func TestClientListsChannelsWithTheirApplication(t *testing.T) {
+	f, c := newPair(t)
+	f.StartCall("chan-9", "+256772123456")
+	got, err := c.ListChannels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []Channel{{ID: "chan-9", App: "sauti-ivr"}}) {
+		t.Fatalf("channels %+v", got)
+	}
+}
+
+// Stream calls connected on every (re)connect, before that connection's
+// first event is handled.
+func TestClientStreamReportsEachConnect(t *testing.T) {
+	f, c := newPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := make(chan string, 64)
+	go func() {
+		_ = c.Stream(ctx, func() { ch <- "connected" }, func(e Event) { ch <- e.Type })
+	}()
+	<-f.Connected()
+	f.DropStreams()
+	<-f.Connected()
+	f.StartCall("chan-2", "")
+	var seen []string
+	for len(seen) < 3 {
+		select {
+		case s := <-ch:
+			seen = append(seen, s)
+		case <-time.After(3 * time.Second):
+			t.Fatalf("seen %v", seen)
+		}
+	}
+	if !reflect.DeepEqual(seen, []string{"connected", "connected", EventStasisStart}) {
+		t.Fatalf("seen %v", seen)
+	}
+}
+
+// A handed-over call carries its reference in SAUTI_REF, which the fallback
+// dialplan shows the coordinator after "SAUTI" (rule 5): digits and spaces
+// only.
+func TestClientSetsReference(t *testing.T) {
+	f, c := newPair(t)
+	ctx := context.Background()
+	if err := c.SetReference(ctx, "chan-1", "123 456 7894"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Reference("chan-1"); got != "123 456 7894" {
+		t.Fatalf("reference %q", got)
+	}
+	for _, bad := range []string{"", "x\"<1>", "123\n", "SAUTI 123"} {
+		if err := c.SetReference(ctx, "chan-1", bad); err == nil {
+			t.Fatalf("reference %q was sent", bad)
+		}
+	}
+}
+
+// A recording Asterisk could not play finishes with state "failed" (F-03):
+// the controller must not take it as heard.
+func TestDecodePlaybackFailedState(t *testing.T) {
+	e, err := decodeEvent([]byte(`{"type":"PlaybackFinished","playback":{"id":"p","state":"failed","target_uri":"channel:ch1"}}`))
+	if err != nil || e.PlaybackID != "p" || e.ChannelID != "ch1" || e.PlaybackState != PlaybackFailed {
+		t.Fatalf("event %+v, err %v", e, err)
+	}
+}
+
+// Review R1: Asterisk answers 404 (gone) or 409 (not in the application) for
+// a channel another actor has moved on; the controller must tell that from a
+// failure, so the client reports it as ErrNotInStasis.
+func TestClientReportsAChannelNoLongerInTheApplication(t *testing.T) {
+	for _, code := range []int{http.StatusNotFound, http.StatusConflict} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+		c, err := New(Config{BaseURL: srv.URL, User: "sauti", Password: secret(t), App: "sauti-ivr"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Continue(context.Background(), "ch1", "sauti-ivr-fallback", "s", 1); !errors.Is(err, ErrNotInStasis) {
+			t.Errorf("%d: %v, want ErrNotInStasis", code, err)
+		}
+		srv.Close()
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) }))
+	defer srv.Close()
+	c, _ := New(Config{BaseURL: srv.URL, User: "sauti", Password: secret(t), App: "sauti-ivr"})
+	if err := c.Continue(context.Background(), "ch1", "sauti-ivr-fallback", "s", 1); err == nil || errors.Is(err, ErrNotInStasis) {
+		t.Errorf("500: %v", err)
+	}
+}
+
+// PR #14 review: a channel continued into the dialplan is still live but no
+// longer in the application, so a fresh controller does not take it for an
+// orphan.
+func TestAContinuedChannelLeavesTheApplication(t *testing.T) {
+	f, c := newPair(t)
+	f.StartCall("chan-9", "+256772123456")
+	if err := c.Continue(context.Background(), "chan-9", "sauti-ivr-fallback", "s", 1); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.ListChannels(context.Background())
+	if err != nil || !reflect.DeepEqual(got, []Channel{{ID: "chan-9"}}) {
+		t.Fatalf("channels %+v %v", got, err)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/pii"
+	"sautihealth.com/sauti/internal/platform/ari"
 )
 
 // Outbound voice alerts (M2 Part B Task 10; Build Prompt §10.4; scenario 9).
@@ -70,6 +71,14 @@ type AlertCallsConfig struct {
 	Language   string
 	Log        *slog.Logger
 	OpTimeout  time.Duration // each store or ARI operation (default 3 s)
+	// NoInput is how long an answered call waits for a key after the menu
+	// ends (default 10 s): the menu is heard once more, then a closing
+	// prompt, then the line is freed (ADR-0029 rule 2).
+	NoInput time.Duration
+	// PromptMax is the longest one recording plays (default 30 s): a prompt
+	// whose end event is lost is treated as ended PromptMax + NoInput after
+	// it, or its latest recording, started.
+	PromptMax time.Duration
 }
 
 type alertCall struct {
@@ -79,8 +88,12 @@ type alertCall struct {
 	reasons   bool // the reason list is being heard
 	plays     int
 	done      bool
-	current   string // the prompt being heard: a key cuts it
-	hangupOn  string // the closing prompt: hang up once it has been heard
+	current   string    // the prompt being heard: a key cuts it
+	hangupOn  string    // the closing prompt: hang up once it has been heard
+	replays   int       // menus heard again after no input
+	refused   time.Time // when Asterisk first refused the final hang-up
+	timer     *time.Timer
+	timerGen  int // bumped whenever the timer is armed or stopped: a stale one does nothing
 }
 
 // AlertCalls places and runs outbound alert calls.
@@ -88,6 +101,14 @@ type AlertCalls struct {
 	c     AlertCallsConfig
 	mu    sync.Mutex
 	calls map[string]*alertCall
+	run   sync.Mutex // serialises the calls' events and their no-input timers
+	// lead is the leader term's context of the latest event (under run): a
+	// timer neither starts nor acts once it is cancelled, and a timer's
+	// requests run on deadlines derived from it, so losing the lock aborts
+	// them. Between the lock's loss and the term's clean-up (DisarmAll) no
+	// old timer plays or closes a call the next leader may serve, except a
+	// request Asterisk had already received: cancellation cannot retract it.
+	lead context.Context
 }
 
 // NewAlertCalls validates the wiring.
@@ -103,6 +124,12 @@ func NewAlertCalls(c AlertCallsConfig) (*AlertCalls, error) {
 	}
 	if c.OpTimeout <= 0 {
 		c.OpTimeout = 3 * time.Second
+	}
+	if c.NoInput <= 0 {
+		c.NoInput = 10 * time.Second
+	}
+	if c.PromptMax <= 0 {
+		c.PromptMax = 30 * time.Second
 	}
 	if c.Log == nil {
 		c.Log = slog.Default()
@@ -187,6 +214,9 @@ func (a *AlertCalls) Run(ctx context.Context, every time.Duration, onErr func(er
 // Handle runs the answered alert calls' events (the alert application's
 // event stream). Each operation has its own deadline.
 func (a *AlertCalls) Handle(ctx context.Context, e Event) {
+	a.run.Lock()
+	defer a.run.Unlock()
+	a.lead = ctx
 	op, cancel := context.WithTimeout(ctx, a.c.OpTimeout)
 	defer cancel()
 	switch e.Type {
@@ -203,7 +233,7 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		alert, who, err := a.c.Store.AlertForAttempt(op, attempt)
 		if err != nil {
 			a.c.Log.Error("answered alert call without its alert", "err", err)
-			_ = a.c.ARI.Hangup(op, e.ChannelID)
+			_ = hangupFresh(op, a.c.ARI, e.ChannelID) // the store call may have used up op's deadline
 			return
 		}
 		st := &alertCall{attempt: attempt, alert: alert, responder: who}
@@ -223,8 +253,16 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		if st == nil || st.done || !a.offers(st, e.Digit) {
 			return
 		}
+		a.disarm(st)
 		cut(op, a.c.ARI, &st.current)
 		a.key(op, e.ChannelID, st, e.Digit)
+	case EventPlaybackStarted, EventPlaybackContinuing:
+		a.mu.Lock()
+		st := a.calls[e.ChannelID]
+		a.mu.Unlock()
+		if st != nil && st.current == e.PlaybackID {
+			a.arm(e.ChannelID, st, a.c.PromptMax+a.c.NoInput) // per recording, from its start
+		}
 	case EventPlaybackFinished:
 		a.mu.Lock()
 		st := a.calls[e.ChannelID]
@@ -232,17 +270,87 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		if st == nil {
 			return
 		}
-		if st.current == e.PlaybackID {
+		current := st.current == e.PlaybackID
+		if current {
 			st.current = ""
 		}
-		if st.hangupOn != "" && st.hangupOn == e.PlaybackID {
-			_ = a.c.ARI.Hangup(op, e.ChannelID)
+		switch {
+		case (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)):
+			a.end(e.ChannelID, st)
+		case current && !st.done:
+			a.arm(e.ChannelID, st, a.c.NoInput) // the menu was heard: wait for a key
 		}
 	case EventStasisEnd, EventHangupRequest:
 		a.mu.Lock()
+		if st := a.calls[e.ChannelID]; st != nil {
+			a.disarm(st)
+		}
 		delete(a.calls, e.ChannelID)
 		a.mu.Unlock()
 	}
+}
+
+// DisarmAll stops every call's no-input time; outboundTerm calls it when
+// the leader's term ends, so an old term's timer never plays or closes a
+// call the next leader may serve. The call itself stays up until it ends.
+func (a *AlertCalls) DisarmAll() {
+	a.run.Lock()
+	defer a.run.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, st := range a.calls {
+		a.disarm(st)
+	}
+}
+
+// arm starts the no-input time of a menu just heard, unless the term's
+// leadership is already lost.
+func (a *AlertCalls) arm(ch string, st *alertCall, after time.Duration) {
+	a.disarm(st)
+	lead, gen := a.lead, st.timerGen
+	if lead.Err() != nil {
+		return
+	}
+	st.timer = time.AfterFunc(after, func() { a.noInput(lead, ch, st, gen) })
+}
+
+func (a *AlertCalls) disarm(st *alertCall) {
+	st.timerGen++
+	if st.timer != nil {
+		st.timer.Stop()
+		st.timer = nil
+	}
+}
+
+// noInput: no key since the menu ended. The menu is heard once more; after
+// that the call closes, freeing the responder's phone and the trunk, with
+// nothing recorded as an answer (ADR-0029 rule 2).
+func (a *AlertCalls) noInput(lead context.Context, ch string, st *alertCall, gen int) {
+	a.run.Lock()
+	defer a.run.Unlock()
+	a.mu.Lock()
+	live := a.calls[ch] == st
+	a.mu.Unlock()
+	if !live || st.timerGen != gen || lead.Err() != nil {
+		return
+	}
+	op, cancel := context.WithTimeout(lead, a.c.OpTimeout) // aborted if leadership is lost
+	defer cancel()
+	if st.done { // the closing prompt's end was never reported, or its hang-up was refused
+		a.end(ch, st)
+		return
+	}
+	if st.replays == 0 {
+		st.replays++
+		if st.reasons {
+			a.play(op, ch, st, []string{a.sound("decline-reasons-" + string(st.alert.Role))})
+		} else {
+			a.play(op, ch, st, a.alertSounds(st.alert))
+		}
+		return
+	}
+	a.c.Log.Warn("alert call closed after no input", "alert", st.alert.AlertID)
+	a.finish(op, ch, st, a.sound("alert-no-input-closing"))
 }
 
 // offers reports whether the menu being heard takes digit: a reason's number
@@ -267,6 +375,7 @@ func (a *AlertCalls) key(ctx context.Context, ch string, st *alertCall, digit st
 		out, err := a.c.Store.AcceptAlert(ctx, st.alert.AlertID, st.responder)
 		if err != nil {
 			a.c.Log.Error("voice accept failed", "alert", st.alert.AlertID, "err", err)
+			a.menuAgain(ctx, ch, st)
 			return
 		}
 		name := map[dispatch.AcceptResult]string{dispatch.Accepted: "alert-accepted", dispatch.AlreadyTaken: "alert-already-taken",
@@ -297,6 +406,7 @@ func (a *AlertCalls) decline(ctx context.Context, ch string, st *alertCall, reas
 	out, err := a.c.Store.DeclineAlert(ctx, st.alert.AlertID, st.responder, reason)
 	if err != nil {
 		a.c.Log.Error("voice decline failed", "alert", st.alert.AlertID, "err", err)
+		a.menuAgain(ctx, ch, st)
 		return
 	}
 	name := "alert-declined"
@@ -306,13 +416,61 @@ func (a *AlertCalls) decline(ctx context.Context, ch string, st *alertCall, reas
 	a.finish(ctx, ch, st, a.sound(name))
 }
 
+// menuAgain replays the alert after an answer the store refused: the key
+// cut the menu and stopped its wait, so without it the answered line would
+// stay open. Its end re-arms the no-input time, and the call closes as an
+// unanswered one does.
+//
+// The refused operation may have used up its deadline, so the replay runs
+// on a fresh one.
+func (a *AlertCalls) menuAgain(ctx context.Context, ch string, st *alertCall) {
+	st.reasons = false
+	op, cancel := context.WithTimeout(a.lead, a.c.OpTimeout) // a fresh deadline: ctx's may be used up
+	defer cancel()
+	a.play(op, ch, st, a.alertSounds(st.alert))
+}
+
 // finish plays the result and hangs up once it has been heard
 // (PlaybackFinished); a result that cannot be played ends the call at once.
 func (a *AlertCalls) finish(ctx context.Context, ch string, st *alertCall, sounds ...string) {
 	st.done = true
 	st.plays++
-	st.hangupOn = endAfter(ctx, a.c.ARI, ch, fmt.Sprintf("%s-a%d", ch, st.plays), sounds)
-	st.current = st.hangupOn
+	pb := fmt.Sprintf("%s-a%d", ch, st.plays)
+	if err := a.c.ARI.Play(ctx, ch, pb, sounds); err != nil {
+		a.end(ch, st)
+		return
+	}
+	st.hangupOn, st.current = pb, pb
+	a.arm(ch, st, a.c.PromptMax+a.c.NoInput) // the hang-up happens even if the end event is lost
+}
+
+// end hangs up a call whose closing prompt was heard or could not play. A
+// hang-up Asterisk refuses is tried again every hangupRetry, through the
+// call's timer, until it is taken, the call's end event removes the call,
+// or hangupGiveUp has passed (logged). Nothing is requested once the term's
+// leadership is lost. Under run.
+func (a *AlertCalls) end(ch string, st *alertCall) {
+	st.done = true
+	a.disarm(st)
+	if a.lead.Err() != nil {
+		return
+	}
+	hctx, cancel := context.WithTimeout(a.lead, hangupTimeout) // its own deadline: the caller's may be used up
+	defer cancel()
+	err := a.c.ARI.Hangup(hctx, ch)
+	if err == nil || errors.Is(err, ari.ErrNotInStasis) {
+		return
+	}
+	now := time.Now()
+	if st.refused.IsZero() {
+		st.refused = now
+	}
+	if now.Sub(st.refused) >= hangupGiveUp {
+		a.c.Log.Error("alert call hang-up refused; giving up", "alert", st.alert.AlertID, "err", err)
+		return
+	}
+	a.c.Log.Warn("alert call hang-up refused; retrying", "alert", st.alert.AlertID, "err", err)
+	a.arm(ch, st, hangupRetry)
 }
 
 // whereToGo speaks the incident number, then the ward and the landmark when
@@ -331,12 +489,22 @@ func (a *AlertCalls) whereToGo(f dispatch.MessageFacts) []string {
 	return out
 }
 
+// play plays a menu. One that cannot start sends no end event to arm the
+// no-input time, so it is armed here: the menu is tried again, then the call
+// closes, and an answered line is never left open.
 func (a *AlertCalls) play(ctx context.Context, ch string, st *alertCall, sounds []string) {
 	st.plays++
 	pb := fmt.Sprintf("%s-a%d", ch, st.plays)
-	if a.c.ARI.Play(ctx, ch, pb, sounds) == nil {
-		st.current = pb
+	if err := a.c.ARI.Play(ctx, ch, pb, sounds); err != nil {
+		a.c.Log.Error("alert call prompt not played", "alert", st.alert.AlertID, "err", err)
+		a.arm(ch, st, a.c.NoInput)
+		return
 	}
+	st.current = pb
+	// A fallback longer than any recording, in case the prompt's end event
+	// is lost (the stream reconnecting); its start and each next recording
+	// re-arm it, and its end replaces it with the no-input time.
+	a.arm(ch, st, a.c.PromptMax+a.c.NoInput)
 }
 
 func (a *AlertCalls) sound(name string) string { return "sauti/" + a.c.Language + "/" + name }
@@ -364,7 +532,7 @@ func AlertSounds(tool1 config.Tool1, copy config.Responder) []string {
 	for _, lang := range copy.Languages {
 		b := "sauti/" + lang + "/"
 		out = append(out, b+"alert-intro", b+"alert-options", b+"alert-accepted", b+"alert-bridge-instructions", b+"alert-already-taken",
-			b+"alert-already-assigned", b+"alert-no-longer-needed", b+"alert-declined")
+			b+"alert-already-assigned", b+"alert-no-longer-needed", b+"alert-declined", b+"alert-no-input-closing")
 		for _, sev := range []string{"red", "yellow", "green"} {
 			out = append(out, b+"alert-colour-"+sev)
 		}

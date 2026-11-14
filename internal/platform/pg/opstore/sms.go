@@ -177,7 +177,7 @@ func (s *Store) DueForwardCalls(ctx context.Context, limit int) ([]dispatch.Forw
 }
 
 // ClaimCoordinatorCalls claims the coordinator calls due now (ivr-controller):
-// each incident's latest unacknowledged escalation, rung again after retry.
+// each incident's unacknowledged escalation reasons, rung again after retry.
 func (s *Store) ClaimCoordinatorCalls(ctx context.Context, retry time.Duration, limit int) ([]dispatch.CoordinatorCall, error) {
 	rows, err := s.q.ClaimCoordinatorCalls(ctx, opdb.ClaimCoordinatorCallsParams{Retry: pgtype.Interval{Microseconds: retry.Microseconds(), Valid: true},
 		MaxRows: int32(min(limit, 1000))}) //nolint:gosec // bounded above
@@ -186,14 +186,73 @@ func (s *Store) ClaimCoordinatorCalls(ctx context.Context, retry time.Duration, 
 	}
 	out := make([]dispatch.CoordinatorCall, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, dispatch.CoordinatorCall{IncidentID: uuid.UUID(r.IncidentID.Bytes), Seq: r.Seq, Reason: r.Reason,
-			Reference: incident.Reference(r.Reference), Calls: int(r.Calls)})
+		out = append(out, dispatch.CoordinatorCall{IncidentID: uuid.UUID(r.IncidentID.Bytes), Seq: r.Seq, Reasons: r.Reasons, Roles: r.Roles,
+			Reference: incident.Reference(r.Reference), Calls: int(r.Calls), Severity: r.Severity})
 	}
 	return out, nil
+}
+
+// OldestUnacknowledgedEscalation reports the dead-man signal (intake-gw,
+// op_intake): the age in seconds of the oldest escalation no coordinator has
+// acknowledged on an open incident, and how many incidents hold one.
+func (s *Store) OldestUnacknowledgedEscalation(ctx context.Context) (float64, int, error) {
+	r, err := s.q.OldestUnacknowledgedEscalation(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("opstore: oldest unacknowledged escalation: %w", err)
+	}
+	return r.Seconds, int(r.Incidents), nil
 }
 
 // AcknowledgeCoordinatorCall records a coordinator's acknowledgement of the
 // incident's escalations up to seq.
 func (s *Store) AcknowledgeCoordinatorCall(ctx context.Context, incidentID uuid.UUID, seq int64) error {
 	return mapErr(s.q.AcknowledgeCoordinatorCall(ctx, opdb.AcknowledgeCoordinatorCallParams{IncidentID: pgID(incidentID), Seq: seq}))
+}
+
+// OpenEscalation is an open incident with escalations no coordinator has
+// acknowledged (sautictl escalations, op_readonly). Ages are the database's.
+type OpenEscalation struct {
+	Reference       incident.Reference
+	Severity        string   // "" before classification
+	Reasons, Roles  []string // Roles[i] is Reasons[i]'s role, or ""
+	OldestSeconds   float64
+	Rings           int     // since the last acknowledgement
+	LastRingSeconds float64 // -1: never rung
+}
+
+// OpenEscalations lists the open incidents with unacknowledged
+// escalations, most severe first, then oldest.
+func (s *Store) OpenEscalations(ctx context.Context) ([]OpenEscalation, error) {
+	rows, err := s.q.ListOpenEscalations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("opstore: open escalations: %w", err)
+	}
+	out := make([]OpenEscalation, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, OpenEscalation{Reference: incident.Reference(r.Reference), Severity: r.Severity, Reasons: r.Reasons,
+			Roles: r.Roles, OldestSeconds: r.OldestSeconds, Rings: int(r.Rings), LastRingSeconds: r.LastRingSeconds})
+	}
+	return out, nil
+}
+
+// LocationCallback is an open incident located only to its ward: a
+// coordinator must call back for the place (op_readonly).
+type LocationCallback struct {
+	Reference  incident.Reference
+	Severity   string
+	AgeSeconds float64
+}
+
+// LocationCallbacks lists the open location call-back tasks, most severe
+// first, then oldest.
+func (s *Store) LocationCallbacks(ctx context.Context) ([]LocationCallback, error) {
+	rows, err := s.q.ListLocationCallbacks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("opstore: location call-backs: %w", err)
+	}
+	out := make([]LocationCallback, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, LocationCallback{Reference: incident.Reference(r.Reference), Severity: r.Severity, AgeSeconds: r.AgeSeconds})
+	}
+	return out, nil
 }

@@ -100,22 +100,44 @@ func (r DispatchRequest) Call() Candidate {
 		Severity: r.Severity, Escalated: r.Escalated, T1: r.T1}
 }
 
-// ReasonMergedCallEscalated escalates a survivor that absorbed an escalated
-// call: the coordinator alert the call carried must not be lost in the merge.
-const ReasonMergedCallEscalated = "merged_call_escalated"
-
 // MergeConsequences are the events a merge adds to the survivor beyond
 // merge_absorbed, so that absorbing a call never makes an emergency look
 // less urgent (hard constraint 3; Build Prompt §14): the call's severity if
 // it ranks higher (incident.severity_raised), and an escalation if the call
-// was escalated and the survivor is not. Payloads only; the store adds keys.
+// holds one no coordinator has acknowledged, whether or not the survivor was
+// ever escalated (F-06): a merge never silences an alert nobody heard.
+// Payloads only; the store adds keys.
 type MergeConsequences struct {
-	Raise    json.RawMessage // severity_raised payload, or nil
-	Escalate json.RawMessage // escalated payload, or nil
+	Raise    json.RawMessage  // severity_raised payload, or nil
+	Escalate []EscalationPair // escalations to record on the survivor, as recorded on the call
 }
 
-// Consequences computes what absorbing call adds to survivor.
-func Consequences(call, survivor Candidate) (MergeConsequences, error) {
+// EscalationPair is an escalation's reason and role ("" for none).
+type EscalationPair struct{ Reason, Role string }
+
+// Payload is the pair's incident.escalated payload.
+func (p EscalationPair) Payload() (json.RawMessage, error) {
+	if p.Role == "" {
+		return json.Marshal(map[string]string{"reason": p.Reason})
+	}
+	return json.Marshal(map[string]string{"reason": p.Reason, "role": p.Role})
+}
+
+// MergeEscalationKey is the idempotency key of the survivor's copy of one of
+// the absorbed call's escalations: one per merge and pair.
+func MergeEscalationKey(from uuid.UUID, p EscalationPair) string {
+	role := p.Role
+	if role == "" {
+		role = "-"
+	}
+	return "dedup:escalate:" + from.String() + ":" + p.Reason + ":" + role
+}
+
+// Consequences computes what absorbing call adds to survivor. unacked are
+// the call's escalations no coordinator has acknowledged, one per (reason,
+// role) (the store reads them in the merge's transaction): each is recorded
+// on the survivor as it was, since a merged incident is never rung.
+func Consequences(call, survivor Candidate, unacked []EscalationPair) (MergeConsequences, error) {
 	var out MergeConsequences
 	var err error
 	if call.Severity.Rank() > survivor.Severity.Rank() {
@@ -123,11 +145,7 @@ func Consequences(call, survivor Candidate) (MergeConsequences, error) {
 			return out, err
 		}
 	}
-	if call.Escalated && !survivor.Escalated {
-		if out.Escalate, err = json.Marshal(map[string]string{"reason": ReasonMergedCallEscalated}); err != nil {
-			return out, err
-		}
-	}
+	out.Escalate = unacked
 	return out, nil
 }
 

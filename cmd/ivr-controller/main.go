@@ -141,9 +141,16 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2, OpTimeout: 3 * time.Second})
-
+	// A handed-over call's caller ID is masked by the fallback dialplan
+	// (SAUTI_CALLER_ID in extensions.conf), never by an ARI request (rule 5).
 	reg := metrics.NewRegistry()
+	// A hand-over escalation still refused after its retries is lost; the
+	// runbook recovers it with sautictl incident escalate-handover.
+	lost := reg.Counter("sauti_ivr_handover_escalation_lost_total", "Hand-over escalations still refused after 10 minutes of retries.")
+	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2, MaxNoMatch: 3,
+		OpTimeout: 3 * time.Second, PromptMax: 30 * time.Second, App: env.Default("SAUTI_ARI_APP", "sauti-ivr"),
+		OnEscalationLost: func() { lost.Add(1) }})
+
 	admin := http.NewServeMux()
 	admin.Handle("/livez", health.Handler(map[string]health.Check{}, nil))
 	// The outbound leader's stream joins readiness (a no-op on instances that
@@ -157,7 +164,8 @@ func run(log *slog.Logger) error {
 
 	errc := make(chan error, 3)
 	go func() { errc <- adminSrv.ListenAndServe() }()
-	go func() { errc <- ctrl.Run(ctx, client) }()
+	ctrlDone := make(chan struct{})
+	go func() { defer close(ctrlDone); errc <- ctrl.Run(ctx, client) }()
 
 	// Outbound calls (M2 Part B; scenarios 7–9, 11): an alert still pending
 	// after voice_fallback_after rings the responder; forwarded health centres
@@ -222,8 +230,16 @@ func run(log *slog.Logger) error {
 					return fmt.Errorf("SAUTI_COORDINATOR_LINES must be 1-50, got %q", v)
 				}
 			}
+			// Tier 2 (ADR-0029 rule 8): the backup line rings as well after
+			// escalation.backup_after_calls unanswered rings. UX-7 refuses
+			// production without it.
+			backup := os.Getenv("SAUTI_COORDINATOR_BACKUP_DIAL")
+			if backup == "" {
+				log.Warn("SAUTI_COORDINATOR_BACKUP_DIAL is not set: an unanswered escalation rings only the coordinator line")
+			}
 			if out.Coordinator, err = ivr.NewCoordinatorCalls(ivr.CoordinatorCallsConfig{ARI: alertClient, Store: store, Endpoint: line,
-				CallerID: callerID, Lines: lines, Log: log, NoInput: noInput}); err != nil {
+				CallerID: callerID, Lines: lines, Log: log, NoInput: noInput,
+				BackupEndpoint: backup, BackupAfterCalls: cfg.Dispatch.Escalation.BackupAfterCalls}); err != nil {
 				return err
 			}
 			loops = append(loops, func(lctx context.Context) error { return out.Coordinator.Run(lctx, 5*time.Second, onErr) })
@@ -249,6 +265,14 @@ func run(log *slog.Logger) error {
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	// Live calls are handed to a coordinator before the process exits.
+	select {
+	case <-ctrlDone:
+	case <-sctx.Done():
+		// Escalations still being retried are reported lost before the exit
+		// (the runbook recovers them from the log's call IDs).
+		ctrl.FlushLost()
+	}
 	_ = adminSrv.Shutdown(sctx)
 	return nil
 }
@@ -309,6 +333,14 @@ func outboundTerm(events func(context.Context, func(ari.Event)) error, st *outbo
 	return func(lctx context.Context) error {
 		st.leading.Store(true)
 		defer st.leading.Store(false)
+		// On every exit from the term, once the subscription and the loops
+		// have stopped (defers run last-in first-out), the calls' timers
+		// stop: the next leader owns the calls' timing.
+		defer func() {
+			if out.Alerts != nil {
+				out.Alerts.DisarmAll()
+			}
+		}()
 		var sub sync.WaitGroup
 		defer sub.Wait()
 		sub.Go(func() { _ = events(lctx, func(e ari.Event) { out.Handle(lctx, e) }) })
