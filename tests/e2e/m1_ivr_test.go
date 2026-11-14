@@ -30,6 +30,23 @@ func startIVR(t *testing.T, r *intakeRig) *sim.FakeARI {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	newCtrl, client, fake := ivrParts(t, r)
+	ctrl := newCtrl()
+	go func() { _ = ctrl.Run(ctx, client) }()
+	select {
+	case <-fake.Connected():
+	case <-time.After(5 * time.Second):
+		t.Fatal("ivr controller did not connect to ARI")
+	}
+	return fake
+}
+
+// ivrParts builds ivr-controller's parts as op_ivr against the rig's
+// database and a fake Asterisk: newCtrl makes a controller (call it twice
+// for a restart), sharing one store and one client.
+func ivrParts(t *testing.T, r *intakeRig) (newCtrl func() *ivr.Controller, client *ari.Client, fake *sim.FakeARI) {
+	t.Helper()
+	ctx := context.Background()
 	cfg, err := config.Load(os.DirFS("../../config"))
 	if err != nil {
 		t.Fatal(err)
@@ -54,25 +71,50 @@ func startIVR(t *testing.T, r *intakeRig) *sim.FakeARI {
 		t.Fatal(err)
 	}
 	ariPassword := hex.EncodeToString(pwb) // random per run: no password literal
-	fake := sim.NewFakeARI("sauti", ariPassword)
+	fake = sim.NewFakeARI("sauti", ariPassword)
 	t.Cleanup(fake.Close)
 	t.Cleanup(func() {
 		if t.Failed() { // the log is redacted: no numbers
 			t.Logf("ivr log:\n%s\nARI requests: %v", r.logs.String(), fake.Requests())
 		}
 	})
-	client, err := ari.New(ari.Config{BaseURL: fake.URL(), User: "sauti", Password: ariPassword, App: "sauti-ivr"})
+	client, err = ari.New(ari.Config{BaseURL: fake.URL(), User: "sauti", Password: ariPassword, App: "sauti-ivr"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctrl := ivr.New(client, built.Service, slog.New(logging.NewHandler(r.logs, slog.LevelDebug)), ivr.Options{NoInput: time.Minute, MaxReprompts: 1})
-	go func() { _ = ctrl.Run(ctx, client) }()
-	select {
-	case <-fake.Connected():
-	case <-time.After(5 * time.Second):
-		t.Fatal("ivr controller did not connect to ARI")
+	return func() *ivr.Controller {
+		return ivr.New(client, built.Service, slog.New(logging.NewHandler(r.logs, slog.LevelDebug)), ivr.Options{NoInput: time.Minute, MaxReprompts: 1})
+	}, client, fake
+}
+
+// CodeRabbit (PR #13, C2): ivr-controller restarts mid-call. The new
+// controller adopts the orphaned call: it escalates the call's incident,
+// found from the call ID, before it hands the call to the fallback. The
+// fallback's dial may then fail (busy, unanswered, a placeholder: dialplan
+// work after the continue); the escalation already stands, so the
+// coordinator line rings.
+func TestAnAdoptedCallIsEscalatedWhateverTheFallbackDialDoes(t *testing.T) {
+	r := newIntakeRig(t)
+	newCtrl, _, fake := ivrParts(t, r)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := newCtrl()
+	fake.StartCall("chan-9", "+256772123456") // live in the application; no stream yet, so the event is lost
+	before.Handle(ctx, ivr.Event{Type: ivr.EventStasisStart, ChannelID: "chan-9", CallerNumber: "+256772123456"})
+	waitFor(t, "the language prompt", func() bool { return len(fake.Plays("chan-9")) > 0 })
+	inc := r.only(t)
+	after := newCtrl() // the restarted process: no worker for chan-9
+	if err := after.Adopt(ctx); err != nil {
+		t.Fatal(err)
 	}
-	return fake
+	if got := fake.Continued("chan-9"); got != ivr.FallbackContext+",s,1" || fake.HungUp("chan-9") {
+		t.Fatalf("continued %q hung up %v", got, fake.HungUp("chan-9"))
+	}
+	var n int
+	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(ctx, `SELECT count(*) FROM op.incident_events WHERE incident_id = $1
+		AND type = 'incident.escalated' AND payload ->> 'reason' = 'voice_handed_over'`, inc.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("voice_handed_over escalations %d %v, want 1", n, err)
+	}
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
