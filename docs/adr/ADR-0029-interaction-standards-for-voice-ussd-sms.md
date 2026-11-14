@@ -116,7 +116,7 @@ Settles: F-35, F-36, F-37, F-56.
 - Every text that announces a call names that number through a placeholder filled from configuration (`{sauti_number}`, `{bridge}`), never typed into copy. The responder code is `{code}`.
 - SMS go out under one registered sender ID, required in production.
 - No text carries a link or asks for personal details.
-- A coordinator taking a handed-over call sees "SAUTI" and the reference, never the caller's number (rule 5).
+- A coordinator taking a handed-over call sees "SAUTI" and the reference, never the caller's number (rule 5). The fallback dialplan sets both before every dial, on every path into it, so no failed request can show the caller's number.
 
 Sources: UK NCSC, Business communications: SMS and telephone best practice (publicise your numbers and sender IDs; keep them few): https://www.ncsc.gov.uk/guidance/business-communications-sms-and-telephone-best-practice · Build Prompt §10.4, §10.5.
 

@@ -29,7 +29,7 @@
 3. **Deterministic.** No model and no heuristic touches severity. Escalation reasons are fixed codes.
 4. **Server-side time.** Every time that is recorded, compared or escalated on comes from `clock_timestamp()`: timer overdue checks, ring counts, escalation ages and attempt times. Go's `time.Now()` is used only for local timers and latency metrics.
 5. **Never reveal the caller's number.**
-   - A hand-over sets the caller ID that the coordinator sees to "SAUTI" plus the reference, with Sauti's number (F-12).
+   - The fallback dialplan sets the caller ID that the coordinator sees to Sauti's number and "SAUTI" plus the reference, before every dial, whatever path reached it (F-12). No Go call can fail open into showing the caller's number.
    - No metric label, log line, ledger payload or CLI output carries a number. `sautictl escalations` prints references, never numbers.
 6. **No patient data on messaging apps.** No new SMS content beyond placeholders for public Sauti numbers and codes (F-34). No messaging integration.
 7. **No coordinator override.** Tier 2 and the escalation list inform a person; they never dispatch.
@@ -185,14 +185,18 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
   - `func (c *ari.Client) ListChannels(ctx context.Context) ([]ari.Channel, error)` with `type Channel struct { ID, App string }`. It reads `GET /ari/channels` and keeps `dialplan.app_name`, or `stasis` where Asterisk reports it.
   - `Options.PromptMax time.Duration` (default 30 s, as `BridgeConfig`).
   - `func (c *Controller) Adopt(ctx context.Context) error`: hands every `sauti-ivr` channel with no worker to `FallbackContext`. Called on every (re)connect, before events are handled.
+    - The channel ID is the call ID (`StartIVR` opens the session with it), so `Adopt` hands over `IVRCall{CallID: <channel ID>}` through `handOver`: the escalation comes before `Continue`, as on the live path, and its key `handover:<CallID>` is the live path's, so a call handed over before the restart escalates once.
+    - `HandOver` finds the incident from that call ID (Task 1.3). A channel with no session (intake never committed) has nothing to escalate and is handed over live.
   - On `ctx.Done()`, `run` calls `handOver` under `context.WithoutCancel` and a 5 s budget for each call not yet ended.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestALostEndOfPromptStillRepromptsWithinTheBackstop` (synctest): play, drop the `PlaybackFinished`, advance `PromptMax+NoInput`. Assert a second `Play` of the same sounds.
   - `TestReconnectHandsOverOrphanedChannels`: FakeARI lists `ch9` in `sauti-ivr`, with no worker. `Adopt` gives `continues == ["ch9 sauti-ivr-fallback,s,1"]`.
   - `TestReconnectLeavesOwnedChannelsAlone`: `ch1` has a worker, so there is no continue for it.
+  - `TestAdoptEscalatesBeforeItHandsOver`: `Adopt` on `ch9` calls `HandOver(IVRCall{CallID: "ch9"}, voice_handed_over)` before the continue.
+  - `TestAdoptEscalatesWhenTheFallbackFails`: FakeARI `Continue` fails. `HandOver` was still called for `ch9`, then a hangup.
   - `TestShutdownHandsOverLiveCalls`: cancel ctx mid-screen. Assert `Continue(ch1, FallbackContext, "s", 1)` once.
-- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ -run 'Backstop|Reconnect|Shutdown' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ -run 'Backstop|Reconnect|Shutdown|Adopt' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Implement. `play` arms the timer at `PromptMax+NoInput` when it requests a prompt, and `PlaybackFinished` re-arms it at `NoInput`, as the bridge does. `Run` calls `Adopt` after `Events` connects. Each worker's exit path hands over unless `st.ended`.
 - [ ] **Step 4:** Run the same command. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(ivr): a backstop for lost prompt events; hand over orphaned and live calls on reconnect and shutdown (UX-1 Task 2)`.
@@ -200,15 +204,16 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 ### Task 1.3: No-match limit, silence hand-over, and an escalation on every hand-over (F-02: CV-1, CV-2, CU-14; F-12)
 
 **Files:**
-- Modify: `internal/platform/ivr/controller.go:279-382`, `internal/intake/ivr.go` (add `HandOver`), `internal/platform/ari/client.go:231` (add `SetCallerName`)
+- Modify: `internal/platform/ivr/controller.go:279-382`, `internal/intake/ivr.go` (add `HandOver`), `internal/platform/ari/client.go:231` (add `SetReference`), `db/operational/queries/incidents.sql` (`IVRCallIncident`), `internal/platform/pg/opstore/`
 - Test: `internal/platform/ivr/controller_test.go`, `internal/intake/ivr_test.go`
 
 **Interfaces:**
 - Produces:
   - `func (s *intake.Service) HandOver(ctx context.Context, call IVRCall, reason string) error`. It appends `incident.escalated {reason}` with the key `incident.EscalationKey(reason, "")`, scoped to the call: `handover:<CallID>`. A terminal incident is a no-op.
+    - With a zero `IncidentID`, it finds the incident from the call's IVR session: `IVRCallIncident` reads `op.sessions` where `channel = 'ivr'` and `provider_session_id = CallID` (`op_ivr` reads `op.sessions` since 0012, so no migration). No session: nothing to escalate.
   - `call.invalid int`: consecutive no-matches on one question. It is reset by a valid answer and by a new question.
   - `Options.MaxNoMatch int`, default 3.
-  - `func (c *ari.Client) SetCallerName(ctx context.Context, channelID, name string) error`.
+  - `func (c *ari.Client) SetReference(ctx context.Context, channelID, ref string) error`: sets the channel variable `SAUTI_REF` (digits and spaces only), which the fallback dialplan puts in the caller name (Task 1.4).
 - Consumes: `incident.ReasonVoiceHandedOver` (Task 1.1).
 
 - [ ] **Step 1: Write the failing tests.**
@@ -216,15 +221,19 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
   - `TestSilenceAfterAnAnswerHandsOver`: answer the language screen, then fire no-input `MaxReprompts+1` times. Assert one continue and no hangup.
   - `TestSilenceFromTheFirstPromptHangsUp`: no key at all. Assert a hangup and no continue (a pocket dial).
   - `TestHandOverRecordsAnEscalationEvenWhenContinueFails`: FakeARI `Continue` returns an error. Assert `HandOver` was called with `voice_handed_over`, then a hangup.
-  - `TestHandOverShowsSautiAndTheReference`: before `Continue`, assert `SetCallerID(ch1, <SAUTI_ARI_CALLER_ID>)` and `SetCallerName(ch1, "SAUTI 123 456 7890")`.
+  - `TestHandOverShowsSautiAndTheReference`: the requests are exactly `SetReference(ch1, "123 456 7890")`, then `Continue`. No `SetCallerID` or caller-name request: the dialplan masks the caller (Task 1.4).
+  - `TestHandOverGoesAheadWhenTheReferenceCannotBeSet`: FakeARI fails `SetReference`. `Continue` is still called once (the dialplan then shows "SAUTI" alone).
+  - `TestAFailedHandOverEscalationIsRetried` (synctest): `HandOver` fails twice, then succeeds. `Continue` is called at once; `HandOver` is called 3 times in 10 s with the same call, then never again.
+  - `TestHandOverFindsTheIncidentByCallID` (intake): `IVRCall{CallID: "ch9"}` with a session for `ch9` appends one escalation on its incident; with no session, nothing is appended and nil is returned.
+  - `TestIVRCallIncident` (integration, opstore): the call ID of a voice session returns its incident; a USSD session with the same provider ID does not.
   - `TestHandOverEscalatesOncePerCall` (intake): two `HandOver` calls append one event.
   - Rename `TestControllerNoInputRepromptsThenHangsUp` to `TestSilenceFromTheFirstPromptHangsUp`.
-- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ ./internal/intake/ -run 'NoMatch|Silence|HandOver' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ ./internal/intake/ -run 'NoMatch|Silence|HandOver' -count=1`, then `go test -tags integration ./internal/platform/pg/opstore/ -run IVRCallIncident -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
   - `answer` compares the returned prompt's `Notice` and `Kind` with the shown kind to count no-matches.
   - `noInput` hands over when `st.turn.Call.Shown != intake.KindLanguage` or any answer was given.
-  - `handOver` calls `HandOver` first, under its own op budget; a failure is logged, never fatal. Then it sets the caller ID and name, then `Continue`.
-  - `Controller` gains a `callerID string` option, read from `SAUTI_ARI_CALLER_ID` in `cmd/ivr-controller/main.go`.
+  - `handOver` calls `HandOver` first, under its own op budget. A failure never delays the call: a goroutine under `context.WithoutCancel` retries the same `HandOver` every 5 s for up to 10 minutes (the `handover:<CallID>` key makes retries idempotent), then logs `ivr hand-over escalation lost` at error with the incident ID only. A durable retry is not possible: the store that failed is the only place it could be written, and a database outage pages through P0 alerting.
+  - Then it sets `SAUTI_REF` (a failure is logged), then `Continue`. It sets no caller ID or name: masking is the dialplan's (Task 1.4), so a failed ARI request can never show the caller's number. `Controller` needs no `callerID` option.
 - [ ] **Step 4:** Run the same command. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(ivr): three no-matches or engaged silence reach a coordinator; every hand-over escalates (UX-1 Task 3)`.
 
@@ -236,6 +245,7 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 
 **Interfaces:**
 - Produces: the `sauti-ivr-fallback` context.
+  - Its first priorities, before `Answer` and every `Dial`, set `CALLERID(num)` to the global `SAUTI_CALLER_ID` and `CALLERID(name)` to `SAUTI ${SAUTI_REF}`. They run on every path into the context: an IVR hand-over, the bridge's `toCoordinator`, and `STASISSTATUS=FAILED`, where no Go code runs. `[globals]` gains `SAUTI_CALLER_ID=`, empty until P0 sets it to the value of `SAUTI_ARI_CALLER_ID`; empty presents no number, never the caller's.
   - It tries `Dial(${SAUTI_COORDINATOR_DIAL},30)` up to 3 times.
   - Between tries it plays `sauti/fallback-hold`, and only when `DIALSTATUS` is `BUSY`, `NOANSWER`, `CHANUNAVAIL` or `CONGESTION`.
   - It then plays `sauti/fallback-closing` and hangs up.
@@ -244,9 +254,10 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 - [ ] **Step 1: Write the failing tests.**
   - `TestFallbackDialplanRetriesThenCloses`: parse the context. Assert a `DIALSTATUS` branch, a loop bounded by 3, and a `Playback(sauti/fallback-closing)` before `Hangup()`.
   - `TestInboundContextsMatchPlusPrefixedDIDs`: both contexts.
+  - `TestFallbackMasksTheCallerBeforeAnyDial`: in `sauti-ivr-fallback`, `Set(CALLERID(num)=${SAUTI_CALLER_ID})` and `Set(CALLERID(name)=SAUTI ${SAUTI_REF})` come before the first `Answer` and `Dial`, nothing after them writes `CALLERID`, and `[globals]` defines `SAUTI_CALLER_ID`.
   - `TestBridgeInboundFallsBackOnStasisFailure`: CV-29's missing case.
 - [ ] **Step 2:** Run `go test ./telephony/... -run 'Fallback|Inbound|BridgeInbound' -count=1`. Expected: FAIL.
-- [ ] **Step 3:** Edit the dialplan. The escalation from Task 1.3 is what guarantees a person; the closing message tells the caller that a coordinator will call back. Its copy is PENDING.
+- [ ] **Step 3:** Edit the dialplan. The escalation from Task 1.3 is what guarantees a person. The closing message promises no call-back: before M5 a coordinator sees "SAUTI" and the reference, never the caller's number, and only M5's audited reveal can return a call (R-3). What it says instead is PENDING the PI with R-3. Neither the dialplan comments nor the runbooks say that a coordinator will call back.
 - [ ] **Step 4:** Run the same command. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(dialplan): bounded coordinator retries, a closing message, '+' DIDs (UX-1 Task 4)`.
 
@@ -329,11 +340,10 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 **Interfaces:**
 - Produces, in migration 0033:
   - `DROP FUNCTION op.claim_coordinator_calls(interval, int)`, then `CREATE` it with the same arguments returning `(incident_id uuid, seq bigint, reasons text[], roles text[], reference text, calls int, severity text)`.
-  - `reasons` is every distinct `incident.escalated` reason with `seq > acked_seq`, ordered by `seq`. `seq` is the newest of them.
-  - `roles[i]` is `payload->>'role'` of `reasons[i]`'s newest event, or `''`. UX-3 speaks it, and returning it now avoids a second `DROP`.
+  - `reasons[i]` and `roles[i]` are the distinct (reason, role) pairs of the `incident.escalated` events with `seq > acked_seq` (`DISTINCT ON (reason, coalesce(payload->>'role', ''))`), ordered by the newest `seq` of each pair. A reason recorded for two roles appears twice, once per role. `seq` is the newest of all. UX-3 speaks the role, and returning it now avoids a second `DROP`.
   - Grants are restored to `op_ivr`. The 0022 body is otherwise unchanged.
 - Produces, in Go:
-  - `CoordinatorCall.Reasons []string`, played in `incident.ReasonRank` order.
+  - `CoordinatorCall.Reasons []string`, played in `incident.ReasonRank` order. Until UX-3 speaks roles, a reason that appears for two roles is spoken once.
   - `CoordinatorCallsConfig.BackupEndpoint string` and `BackupAfterCalls int`, from `config/gated/dispatch.yaml` `escalation: {backup_after_calls: 3}` (PENDING the PI).
   - When `calls >= BackupAfterCalls` and `BackupEndpoint != ""`, `RunOnce` originates to both endpoints. The first press of 1 on either acknowledges, and the other leg is hung up.
   - A call answered and never keyed counts as a ring (it already increments `calls`).
@@ -344,6 +354,8 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 - [ ] **Step 1: Write the failing tests.**
   - `TestClaimAnnouncesEveryUnacknowledgedReason` (integration): record `triage_rule_error` (seq a), then `no_eligible_responder` (seq b). One claim returns both, with `seq = b`. After acknowledging b, nothing is claimed.
   - `TestAReasonAfterTheClaimRingsAgain` (integration): claim, record `dispatch_stalled`, acknowledge the claimed seq. The next claim returns `dispatch_stalled`.
+  - `TestClaimReturnsEachRoleOfAReason` (integration): `no_eligible_responder {role: vht}`, then `{role: transporter}`. One claim returns reasons `[no_eligible_responder, no_eligible_responder]` and roles `[vht, transporter]`, with `seq` the second. A third `{role: vht}` still gives two pairs, roles `[transporter, vht]`.
+  - `TestCoordinatorCallSpeaksARepeatedReasonOnce`: reasons `[no_eligible_responder, no_eligible_responder]` play its sound once.
   - `TestCoordinatorCallSpeaksReasonsInPriorityOrder`: reasons `[no_eligible_responder, triage_rule_error]` play the triage-rule-error sound first.
   - `TestBackupLineRingsAfterThreeUnansweredCalls` (synctest): the fake store returns `Calls: 3`. Assert originates to both endpoints. With `Calls: 2`, assert the primary only.
   - `TestOldestUnacknowledgedEscalationGauge` (integration).
@@ -429,12 +441,12 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 
 **Interfaces:**
 - Produces: `sautictl escalations --dsn <op_readonly DSN> [--json]`. With no `--dsn`, it reads `SAUTI_DSN`; UX-5 Task 5.5 extends this to every command.
-  - One row per open incident with unacknowledged escalations: grouped reference, severity, reasons in rank order with their roles, age of the oldest, rings, last ring.
+  - One row per open incident with unacknowledged escalations: grouped reference, severity, each (reason, role) pair in rank order (as the claim, Task 1.8), age of the oldest, rings, last ring.
   - Sorted by severity (unknown counts as red), then age.
   - A second section, `tasks`, lists open incidents flagged `needs_location_callback`.
   - No number and no free text. Exit 0.
 
-- [ ] **Step 1: Write the failing test.** `TestEscalationsListsOnlyUnacknowledged`: one acknowledged and one unacknowledged escalation, and one `needs_location_callback` incident. The text output holds the second reference and its severity, and not the first. `--json` parses into `{escalations: [...], tasks: [...]}`.
+- [ ] **Step 1: Write the failing test.** `TestEscalationsListsOnlyUnacknowledged`: one acknowledged and one unacknowledged escalation, and one `needs_location_callback` incident. The text output holds the second reference and its severity, and not the first. `--json` parses into `{escalations: [...], tasks: [...]}`. Also `TestEscalationsListsEachRoleOfAReason`: `no_eligible_responder` for `vht` and for `transporter` print as two pairs.
 - [ ] **Step 2:** Run `go test -tags integration ./cmd/sautictl/ -run Escalations -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Implement as one SQL statement each, readable by `op_readonly`.
 - [ ] **Step 4:** Run the same command. Expected: PASS.
@@ -468,7 +480,7 @@ Its Confirmation lists the tests of Tasks 1.2 to 1.12.
 - The gazetteer runbook restarts ivr-controller too.
 - Add the reason rows from Task 1.1.
 
-- [ ] **Step 1:** Write `test_no_stale_escalation_phrases`. It fails on the three phrases, and on "call the caller back" in a step without "M5". Run `python3 -m pytest governance/tests -k stale -q`. Expected: FAIL.
+- [ ] **Step 1:** Write `test_no_stale_escalation_phrases`. It fails on the three phrases, and on "call the caller back" or "will call back" in a line without "M5". Run `python3 -m pytest governance/tests -k stale -q`. Expected: FAIL.
 - [ ] **Step 2:** Write the docs. Fix `docs/reference/ussd-at-adapter.md:40` to `internal/intake/machine_test.go::TestEveryRenderedScreenFitsLimitAndGSM7`.
 - [ ] **Step 3:** Run the gates. Expected: `freshness: OK`, both governance checks OK, and the docs test passes.
 - [ ] **Step 4:** Commit `docs: ADR-0034, runbooks, reference and traceability for UX-1 (UX-1 Task 13)`. Push and open the PR against `main`. Poll `gh pr checks` until nothing fails or is pending, resolve every CodeRabbit finding, and **ask the user before merging**. In the PR, flag for the PI: the reason order, `backup_after_calls`, `dispatch_not_started` versus ward-level dispatch, and the out-of-area flag.
@@ -651,7 +663,7 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 
 **Interfaces:**
 - `CoordinatorCalls.Handle` loads `MessageFacts` for the incident, through the existing `op_ivr` grant used for forwards.
-- `sounds` becomes: intro, then the grouped reference (Task 4.7 adds the pauses), then `alert-colour-<sev>`, `alert-category-<cat>`, then the ward and landmark (`whereToGo`; a free-text landmark speaks the ward only), then, for each reason in rank order, the reason followed by `escalation-role-<role>` when the role is set, then the options.
+- `sounds` becomes: intro, then the grouped reference (Task 4.7 adds the pauses), then `alert-colour-<sev>`, `alert-category-<cat>`, then the ward and landmark (`whereToGo`; a free-text landmark speaks the ward only), then, for each (reason, role) pair in rank order, the reason followed by `escalation-role-<role>` when the role is set, then the options. A reason claimed for two roles is spoken with each.
 - `ForwardCalls.sounds` adds the ward and landmark after the category.
 - The role comes from `claim_coordinator_calls`' `roles` (0033), passed as Stasis arguments after the reasons.
 
