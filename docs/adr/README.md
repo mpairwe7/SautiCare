@@ -19,7 +19,7 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0011](ADR-0011-sqlc-and-postgresql-18.md) | sqlc v1.31.1 with PostgreSQL 18-only DDL | Accepted | 2026-11-12 |
 | [ADR-0012](ADR-0012-test-database-environments.md) | Test database environments | Accepted | 2026-11-12 |
 | [ADR-0013](ADR-0013-envelope-encryption-and-dev-keys.md) | Envelope encryption, row-bound AAD, keyed lookup hash and development keys | Accepted | 2026-11-12 |
-| [ADR-0014](ADR-0014-configuration-and-amendment-gate.md) | Versioned configuration, fingerprints and the amendment gate | Accepted | 2026-11-12 |
+| [ADR-0014](ADR-0014-configuration-and-amendment-gate.md) | Versioned configuration, fingerprints and the amendment gate | Accepted; superseded in part by ADR-0042 | 2026-11-12 |
 | [ADR-0015](ADR-0015-dependency-and-supply-chain-policy.md) | Dependency policy and supply-chain pinning | Accepted | 2026-11-12 |
 | [ADR-0016](ADR-0016-living-documentation-mapping.md) | Living-documentation mapping of the global engineering rules | Accepted | 2026-11-12 |
 | [ADR-0017](ADR-0017-metrics-exposition.md) | In-house Prometheus metrics until the OpenTelemetry SDK | Accepted | 2026-11-12 |
@@ -37,3 +37,4 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0029](ADR-0029-interaction-standards-for-voice-ussd-sms.md) | Interaction standards for voice, USSD and SMS: keys, retries, a person at the end of every failure, read-back, language, trust cues, time budgets and escalation tiers | Accepted | 2026-11-13 |
 | [ADR-0034](ADR-0034-every-failure-path-ends-with-a-person.md) | Every failure path ends with a person: hand-overs escalate, the bridge and alert calls never strand anyone, safety nets escalate undispatched and stalled incidents, every unacknowledged reason is announced, tier 2 and the dead-man gauge | Accepted | 2026-11-14 |
 | [ADR-0041](ADR-0041-evaluation-strategy-and-quality-gates.md) | Evaluation strategy and quality gates: test what a person receives, properties for safety invariants, mutation testing, complete clinical expectations, provider contracts, binary smoke tests, run-proven pointers, tested alert rules, a fail-closed merge gate, drill freshness, severity by consequence | Accepted | 2026-11-14 |
+| [ADR-0042](ADR-0042-fail-closed-merge-gate.md) | A fail-closed merge gate: checks on the head from the ruleset's app, CodeRabbit's review of the head and a quiet window, each thread settled by CodeRabbit's last word or an explicit deferral, no approval by command, the head pinned, main verified after the merge | Accepted | 2026-11-14 |

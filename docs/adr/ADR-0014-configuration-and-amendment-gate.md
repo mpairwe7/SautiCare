@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted; superseded in part by ADR-0042 (2026-11-14)
 date: 2026-11-12
 decision-makers: Sauti engineering (repository owner)
 consulted: Study Protocol change control (Build Prompt rule 3.11)

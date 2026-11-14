@@ -6,6 +6,7 @@ tools.mergegate --repo o/r 9999`, exactly as an operator runs it.
 """
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -628,6 +629,27 @@ class MergeGateTest(unittest.TestCase):
                 self.gate(None, "--dry-run")]
         self.assertTrue(all(g.calls for g in runs))
         self.assertTrue(forbidden(["pr", "comment", "9999", "--body", "@coderabbitai resolve"]))
+
+
+class DocsTest(unittest.TestCase):
+    QUALIFIER = "not enforced until the owner's decision O-1"
+
+    def test_the_docs_name_no_enforced_codeowners_approval(self):
+        """V-03: while main's ruleset does not require code-owner review, no
+        living doc may claim a CODEOWNERS approval without the qualifier, and
+        once the owner enforces it (O-1) no doc may keep the qualifier.
+        Decision records, audits and plans are history and are not scanned."""
+        claims = []
+        for f in sorted((ROOT / "docs").rglob("*.md")):
+            rel = f.relative_to(ROOT).as_posix()
+            if rel.startswith(("docs/adr/", "docs/superpowers/")) or "-audit-" in rel:
+                continue
+            for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                if re.search(r"CODEOWNERS|code[- ]owner", line, re.I):
+                    claims.append((f"{rel}:{n}", self.QUALIFIER in line))
+        self.assertTrue(claims, "the scan found no claim at all")
+        wrong = [where for where, qualified in claims if qualified == mergegate.CODE_OWNER_REVIEW_ENFORCED]
+        self.assertEqual(wrong, [])
 
 
 if __name__ == "__main__":

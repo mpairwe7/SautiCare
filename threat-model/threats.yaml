@@ -579,4 +579,19 @@ threats:
       - internal/platform/ari/client_test.go::TestNoRecordingEndpointsUsed
       - internal/platform/ari/client_test.go::TestClientMixingBridge
       - internal/platform/ari/client_test.go::TestClientCallerIDAndRingback
-
+  - id: T-034
+    title: A change merges unreviewed or over a failing gate
+    stride: Tampering
+    linddun: Non-compliance
+    asset: main (the code and rules that dispatch emergencies)
+    hard_constraints: [11, 14]
+    mitigations:
+      - Ruleset 27260742 on main blocks deletion and force-push, and requires a PR, resolved threads and the nine CI checks (strict)
+      - tools/mergegate (ADR-0042) refuses on any unreadable answer, re-checks the ruleset, requires CodeRabbit's review of the head and a quiet window, settles each thread on CodeRabbit's visible last word or an explicit deferral to an open issue, and merges only the head it judged
+      - Until a second human can approve (owner decision O-1), the owner records the merge decision on each PR
+    verified_by:
+      - governance/tests/test_mergegate.py::test_the_ec2_fault_cases_refuse
+      - governance/tests/test_mergegate.py::test_a_weakened_ruleset_refuses
+      - governance/tests/test_mergegate.py::test_a_concession_counts_only_as_codeRabbits_visible_word
+      - governance/tests/test_mergegate.py::test_a_push_during_the_run_refuses
+      - governance/tests/test_mergegate.py::test_the_docs_name_no_enforced_codeowners_approval

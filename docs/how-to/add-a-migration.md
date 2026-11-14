@@ -11,5 +11,5 @@
 3. If the statement uses PostgreSQL 18 syntax that sqlc v1.31.1 cannot parse (`WITHOUT OVERLAPS`), put it inside `DO $$ BEGIN EXECUTE '…'; END $$;` with a comment pointing at ADR-0011.
 4. Add or adjust queries in `db/<store>/queries/`, then run `scripts/tools/install-sqlc.sh && bin/sqlc generate` and commit the generated code.
 5. Write the integration test first, then run it: `go test -tags integration ./internal/platform/pg/...`.
-6. For `db/analytic/`: the PI must approve the pull request (CODEOWNERS), and during the study window an amendment record is required.
+6. For `db/analytic/`: the PI must approve the pull request (CODEOWNERS, not enforced until the owner's decision O-1 in the evaluation audit), and during the study window an amendment record is required.
 7. Update `docs/reference/stores.md` if roles or invariants changed.
