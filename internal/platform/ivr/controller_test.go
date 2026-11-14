@@ -157,10 +157,11 @@ type scripted struct {
 	failOn    string
 	failStart bool
 	block     map[string]chan struct{}
-	invalid   map[string]bool // inputs that re-prompt the same question with a notice
-	handovers []string        // HandOver reasons
-	failHand  int             // HandOver fails this many times first
-	log       *fakeARI        // where HandOver notes itself among the ARI requests
+	invalid   map[string]bool     // inputs that re-prompt the same question with a notice
+	handovers []string            // HandOver reasons
+	failHand  int                 // HandOver fails this many times first
+	log       *fakeARI            // where HandOver notes itself among the ARI requests
+	onHand    func(callID string) // runs inside HandOver, before it returns
 }
 
 func (s *scripted) HandOver(_ context.Context, c intake.IVRCall, reason string) error {
@@ -169,6 +170,11 @@ func (s *scripted) HandOver(_ context.Context, c intake.IVRCall, reason string) 
 	s.handovers = append(s.handovers, c.CallID+" "+reason)
 	if s.log != nil {
 		s.log.note("handover " + c.CallID)
+	}
+	if s.onHand != nil {
+		s.mu.Unlock()
+		s.onHand(c.CallID)
+		s.mu.Lock()
 	}
 	if s.failHand > 0 {
 		s.failHand--
@@ -942,4 +948,49 @@ func TestFlushLostReportsEveryPendingRetry(t *testing.T) {
 			t.Fatalf("lost %d after the retry ended, want it counted once", n)
 		}
 	})
+}
+
+// PR #14 review (round 3): the shutdown deadline passes while a call's first
+// escalation attempt is still in flight. It is registered before the attempt,
+// so FlushLost reports it (once), and no retry starts after the flush.
+func TestAFirstAttemptInFlightAtTheDeadlineIsReported(t *testing.T) {
+	var lost atomic.Int32
+	var c *Controller
+	s := &scripted{prompts: prompts(), failOn: "1", failHand: 1}
+	s.onHand = func(string) { c.FlushLost() } // the deadline passes during the attempt
+	a := &fakeARI{}
+	c = New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, OnEscalationLost: func() { lost.Add(1) }})
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+	started(t, c, a, "ch1")
+	send(t, c, key("ch1", "1"))
+	c.Wait()
+	if n := lost.Load(); n != 1 || len(s.handedOver()) != 1 || a.count(&a.continues) != 1 {
+		t.Fatalf("lost %d, attempts %d, continues %d: want the in-flight attempt reported once, no retry, the call put through",
+			n, len(s.handedOver()), a.count(&a.continues))
+	}
+}
+
+// PR #14 review (round 3): an adoption still working through its orphans
+// when the flush runs starts no new escalation: the orphans not yet handed
+// over are put through to the fallback and each is reported lost.
+func TestAdoptAfterTheFlushReportsItsOrphansLost(t *testing.T) {
+	var lost atomic.Int32
+	var c *Controller
+	s := &scripted{prompts: prompts()}
+	s.onHand = func(id string) {
+		if id == "ch8" {
+			c.FlushLost() // the deadline passes during the first orphan's escalation
+		}
+	}
+	a := &fakeARI{channels: []ari.Channel{{ID: "ch8", App: "sauti-ivr"}, {ID: "ch9", App: "sauti-ivr"}}}
+	c = New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, OnEscalationLost: func() { lost.Add(1) }})
+	if err := c.Adopt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.handedOver(); !slices.Equal(got, []string{"ch8 voice_handed_over"}) {
+		t.Fatalf("escalations attempted %v: none may start after the flush", got)
+	}
+	if n := lost.Load(); n != 2 || a.count(&a.continues) != 2 {
+		t.Fatalf("lost %d continues %d: want both reported lost and both put through", n, a.count(&a.continues))
+	}
 }

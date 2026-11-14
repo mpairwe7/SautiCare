@@ -167,7 +167,8 @@ type Controller struct {
 	running   sync.WaitGroup  // workers, so Run returns after their hand-overs
 	retries   sync.WaitGroup  // hand-over escalations being retried
 	pendingMu sync.Mutex
-	retrying  map[*pendingEscalation]struct{} // the escalations retries are recording
+	retrying  map[*pendingEscalation]struct{} // the escalations being recorded
+	flushed   bool                            // FlushLost ran: the process is exiting
 }
 
 // New builds a controller.
@@ -194,6 +195,40 @@ func New(a ARI, in Intake, log *slog.Logger, opt Options) *Controller {
 		retrying: map[*pendingEscalation]struct{}{}}
 }
 
+// escalate records the hand-over's escalation. It is registered before the
+// first attempt, so a shutdown deadline passing during it is reported
+// (FlushLost); after the flush no attempt starts, and the call's escalation
+// is reported lost at once. A refused attempt is retried in the background.
+func (c *Controller) escalate(ctx context.Context, st *call) {
+	p := &pendingEscalation{ch: st.ch, call: st.turn.Call}
+	c.pendingMu.Lock()
+	if c.flushed {
+		c.lostLocked(p, errStopping)
+		c.pendingMu.Unlock()
+		return
+	}
+	c.retrying[p] = struct{}{}
+	c.pendingMu.Unlock()
+	hctx, cancel := c.op(ctx)
+	err := c.in.HandOver(hctx, p.call, incident.ReasonVoiceHandedOver)
+	cancel()
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	switch {
+	case err == nil:
+		delete(c.retrying, p)
+	case c.flushed: // the process is exiting: no retry would outlive it
+		c.lostLocked(p, err)
+		delete(c.retrying, p)
+	default:
+		c.log.Error("ivr hand-over escalation failed; retrying", "channel", st.ch, "err", err)
+		c.retries.Go(func() { c.retryHandOver(ctx, p) })
+	}
+}
+
+// errStopping is the loss reported for an escalation the flush stopped.
+var errStopping = errors.New("ivr-controller stopped before the escalation was recorded")
+
 // pendingEscalation is a hand-over escalation being retried.
 type pendingEscalation struct {
 	ch       string
@@ -201,15 +236,19 @@ type pendingEscalation struct {
 	reported bool // its loss is logged and counted (once)
 }
 
-// FlushLost reports every hand-over escalation still being retried as lost,
-// at once: logged with its call and incident IDs and counted. main calls it
-// when the shutdown deadline passes before the retries end, so an exit
-// never drops one silently. A retry that ends later does not count it again.
+// FlushLost reports every hand-over escalation not yet recorded (a first
+// attempt in flight or a retry) as lost, at once: logged with its call and
+// incident IDs and counted. main calls it when the shutdown deadline passes
+// before the retries end, so an exit never drops one silently. From then on
+// no escalation starts: a later hand-over (an adoption still working
+// through its orphans, a live call) is reported lost instead. An attempt
+// that succeeds later is not counted again; recovering it is a no-op.
 func (c *Controller) FlushLost() {
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
+	c.flushed = true // from now on no hand-over escalation starts
 	for p := range c.retrying {
-		c.lostLocked(p, errors.New("ivr-controller stopped before the escalation was recorded"))
+		c.lostLocked(p, errStopping)
 	}
 }
 
@@ -564,16 +603,7 @@ func (c *Controller) play(ctx context.Context, st *call, sounds []string, end bo
 // transfer and the hang-up both failed.
 func (c *Controller) handOver(ctx context.Context, st *call) bool {
 	c.stopTimer(st)
-	hctx, hcancel := c.op(ctx)
-	if err := c.in.HandOver(hctx, st.turn.Call, incident.ReasonVoiceHandedOver); err != nil {
-		c.log.Error("ivr hand-over escalation failed; retrying", "channel", st.ch, "err", err)
-		p := &pendingEscalation{ch: st.ch, call: st.turn.Call}
-		c.pendingMu.Lock()
-		c.retrying[p] = struct{}{} // before the retry starts: FlushLost sees it at once
-		c.pendingMu.Unlock()
-		c.retries.Go(func() { c.retryHandOver(ctx, p) })
-	}
-	hcancel()
+	c.escalate(ctx, st)
 	c.present(ctx, st)
 	octx, cancel := c.op(ctx)
 	defer cancel()
