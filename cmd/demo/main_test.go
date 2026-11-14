@@ -267,3 +267,52 @@ func TestDeliveryReportLandsWhenTheIDIsStoredLate(t *testing.T) {
 		t.Fatalf("%d reports, stored %v; want %d reports and the report stored", posts, stored, len(reportAfter))
 	}
 }
+
+// CodeRabbit PR #15: the staging script takes its exclusions from the
+// committed .dockerignore, the same revision as the files it stages, so an
+// uncommitted edit cannot let a committed .env through.
+func TestStagingReadsTheCommittedDockerignore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	write := func(name, body string) {
+		p := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script, err := os.ReadFile("../../scripts/deploy/hf-space-stage.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("scripts/deploy/hf-space-stage.sh", string(script))
+	write("deploy/hf-space/README.md", "---\nsdk: docker\n---\n")
+	write(".dockerignore", ".env*\n")
+	write(".env", "SAUTI_ENV=dev\n")
+	write("keep.txt", "kept\n")
+	git := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=demo", "-c", "user.email=demo@example.invalid",
+			"-c", "commit.gpgsign=false"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("add", "-f", ".")
+	git("commit", "-q", "-m", "fixture")
+	write(".dockerignore", "# an uncommitted edit that drops the .env rule\n")
+	out := filepath.Join(t.TempDir(), "space")
+	if b, err := exec.Command("bash", filepath.Join(repo, "scripts/deploy/hf-space-stage.sh"), out).CombinedOutput(); err != nil {
+		t.Fatalf("stage: %v\n%s", err, b)
+	}
+	if _, err := os.Stat(filepath.Join(out, "keep.txt")); err != nil {
+		t.Fatalf("keep.txt not staged: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, ".env")); err == nil {
+		t.Fatal(".env staged: the exclusions came from the working tree, not HEAD")
+	}
+}

@@ -22,6 +22,10 @@ fi
 # matches and, as in Docker, everything under a directory it matches; a
 # "!path" line re-includes one literal path, as Docker does when it comes
 # after the pattern that excluded it.
+# The rules come from HEAD, the same revision as the staged files: an
+# uncommitted edit cannot drop an exclusion. No .dockerignore in HEAD stops
+# the script here.
+dockerignore=$(git show HEAD:.dockerignore)
 excludes=() includes=()
 while IFS= read -r line || [ -n "$line" ]; do
   line=${line%$'\r'}
@@ -37,7 +41,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   else
     includes+=("$pat")
   fi
-done < .dockerignore
+done <<< "$dockerignore"
 
 mkdir -p "$out"
 git archive --format=tar HEAD -- . "${excludes[@]}" | tar -x -C "$out"
