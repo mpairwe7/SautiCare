@@ -111,8 +111,10 @@ func TestMergeCarriesSeverityAndEscalation(t *testing.T) {
 		case incident.EvEscalated:
 			escalations++ // each pair the red call held, as it was recorded (PR #14 review)
 			var pl map[string]string
-			if json.Unmarshal(e.Payload, &pl) != nil || !(pl["reason"] == "triage_rule_error" && len(pl) == 1 ||
-				pl["reason"] == "no_eligible_responder" && pl["role"] == "vht" && len(pl) == 2) {
+			_ = json.Unmarshal(e.Payload, &pl) // a malformed payload matches neither case
+			ruleError := len(pl) == 1 && pl["reason"] == "triage_rule_error"
+			noVHT := len(pl) == 2 && pl["reason"] == "no_eligible_responder" && pl["role"] == "vht"
+			if !ruleError && !noVHT {
 				t.Errorf("escalation payload %s", e.Payload)
 			}
 		}
