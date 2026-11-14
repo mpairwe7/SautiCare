@@ -88,17 +88,94 @@ WHERE s.phone_mac = ANY (sqlc.arg(macs)::bytea[])
 ORDER BY i.updated_at DESC
 LIMIT 1;
 
+-- name: OpenIncidentForCaller :many
+-- The masked bridge (op_ivr): the newest open incident reported from these
+-- numbers (its own, or the incident it was merged into), assigned or not. A
+-- caller who reaches nobody on the bridge is handed to a coordinator with it
+-- escalated (bridge_unanswered).
+SELECT i.id FROM op.incidents i
+WHERE i.state NOT IN ('closed', 'merged')
+  AND EXISTS (SELECT 1 FROM op.sessions x JOIN op.incidents m ON m.id = x.incident_id
+               WHERE x.phone_mac = ANY (sqlc.arg(macs)::bytea[]) AND (m.id = i.id OR m.merged_into = i.id))
+ORDER BY i.updated_at DESC
+LIMIT 1;
+
+-- name: UnacknowledgedEscalation :many
+-- An incident's escalations no coordinator has acknowledged
+-- (op.acknowledge_coordinator_call), one row per (reason, role), oldest
+-- first: a merge carries each to the survivor as it was recorded (F-06).
+SELECT d.reason::text AS reason, d.role::text AS role FROM (
+    SELECT DISTINCT ON (e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''))
+           coalesce(e.payload ->> 'reason', '') AS reason, coalesce(e.payload ->> 'role', '') AS role, e.seq
+      FROM op.incident_events e
+      LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
+     WHERE e.incident_id = sqlc.arg(id)::uuid AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+     ORDER BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''), e.seq) d
+ORDER BY d.seq;
+
+-- name: ListOpenEscalations :many
+-- sautictl escalations (op_readonly; F-08): every open incident with an
+-- escalation no coordinator has acknowledged — each distinct (reason, role)
+-- pair, as the claim, the age of the oldest, the rings since the last
+-- acknowledgement and the last ring's age, on the database's clock (-1:
+-- never rung) — most severe first (unclassified counts as red), then oldest.
+SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
+       u.reasons::text[] AS reasons, u.roles::text[] AS roles,
+       extract(epoch FROM clock_timestamp() - u.oldest)::float8 AS oldest_seconds,
+       coalesce(c.calls, 0)::int AS rings,
+       coalesce(extract(epoch FROM clock_timestamp() - c.last_call_at), -1)::float8 AS last_ring_seconds
+FROM op.incidents i
+LEFT JOIN op.coordinator_calls c ON c.incident_id = i.id
+CROSS JOIN LATERAL (
+    SELECT min(d.first_at) AS oldest, array_agg(d.reason ORDER BY d.seq) AS reasons, array_agg(d.role ORDER BY d.seq) AS roles
+      FROM (SELECT DISTINCT ON (e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''))
+                   e.payload ->> 'reason' AS reason, coalesce(e.payload ->> 'role', '') AS role, e.seq,
+                   min(e.recorded_at) OVER (PARTITION BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', '')) AS first_at
+              FROM op.incident_events e
+             WHERE e.incident_id = i.id AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+             ORDER BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''), e.seq DESC) d) u
+WHERE i.state NOT IN ('closed', 'merged') AND u.reasons IS NOT NULL
+ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, u.oldest;
+
+-- name: ListLocationCallbacks :many
+-- sautictl escalations, tasks (op_readonly): open incidents located only to
+-- their ward, which a coordinator must call back for the place (M5 makes the
+-- call), most severe first, then oldest.
+SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
+       extract(epoch FROM clock_timestamp() - i.t1)::float8 AS age_seconds
+FROM op.incidents i
+WHERE i.state NOT IN ('closed', 'merged') AND 'needs_location_callback' = ANY (i.flags)
+ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, i.t1;
+
+-- name: ClockWindow :one
+-- Which window of the given length (seconds) the database's clock is in: an
+-- idempotency key that carries it repeats only within the window.
+SELECT floor(extract(epoch FROM clock_timestamp()) / sqlc.arg(seconds)::int)::bigint AS bucket;
+
+-- name: IVRCallIncident :many
+-- The incident of a voice call, from its call ID (the IVR session's provider
+-- ID): ivr-controller escalates a call it adopted after a restart (op_ivr).
+-- A call merged into another incident resolves to its survivor, the
+-- incident that takes escalations.
+SELECT coalesce(i.merged_into, i.id)::uuid AS incident_id FROM op.sessions s
+JOIN op.incidents i ON i.id = s.incident_id
+WHERE s.channel = 'ivr' AND s.provider_session_id = sqlc.arg(call_id)::text
+LIMIT 1;
+
 -- name: ListIdle :many
 -- An idle incident is listed until the sweeper flags it abandoned, and again
 -- while an abandonment owes its escalation: a caller who resumed an
--- abandoned incident, answered danger yes (or was classified red) and
--- dropped again before T2. The flag is never cleared, and escalated is
--- sticky. The second condition is intake.escalation's rule.
-SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
+-- abandoned incident, answered danger yes, was classified red or gave a ward
+-- other than "somewhere else", and dropped again before T2. The flag is
+-- never cleared, and escalated is sticky. The second condition is
+-- intake.AbandonmentEscalation's rule; an integration test holds the two
+-- together.
+SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched, ward FROM op.incidents
 WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - sqlc.arg(idle_seconds)::int * interval '1 second'
   AND (NOT ('abandoned' = ANY (flags))
-       OR (NOT escalated AND t2 IS NULL AND (danger = 'yes' OR severity = 'red')))
+       OR (NOT escalated AND t2 IS NULL AND ward IS DISTINCT FROM 'elsewhere'
+           AND (danger = 'yes' OR severity = 'red' OR ward IS NOT NULL)))
 ORDER BY updated_at
 LIMIT 500;
 
@@ -154,3 +231,17 @@ WHERE i.state = 'dispatching' AND i.t3 IS NULL AND i.t2 < clock_timestamp() - sq
                                         'dispatch_error', 'dispatch_stalled'))
 ORDER BY i.t2
 LIMIT 500;
+
+-- Dispatch watchdog, F-05: a dispatching incident whose dispatch timer is
+-- overdue by after and not leased (no worker is processing it), T3 or not:
+-- dispatch-worker died or is stuck after the first alert. Read by
+-- intake-gw's leader (op_intake), a page at a time after (from_due, from_id),
+-- so no overdue timer hides behind the first page.
+-- name: ListOverdueDispatch :many
+SELECT t.incident_id::uuid AS id, t.due_at::timestamptz AS due_at FROM op.dispatch_timers t
+JOIN op.incidents i ON i.id = t.incident_id
+WHERE i.state = 'dispatching' AND t.due_at < clock_timestamp() - sqlc.arg(after)::interval
+  AND (t.lease_until IS NULL OR t.lease_until < clock_timestamp())
+  AND (t.due_at, t.incident_id) > (sqlc.arg(from_due)::timestamptz, sqlc.arg(from_id)::uuid)
+ORDER BY t.due_at, t.incident_id
+LIMIT sqlc.arg(max_rows)::int;

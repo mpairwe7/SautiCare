@@ -93,6 +93,14 @@ type Dispatch struct {
 	StoppingRule       StoppingRule `yaml:"stopping_rule"`
 	RankingOrder       []string     `yaml:"ranking_order"`
 	RankingVersion     string       `yaml:"ranking_version"`
+	Escalation         Escalation   `yaml:"escalation"`
+}
+
+// Escalation tiers the coordinator line (ADR-0029 rule 8): after
+// BackupAfterCalls unanswered rings of one escalation, the backup endpoint
+// rings as well.
+type Escalation struct {
+	BackupAfterCalls int `yaml:"backup_after_calls"`
 }
 
 // StoppingRule is the study's dispatch stopping rule (Guide §14): red
@@ -111,12 +119,18 @@ type Triage struct {
 	TrustedKeys map[string]string `yaml:"trusted_keys"`
 }
 
-// Flags are the section 11 enhancements; all stay false during the study.
+// Flags are the section 11 enhancements, all false during the study, and
+// the protocol proposals of the UX audit, each false (today's protocol)
+// until the PI amends the protocol through the amendment gate.
 type Flags struct {
 	AndroidApp   bool `yaml:"android_app"`
 	CallerLink   bool `yaml:"caller_link"`
 	SpeechAssist bool `yaml:"speech_assist"`
 	AppAPI       bool `yaml:"app_api"`
+	// OutOfAreaEscalateAfterDanger: "Somewhere else" after a danger yes or a
+	// red classification flags and escalates the incident and leaves it
+	// open, instead of closing it (F-07; ADR-0034).
+	OutOfAreaEscalateAfterDanger bool `yaml:"out_of_area_escalate_after_danger"`
 }
 
 // Screens holds adapter-level caller copy, keyed by language ("en", "lg").

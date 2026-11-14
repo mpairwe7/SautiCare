@@ -33,8 +33,11 @@ const (
 	EventDTMF             = "ChannelDtmfReceived"
 	EventPlaybackStarted  = "PlaybackStarted"
 	EventPlaybackFinished = "PlaybackFinished"
-	EventStasisEnd        = "StasisEnd"
-	EventHangupRequest    = "ChannelHangupRequest"
+	// EventPlaybackContinuing: a playback of several recordings moved on to
+	// the next one.
+	EventPlaybackContinuing = "PlaybackContinuing"
+	EventStasisEnd          = "StasisEnd"
+	EventHangupRequest      = "ChannelHangupRequest"
 	// EventChannelDestroyed: a channel ended, including a call Sauti placed
 	// that was never answered (it never entered the application).
 	EventChannelDestroyed = "ChannelDestroyed"
@@ -52,8 +55,14 @@ type Event struct {
 	CallerNumber string
 	Digit        string
 	PlaybackID   string
-	Args         []string // StasisStart: the application arguments of an originated call
+	// PlaybackState is a finished playback's state: "done", or
+	// PlaybackFailed when Asterisk could not play it (a missing recording).
+	PlaybackState string
+	Args          []string // StasisStart: the application arguments of an originated call
 }
+
+// PlaybackFailed is the state of a playback Asterisk could not play.
+const PlaybackFailed = "failed"
 
 // Config configures the client.
 type Config struct {
@@ -120,10 +129,21 @@ func (c *Client) doBody(ctx context.Context, method, path string, q url.Values) 
 	return body, nil
 }
 
+// ErrNotInStasis reports a channel Asterisk says is gone (404) or no longer
+// in the application (409): another actor has moved it on (the dialplan, a
+// second instance's hand-over, the caller hanging up). It is not a failure
+// to hand the caller over, and the channel must not be hung up for it.
+var ErrNotInStasis = errors.New("ari: the channel is gone or no longer in the application")
+
 // statusError is a request Asterisk answered with a status other than 2xx.
 type statusError struct {
 	method, path string
 	code         int
+}
+
+// Is lets errors.Is match ErrNotInStasis on a 404 or 409.
+func (e *statusError) Is(target error) bool {
+	return target == ErrNotInStasis && (e.code == http.StatusNotFound || e.code == http.StatusConflict)
 }
 
 func (e *statusError) Error() string {
@@ -240,6 +260,22 @@ func (c *Client) SetCallerID(ctx context.Context, channelID, number string) erro
 
 var callerIDNumber = regexp.MustCompile(`^\+?[0-9]{3,15}$`)
 
+// SetReference sets the channel variable SAUTI_REF to an incident
+// reference. The fallback dialplan shows the coordinator "SAUTI" and it as
+// the caller name; the dialplan, not this client, masks the caller ID, so a
+// failed request here can never show the caller's number (rule 5).
+func (c *Client) SetReference(ctx context.Context, channelID, ref string) error {
+	if err := ids(channelID); err != nil {
+		return err
+	}
+	if !reference.MatchString(ref) {
+		return errors.New("ari: a reference is digits and spaces")
+	}
+	return c.do(ctx, http.MethodPost, "/ari/channels/"+channelID+"/variable", url.Values{"variable": {"SAUTI_REF"}, "value": {ref}})
+}
+
+var reference = regexp.MustCompile(`^[0-9][0-9 ]{0,19}$`)
+
 // CreateBridge creates a mixing bridge for the masked bridge (Build Prompt
 // §10.5, ADR-0028): the two legs hear each other, and nothing is recorded —
 // no recording option exists in this client.
@@ -285,6 +321,43 @@ func (c *Client) ChannelExists(ctx context.Context, channelID string) (bool, err
 	return err == nil, err
 }
 
+// Channel is a live channel and the Stasis application it is parked in (""
+// when it is not in one).
+type Channel struct {
+	ID, App string
+}
+
+// ListChannels lists the live channels (GET /ari/channels). App is read
+// from the channel's dialplan location: the first argument of Stasis().
+func (c *Client) ListChannels(ctx context.Context) ([]Channel, error) {
+	body, err := c.doBody(ctx, http.MethodGet, "/ari/channels", nil)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		ID       string `json:"id"`
+		Dialplan struct {
+			AppName string `json:"app_name"`
+			AppData string `json:"app_data"`
+		} `json:"dialplan"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("ari: list channels: %w", err)
+	}
+	out := make([]Channel, 0, len(raw))
+	for _, r := range raw {
+		if !safeID.MatchString(r.ID) {
+			continue
+		}
+		ch := Channel{ID: r.ID}
+		if strings.EqualFold(r.Dialplan.AppName, "Stasis") {
+			ch.App, _, _ = strings.Cut(r.Dialplan.AppData, ",")
+		}
+		out = append(out, ch)
+	}
+	return out, nil
+}
+
 // Hangup ends the channel.
 func (c *Client) Hangup(ctx context.Context, channelID string) error {
 	if err := ids(channelID); err != nil {
@@ -306,6 +379,7 @@ type rawEvent struct {
 	Playback *struct {
 		ID        string `json:"id"`
 		TargetURI string `json:"target_uri"`
+		State     string `json:"state"`
 	} `json:"playback"`
 }
 
@@ -319,7 +393,7 @@ func decodeEvent(b []byte) (Event, error) {
 		e.ChannelID, e.CallerNumber = r.Channel.ID, r.Channel.Caller.Number
 	}
 	if r.Playback != nil {
-		e.PlaybackID = r.Playback.ID
+		e.PlaybackID, e.PlaybackState = r.Playback.ID, r.Playback.State
 		if e.ChannelID == "" {
 			e.ChannelID = strings.TrimPrefix(r.Playback.TargetURI, "channel:")
 		}
@@ -330,6 +404,13 @@ func decodeEvent(b []byte) (Event, error) {
 // Events streams events to handle until ctx ends, reconnecting with
 // exponential backoff (up to 30 s) when the stream drops.
 func (c *Client) Events(ctx context.Context, handle func(Event)) error {
+	return c.Stream(ctx, nil, handle)
+}
+
+// Stream is Events, calling connected (if not nil) on every connect and
+// reconnect before that connection's first event is handled: events missed
+// while the stream was down are never resent.
+func (c *Client) Stream(ctx context.Context, connected func(), handle func(Event)) error {
 	u := *c.base
 	u.Scheme = map[string]string{"http": "ws", "https": "wss"}[c.base.Scheme]
 	u.Path = strings.TrimRight(u.Path, "/") + "/ari/events"
@@ -345,6 +426,9 @@ func (c *Client) Events(ctx context.Context, handle func(Event)) error {
 		if err == nil {
 			wait = c.backoff
 			c.connected.Store(true)
+			if connected != nil {
+				connected()
+			}
 			for {
 				_, msg, rerr := conn.Read(ctx)
 				if rerr != nil {

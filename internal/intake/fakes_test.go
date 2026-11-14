@@ -8,6 +8,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -169,6 +170,13 @@ func (m *memIncidents) FindResumable(_ context.Context, macs []crypto.MAC, windo
 	return best, found, nil
 }
 
+func (m *memIncidents) IVRCallIncident(_ context.Context, callID string) (uuid.UUID, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.sessions[string(incident.ChannelIVR)+"|"+callID]
+	return id, ok, nil
+}
+
 func (m *memIncidents) allEvents() []incident.Event {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -260,7 +268,18 @@ func (m *memIncidents) DispatchOrMerge(_ context.Context, r DispatchRequest) (ou
 	if _, err := m.appendLocked(survivor.ID, incident.EvMergeAbsorbed, abs, "dedup:absorb:"+r.IncidentID.String(), ""); err != nil {
 		return DispatchOutcome{}, err
 	}
-	cons, err := Consequences(r.Call(), survivor)
+	// No acknowledgement exists in memory: the call's newest escalation is
+	// unacknowledged.
+	var unacked []EscalationPair
+	for _, e := range m.events[r.IncidentID] {
+		if e.Type == incident.EvEscalated {
+			reason, role, _ := incident.ParseEscalated(e.Payload)
+			if p := (EscalationPair{reason, role}); !slices.Contains(unacked, p) {
+				unacked = append(unacked, p)
+			}
+		}
+	}
+	cons, err := Consequences(r.Call(), survivor, unacked)
 	if err != nil {
 		return DispatchOutcome{}, err
 	}
@@ -269,8 +288,9 @@ func (m *memIncidents) DispatchOrMerge(_ context.Context, r DispatchRequest) (ou
 			return DispatchOutcome{}, err
 		}
 	}
-	if cons.Escalate != nil {
-		if _, err := m.appendLocked(survivor.ID, incident.EvEscalated, cons.Escalate, "dedup:escalate:"+r.IncidentID.String(), ""); err != nil {
+	for _, p := range cons.Escalate {
+		payload, _ := p.Payload()
+		if _, err := m.appendLocked(survivor.ID, incident.EvEscalated, payload, MergeEscalationKey(r.IncidentID, p), ""); err != nil {
 			return DispatchOutcome{}, err
 		}
 	}

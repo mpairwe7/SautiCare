@@ -222,9 +222,21 @@ WHERE f.acknowledged_at IS NULL AND f.timed_out_at IS NULL AND i.state NOT IN ('
 ORDER BY f.sent_at LIMIT sqlc.arg(max_rows)::int;
 
 -- name: ClaimCoordinatorCalls :many
-SELECT c.incident_id::uuid AS incident_id, c.seq::bigint AS seq, coalesce(c.reason, '')::text AS reason,
-       c.reference::text AS reference, c.calls::int AS calls
-FROM op.claim_coordinator_calls(sqlc.arg(retry)::interval, sqlc.arg(max_rows)::int) AS c(incident_id, seq, reason, reference, calls);
+SELECT c.incident_id::uuid AS incident_id, c.seq::bigint AS seq, c.reasons::text[] AS reasons, c.roles::text[] AS roles,
+       c.reference::text AS reference, c.calls::int AS calls, c.severity::text AS severity
+FROM op.claim_coordinator_calls(sqlc.arg(retry)::interval, sqlc.arg(max_rows)::int)
+     AS c(incident_id, seq, reasons, roles, reference, calls, severity);
+
+-- name: OldestUnacknowledgedEscalation :one
+-- The dead-man signal (tier 3; intake-gw as op_intake): how many open
+-- incidents hold an escalation no coordinator has acknowledged, and the age
+-- of the oldest such escalation, on the database's clock (0 when none).
+SELECT coalesce(extract(epoch FROM clock_timestamp() - min(e.recorded_at)), 0)::float8 AS seconds,
+       count(DISTINCT e.incident_id)::int AS incidents
+FROM op.incident_events e
+JOIN op.incidents i ON i.id = e.incident_id
+LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
+WHERE e.type = 'incident.escalated' AND i.state NOT IN ('closed', 'merged') AND e.seq > coalesce(c.acked_seq, 0);
 
 -- name: AcknowledgeCoordinatorCall :exec
 SELECT op.acknowledge_coordinator_call(sqlc.arg(incident_id)::uuid, sqlc.arg(seq)::bigint);

@@ -168,7 +168,9 @@ func TestScenario11RuleErrorRingsTheCoordinator(t *testing.T) {
 		t.Fatalf("rang %d %v", n, err)
 	}
 	q := o.fake.Originated()
-	if len(q) != 1 || q[0].Get("endpoint") != "PJSIP/coordinators" || !strings.Contains(q[0].Get("appArgs"), "triage_rule_error") {
+	// The (reason, role) pairs travel as registry ranks and role codes:
+	// triage_rule_error, no role, is "0-".
+	if len(q) != 1 || q[0].Get("endpoint") != "PJSIP/coordinators" || strings.Split(q[0].Get("appArgs"), ",")[3] != "0-" {
 		t.Fatalf("coordinator call %v", q)
 	}
 	o.answerAndPress(t, 0, "1")

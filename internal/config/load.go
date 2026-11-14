@@ -107,6 +107,9 @@ func Load(fsys fs.FS) (Bundle, error) {
 	if b.Intake.AbandonAfter.Duration <= 0 {
 		return Bundle{}, errors.New("config: intake abandon_after must be positive")
 	}
+	if b.Dispatch.Escalation.BackupAfterCalls < 1 {
+		return Bundle{}, errors.New("config: dispatch escalation.backup_after_calls must be at least 1")
+	}
 	if s := b.Intake.FuzzyMatchMinSimilarity; s <= 0 || s >= 1 {
 		return Bundle{}, fmt.Errorf("config: intake fuzzy_match_min_similarity %v must be between 0 and 1", s)
 	}

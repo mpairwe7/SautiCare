@@ -604,7 +604,7 @@ func (e *Engine) RunOnce(ctx context.Context, batch int, lease time.Duration, on
 }
 
 // ReasonDispatchError escalates an incident the worker could not process.
-const ReasonDispatchError = "dispatch_error"
+const ReasonDispatchError = incident.ReasonDispatchError
 
 // ErrStoppingRuleBreached reports an automatic suspension (O6): an alarm,
 // not a fault.

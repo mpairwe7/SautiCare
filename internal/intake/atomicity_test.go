@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -210,11 +211,18 @@ func finished(t *testing.T, c *caller, cls Classifier) {
 		if q, err := incident.Fold(evs); err != nil || (q.LastScreen == 8 && q.T[2] == nil) {
 			t.Fatalf("incident %s finished Tool 1 without T2 (%v)", id, err)
 		}
-		n := map[incident.EventType]int{}
+		// An escalation counts once per reason, its own: a survivor escalated
+		// itself also takes a copy of each of the merged call's
+		// unacknowledged escalations (F-06), keyed by the merge.
+		n, escalations := map[incident.EventType]int{}, map[string]int{}
 		for _, e := range evs {
 			n[e.Type]++
+			if e.Type == incident.EvEscalated && !strings.HasPrefix(e.IdemKey, "dedup:escalate:") {
+				reason, _, _ := incident.ParseEscalated(e.Payload)
+				escalations[reason]++
+			}
 		}
-		if n[incident.EvClassified] > 1 || n[incident.EvDispatchReady] > 1 || n[incident.EvEscalated] > 1 {
+		if n[incident.EvClassified] > 1 || n[incident.EvDispatchReady] > 1 || slices.ContainsFunc(slices.Collect(maps.Values(escalations)), func(c int) bool { return c > 1 }) {
 			t.Fatalf("incident %s recorded a consequence twice: %v", id, n)
 		}
 	}

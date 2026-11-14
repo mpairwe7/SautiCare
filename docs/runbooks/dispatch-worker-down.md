@@ -5,7 +5,7 @@
 | Owner | technical operator on call |
 | Severity | SEV-1 (responders are not being alerted) |
 | Alert / trigger | `/readyz` on dispatch-worker (127.0.0.1:9102) failing; no process holding advisory lock 7347004; incidents in `dispatching` with no alert more than 60 s after T2; repeated `dispatch pass failed` log lines; `dispatch_error` escalations |
-| Last reviewed: | 2026-11-13 |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -19,7 +19,7 @@ dispatch-worker decides who is alerted and records it ([ADR-0024](../adr/ADR-002
   - if recording the `dispatch_error` escalation itself fails, the failure is only logged.
 
   So the absence of `dispatch_error` events proves nothing. Use the backlog query.
-- `incident.escalated` with reason `dispatch_stalled`: intake-gw's watchdog, a separate process, found an incident with no alert and no dispatch escalation two minutes after T2.
+- `incident.escalated` with reason `dispatch_stalled`: intake-gw's watchdog, a separate process, found an incident with no alert and no dispatch escalation two minutes after T2, or a dispatching incident whose dispatch timer is two minutes overdue and not taken by a worker (the worker died after the first alert; [ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)). One incident that cannot be escalated no longer holds up the others.
 - `/readyz` check `dispatch_loop` failing on the leader (no successful pass for two minutes); metrics `sauti_dispatch_last_pass_age_seconds` and `sauti_dispatch_oldest_overdue_seconds` growing, `sauti_dispatch_pass_failures_total` rising.
 
 ## Impact

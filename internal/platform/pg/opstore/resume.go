@@ -88,7 +88,37 @@ func (s *Store) ListIdle(ctx context.Context, idleFor time.Duration) ([]intake.I
 	out := make([]intake.Idle, len(rows))
 	for i, r := range rows {
 		out[i] = intake.Idle{ID: uuid.UUID(r.ID.Bytes), Danger: deref(r.Danger), Category: deref(r.Category),
-			Severity: incident.Severity(deref(r.Severity)), Dispatched: r.Dispatched}
+			Severity: incident.Severity(deref(r.Severity)), Dispatched: r.Dispatched, Ward: deref(r.Ward)}
+	}
+	return out, nil
+}
+
+// IVRCallIncident finds the incident of a voice call from its call ID
+// (op_ivr; the IVR session's provider ID).
+func (s *Store) IVRCallIncident(ctx context.Context, callID string) (uuid.UUID, bool, error) {
+	ids, err := s.q.IVRCallIncident(ctx, callID)
+	if err != nil || len(ids) == 0 {
+		return uuid.UUID{}, false, mapErr(err)
+	}
+	return uuid.UUID(ids[0].Bytes), true, nil
+}
+
+// ListOverdueDispatch lists a page of dispatching incidents whose dispatch
+// timer is overdue by after and unleased, in (due, ID) order after from
+// (intake-gw's watchdog, F-05).
+func (s *Store) ListOverdueDispatch(ctx context.Context, after time.Duration, from intake.Overdue, limit int) ([]intake.Overdue, error) {
+	n, err := i32(limit)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q.ListOverdueDispatch(ctx, opdb.ListOverdueDispatchParams{After: pgtype.Interval{Microseconds: after.Microseconds(), Valid: true},
+		FromDue: pgtype.Timestamptz{Time: from.DueAt, Valid: true}, FromID: pgID(from.ID), MaxRows: n})
+	if err != nil {
+		return nil, fmt.Errorf("opstore: overdue dispatch: %w", err)
+	}
+	out := make([]intake.Overdue, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, intake.Overdue{ID: uuid.UUID(r.ID.Bytes), DueAt: r.DueAt.Time})
 	}
 	return out, nil
 }

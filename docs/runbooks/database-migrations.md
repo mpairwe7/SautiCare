@@ -5,7 +5,7 @@
 | Owner | Platform engineering |
 | Severity | SEV-3 (deploy blocker) |
 | Alert / trigger | Deploy step `sautictl migrate` fails, or reports `applied migration file has changed` |
-| Last reviewed: | 2026-11-13 |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | Not yet drilled (M0, development only) |
 
 ## Summary
@@ -37,7 +37,8 @@ Migrations are forward-only and checksummed (ADR-0010). Each store applies `db/<
 2. SQL error, file never merged and never applied on any deployment (Diagnosis step 3 finds no row anywhere): fix the file and re-run.
 3. SQL error, file merged or applied on some deployment: **do not edit it**. A changed checksum stops every deployment that applied it with `ErrChecksumMismatch` (`docs/how-to/add-a-migration.md`, step 1). The migrator applies files strictly in order, so a later corrective migration cannot run first either. Find what differs on the failing deployment (its data, or schema drift from a manual change), correct that state under a deviation record so that the unchanged file applies, then put any further schema correction in a new migration. Only if the file is not merged and every deployment that applied it is disposable (development, CI) may you rebuild those deployments instead; the file then counts as never applied.
 4. Never edit `public.schema_migrations` by hand.
-5. A constraint a migration adds `NOT VALID` (for example `incident_events_flag_is_string`, 0027) checks every new write but not the rows already stored, so the migration neither scans a populated table under its lock nor fails on old data. To validate it on a populated store, first count the rows that would fail. For the flag constraint, as `op_readonly`:
+5. Release order for a migration that changes a function's row type. 0033 rebuilds `op.claim_coordinator_calls` with a new row type ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)): an ivr-controller built before it fails every coordinator-call claim (logged `outbound calls failed`) until it is upgraded, and no escalation rings meanwhile. Migrate, then upgrade ivr-controller at once; until it runs, tell the coordinator lead by voice and use `sautictl escalations` ([no-eligible-responders.md](no-eligible-responders.md)).
+6. A constraint a migration adds `NOT VALID` (for example `incident_events_flag_is_string`, 0027) checks every new write but not the rows already stored, so the migration neither scans a populated table under its lock nor fails on old data. To validate it on a populated store, first count the rows that would fail. For the flag constraint, as `op_readonly`:
 
    ```sql
    SELECT count(*) FROM op.incident_events

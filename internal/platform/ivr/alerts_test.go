@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
@@ -16,6 +17,7 @@ import (
 	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/platform/ari"
 	"sautihealth.com/sauti/internal/responder"
 )
 
@@ -33,7 +35,11 @@ type alertARI struct {
 	// event handled before the caller stores it).
 	onOriginate func(channelID string)
 	gone        map[string]bool // channels that no longer exist (ChannelExists)
-	existsErr   error           // ChannelExists fails
+	failHangup  map[string]bool // channels Asterisk refuses to hang up
+	slowPlay    func(sounds []string) bool
+	requests    int   // every Play and Hangup request, refused or not
+	aborted     int   // slow plays that returned because their context ended
+	existsErr   error // ChannelExists fails
 }
 
 func (a *alertARI) StopPlayback(_ context.Context, pb string) error {
@@ -62,12 +68,30 @@ func (a *alertARI) ChannelExists(_ context.Context, ch string) (bool, error) {
 	return !a.gone[ch], nil
 }
 func (a *alertARI) Answer(_ context.Context, ch string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.answered = append(a.answered, ch)
 	return nil
 }
-func (a *alertARI) Play(_ context.Context, _, pb string, sounds []string) error {
+func (a *alertARI) Play(ctx context.Context, _, pb string, sounds []string) error {
+	a.mu.Lock()
+	a.requests++
+	slow := a.slowPlay != nil && a.slowPlay(sounds)
+	a.mu.Unlock()
+	if slow { // Asterisk does not answer before the request's deadline
+		<-ctx.Done()
+		a.mu.Lock()
+		a.aborted++
+		a.mu.Unlock()
+		return ctx.Err()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.failPlay {
 		return errors.New("playback refused")
+	}
+	if err := ctx.Err(); err != nil {
+		return err // as an HTTP request on an expired context
 	}
 	a.plays = append(a.plays, sounds)
 	a.pbs = append(a.pbs, pb)
@@ -77,11 +101,28 @@ func (a *alertARI) Play(_ context.Context, _, pb string, sounds []string) error 
 // finish reports the last prompt as played to the end.
 func (a *alertARI) finish(t *testing.T, h interface{ Handle(context.Context, Event) }, ch string) {
 	t.Helper()
-	h.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: a.pbs[len(a.pbs)-1]})
+	a.mu.Lock()
+	pb := a.pbs[len(a.pbs)-1]
+	a.mu.Unlock()
+	h.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: pb})
 }
-func (a *alertARI) Hangup(_ context.Context, ch string) error {
+
+// played copies the prompts played so far; timer goroutines append to them.
+func (a *alertARI) played() [][]string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return slices.Clone(a.plays)
+}
+func (a *alertARI) Hangup(ctx context.Context, ch string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests++
+	if a.failHangup[ch] {
+		return errors.New("asterisk: hangup failed")
+	}
+	if err := ctx.Err(); err != nil {
+		return err // as an HTTP request on an expired context
+	}
 	a.hungUp = append(a.hungUp, ch)
 	return nil
 }
@@ -108,6 +149,8 @@ type alertStore struct {
 	accept   dispatch.AcceptResult
 	accepted int
 	declined map[uuid.UUID]string
+	failSave error // AcceptAlert and DeclineAlert fail (the store is down)
+	hangSave bool  // AcceptAlert waits until its context ends (the store hangs)
 }
 
 func (s *alertStore) DueVoiceAlerts(context.Context, time.Duration, int) ([]dispatch.VoiceAlert, error) {
@@ -141,11 +184,21 @@ func (s *alertStore) ResponderPhone(_ context.Context, id uuid.UUID) (incident.S
 func (s *alertStore) AlertForAttempt(context.Context, uuid.UUID) (dispatch.ResponderAlert, uuid.UUID, error) {
 	return s.alert, s.who, nil
 }
-func (s *alertStore) AcceptAlert(context.Context, uuid.UUID, uuid.UUID) (dispatch.AcceptOutcome, error) {
+func (s *alertStore) AcceptAlert(ctx context.Context, _, _ uuid.UUID) (dispatch.AcceptOutcome, error) {
+	if s.failSave != nil {
+		return dispatch.AcceptOutcome{}, s.failSave
+	}
+	if s.hangSave {
+		<-ctx.Done()
+		return dispatch.AcceptOutcome{}, ctx.Err()
+	}
 	s.accepted++
 	return dispatch.AcceptOutcome{Result: s.accept}, nil
 }
 func (s *alertStore) DeclineAlert(_ context.Context, a, _ uuid.UUID, reason string) (string, error) {
+	if s.failSave != nil {
+		return "", s.failSave
+	}
 	s.declined[a] = reason
 	return dispatch.OutcomeDeclined, nil
 }
@@ -312,4 +365,279 @@ func TestAnInvalidKeyDoesNotCutTheAlertPrompt(t *testing.T) {
 	if len(a.stopped) != 1 || len(st.declined) != 0 {
 		t.Fatalf("invalid keys during the reasons: stopped %v declined %v", a.stopped, st.declined)
 	}
+}
+
+// An alert whose recording failed to play was never heard: the call ends
+// rather than waiting for a key, and nothing is recorded as an answer; the
+// alert stays pending for the rest of the ladder (F-03).
+func TestAFailedAlertPromptHangsUp(t *testing.T) {
+	c, a, st := alertRig(t, false)
+	ch := answer(t, c, a, st)
+	c.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: a.pbs[0], PlaybackState: ari.PlaybackFailed})
+	if a.hangups(ch) != 1 || st.accepted != 0 || len(st.declined) != 0 {
+		t.Fatalf("hangups %d accepted %d declined %v", a.hangups(ch), st.accepted, st.declined)
+	}
+}
+
+// ADR-0029 rule 2: an answered alert call that hears no key is told the
+// alert once more, then a short closing prompt, then the line is freed.
+// Nothing is recorded as an answer: the alert stays pending for the ladder.
+func TestAnUnansweredAlertCallRepeatsThenHangsUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		first := a.played()[0]
+		a.finish(t, c, ch) // heard to the end; no key
+		time.Sleep(10*time.Second - time.Millisecond)
+		synctest.Wait()
+		if len(a.played()) != 1 {
+			t.Fatalf("replayed before the no-input time: %v", a.played())
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if len(a.played()) != 2 || !slices.Equal(a.played()[1], first) {
+			t.Fatalf("plays %v, want the alert again", a.played())
+		}
+		a.finish(t, c, ch)
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		if last := a.played()[len(a.played())-1]; !slices.Equal(last, []string{"sauti/en/alert-no-input-closing"}) || a.hangups(ch) != 0 {
+			t.Fatalf("plays %v hangups %d", a.played(), a.hangups(ch))
+		}
+		a.finish(t, c, ch)
+		if a.hangups(ch) != 1 || st.accepted != 0 || len(st.declined) != 0 {
+			t.Fatalf("hangups %d accepted %d declined %v", a.hangups(ch), st.accepted, st.declined)
+		}
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if len(a.played()) != 3 {
+			t.Fatalf("played on after closing: %v", a.played())
+		}
+	})
+}
+
+// PR #14 review: an answer the store refuses must not leave the answered
+// line open: the menu is heard again, so its no-input time (and then the
+// closing prompt) bounds the call.
+func TestARefusedAnswerReplaysTheMenu(t *testing.T) {
+	for _, digit := range []string{"1", "2"} {
+		c, a, st := alertRig(t, false)
+		st.failSave = errors.New("store down")
+		ch := answer(t, c, a, st)
+		c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: digit})
+		if p := a.played(); len(p) != 2 || !slices.Equal(p[1], p[0]) {
+			t.Fatalf("key %s: plays %v, want the menu again", digit, p)
+		}
+	}
+}
+
+// PR #14 review: when the outbound leader's term ends, its calls' no-input
+// timers stop: a timer from the old term never plays or closes a call the
+// new leader may be serving.
+func TestTheLeaderTermEndStopsTheAlertTimers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		a.finish(t, c, ch) // the menu heard: the no-input time runs
+		c.DisarmAll()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if p := a.played(); len(p) != 1 || a.hangups(ch) != 0 {
+			t.Fatalf("plays %d hangups %d after the term ended", len(p), a.hangups(ch))
+		}
+	})
+}
+
+// PR #14 review: an answer the store times out on used up the operation's
+// deadline; the menu is replayed on a fresh one, so the call goes on.
+func TestARefusedAnswerAfterAStoreTimeoutStillReplays(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		st.hangSave = true
+		ch := answer(t, c, a, st)
+		c.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+		if p := a.played(); len(p) != 2 || !slices.Equal(p[1], p[0]) {
+			t.Fatalf("plays %d after the timed-out answer, want the menu again", len(p))
+		}
+	})
+}
+
+// PR #14 review: if the replayed menu cannot even start, the call still ends:
+// the no-input time is armed without it, the menu is tried once more, and the
+// closing prompt (or, if it too cannot play, the hang-up) follows.
+func TestARefusedAnswerWhoseReplayCannotPlayStillHangsUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		st.failSave = errors.New("store down")
+		ch := answer(t, c, a, st)
+		a.mu.Lock()
+		a.failPlay = true
+		a.mu.Unlock()
+		c.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if a.hangups(ch) != 1 {
+			t.Fatalf("hangups %d: the call stayed open", a.hangups(ch))
+		}
+	})
+}
+
+// PR #14 review (round 3): an alert call whose prompts' end events are all
+// lost (the event stream reconnecting) still closes. Each prompt arms a
+// fallback longer than any recording (PromptMax + NoInput) when it is
+// requested: the menu is heard again, then the closing prompt, then the line
+// is freed.
+func TestALostEndOfAnAlertPromptStillCloses(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		for i, want := range []int{2, 3} {
+			time.Sleep(40*time.Second + time.Millisecond)
+			synctest.Wait()
+			if n := len(a.played()); n != want {
+				t.Fatalf("step %d: plays %d, want %d", i, n, want)
+			}
+		}
+		time.Sleep(40*time.Second + time.Millisecond)
+		synctest.Wait()
+		if a.hangups(ch) != 1 || st.accepted != 0 {
+			t.Fatalf("hangups %d accepted %d: the call stayed open", a.hangups(ch), st.accepted)
+		}
+	})
+}
+
+// PR #14 review (round 3): a closing prompt whose playback request uses up
+// its deadline is followed by a hang-up on a fresh deadline, so the hang-up
+// is not refused and the call does not stay open.
+func TestAClosingPromptThatTimesOutStillHangsUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		a.mu.Lock()
+		a.slowPlay = func(sounds []string) bool { return slices.Contains(sounds, "sauti/en/alert-accepted") }
+		a.mu.Unlock()
+		c.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+		if st.accepted != 1 || a.hangups(ch) != 1 {
+			t.Fatalf("accepted %d hangups %d: the result could not play and the call stayed open", st.accepted, a.hangups(ch))
+		}
+	})
+}
+
+// requested counts the Play and Hangup requests made so far.
+func (a *alertARI) requested() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.requests
+}
+
+// refuseHangup makes Asterisk refuse (or take again) the hang-up of ch.
+func (a *alertARI) refuseHangup(ch string, refuse bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.failHangup == nil {
+		a.failHangup = map[string]bool{}
+	}
+	a.failHangup[ch] = refuse
+}
+
+// PR #14 review (round 5): the hang-up after the closing prompt is refused
+// (Asterisk briefly unreachable). It is tried again until it is taken.
+func TestARefusedFinalHangUpIsRetried(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		c.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"}) // accepted: the result plays
+		a.refuseHangup(ch, true)
+		a.finish(t, c, ch) // the result heard: the hang-up is refused
+		a.refuseHangup(ch, false)
+		time.Sleep(hangupRetry)
+		synctest.Wait()
+		if a.hangups(ch) != 1 {
+			t.Fatal("the call stayed open after a refused hang-up")
+		}
+	})
+}
+
+// PR #14 review (round 5): a hang-up refused for good is given up after
+// hangupGiveUp, not tried for ever.
+func TestAFinalHangUpRefusedForGoodIsGivenUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		c.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+		a.refuseHangup(ch, true)
+		before := a.requested()
+		a.finish(t, c, ch)
+		time.Sleep(hangupGiveUp + time.Second)
+		synctest.Wait()
+		tried := a.requested() - before
+		time.Sleep(10 * hangupGiveUp)
+		synctest.Wait()
+		if tried < 2 || a.requested()-before != tried {
+			t.Fatalf("hang-ups tried %d within the bound, %d in all: want retries, then none", tried, a.requested()-before)
+		}
+	})
+}
+
+// PR #14 review (round 5): leadership is lost while a timer's request is
+// blocked in Asterisk (the replayed menu). The request is aborted with the
+// term, not left to its own timeout, and nothing further is requested.
+func TestLeadershipLostAbortsATimersRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, _ := alertRig(t, false)
+		if _, err := c.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		lead, lost := context.WithCancel(t.Context())
+		ch := "out-1"
+		c.Handle(lead, Event{Type: EventStasisStart, ChannelID: ch, Args: a.args[0]})
+		a.mu.Lock()
+		a.slowPlay = func([]string) bool { return true }
+		a.mu.Unlock()
+		c.Handle(lead, Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: ch + "-a1"}) // the menu heard: the no-input time runs
+		time.Sleep(c.c.NoInput)                                                                   // the replay is requested and hangs
+		synctest.Wait()
+		before := a.requested()
+		lost()
+		synctest.Wait()
+		a.mu.Lock()
+		aborted := a.aborted
+		a.mu.Unlock()
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if aborted != 1 || a.requested() != before {
+			t.Fatalf("aborted %d, requests after the loss %d: want the blocked request aborted at once and nothing more", aborted, a.requested()-before)
+		}
+	})
+}
+
+// PR #14 review (round 5): leadership is lost while the no-input closing
+// prompt's request is blocked. The request is aborted, and the closing
+// path requests no fresh hang-up after the loss.
+func TestLeadershipLostDuringTheClosingPromptHangsUpNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, _ := alertRig(t, false)
+		if _, err := c.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		lead, lost := context.WithCancel(t.Context())
+		ch := "out-1"
+		c.Handle(lead, Event{Type: EventStasisStart, ChannelID: ch, Args: a.args[0]})
+		a.mu.Lock()
+		a.slowPlay = func(sounds []string) bool { return slices.Contains(sounds, "sauti/en/alert-no-input-closing") }
+		a.mu.Unlock()
+		c.Handle(lead, Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: ch + "-a1"})
+		time.Sleep(c.c.NoInput) // the menu again
+		synctest.Wait()
+		c.Handle(lead, Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: ch + "-a2"})
+		time.Sleep(c.c.NoInput) // the closing prompt is requested and hangs
+		synctest.Wait()
+		before := a.requested()
+		lost()
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if a.requested() != before || a.hangups(ch) != 0 {
+			t.Fatalf("requests after the loss %d, hang-ups %d: want none", a.requested()-before, a.hangups(ch))
+		}
+	})
 }

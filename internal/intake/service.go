@@ -105,6 +105,9 @@ type Incidents interface {
 type Reader interface {
 	Projection(ctx context.Context, id uuid.UUID) (incident.Projection, error)
 	FindResumable(ctx context.Context, macs []crypto.MAC, window time.Duration) (uuid.UUID, bool, error)
+	// IVRCallIncident finds the incident of a voice call from its call ID
+	// (the IVR session's provider ID).
+	IVRCallIncident(ctx context.Context, callID string) (uuid.UUID, bool, error)
 }
 
 // Keys computes keyed hashes for step keys and redial lookup
@@ -141,6 +144,9 @@ type Deps struct {
 	Dedup      DedupRule
 	// Suspension reports whether dispatch is suspended (O6).
 	Suspension Suspension
+	// OutOfAreaEscalateAfterDanger is the gated flag of that name (F-07):
+	// off, "Somewhere else" closes the incident, as the protocol says.
+	OutOfAreaEscalateAfterDanger bool
 }
 
 // Suspension reports whether dispatch is suspended (the operational store).
@@ -151,7 +157,7 @@ type Suspension interface {
 // ReasonDispatchSuspended escalates an incident completed while dispatch is
 // suspended (the same reason dispatch-worker's planner uses, so the
 // coordinator is alerted once).
-const ReasonDispatchSuspended = "dispatch_suspended"
+const ReasonDispatchSuspended = incident.ReasonDispatchSuspended
 
 // Service runs Tool 1 over USSD (and, from Part C, IVR).
 type Service struct{ d Deps }
@@ -435,11 +441,17 @@ func (s *Service) apply(ctx context.Context, p incident.Projection, sess session
 		if err != nil {
 			return err
 		}
-		closed, err := newEvent(id, incident.EvClosed, incident.ActorSystem, map[string]string{"reason": FlagOutOfArea}, incidentKey(id, "close"), "")
+		// Flag on, after a danger yes or a red classification: escalate and
+		// stay open, as a closed incident is never rung (ADR-0034).
+		end, err := newEvent(id, incident.EvClosed, incident.ActorSystem, map[string]string{"reason": FlagOutOfArea}, incidentKey(id, "close"), "")
+		if s.d.OutOfAreaEscalateAfterDanger && (p.Danger == "yes" || p.Severity == incident.SevRed) {
+			end, err = newEvent(id, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": incident.ReasonOutOfAreaAfterDanger},
+				incident.EscalationKey(incident.ReasonOutOfAreaAfterDanger, ""), "")
+		}
 		if err != nil {
 			return err
 		}
-		batch = append(batch, flag, closed)
+		batch = append(batch, flag, end)
 	}
 	_, err = s.d.Incidents.AppendBatch(ctx, batch)
 	return err
@@ -460,7 +472,7 @@ func (s *Service) classification(p incident.Projection, specificDanger string) (
 	if err != nil {
 		return nil, err
 	}
-	esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": FlagTriageRuleError}, incidentKey(p.ID, "escalate"), "")
+	esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": incident.ReasonTriageRuleError}, incidentKey(p.ID, "escalate"), "")
 	if err != nil {
 		return nil, err
 	}
@@ -506,6 +518,14 @@ func (s *Service) catchUp(ctx context.Context, id uuid.UUID, matched string) (in
 		return s.d.Reader.Projection(ctx, id)
 	}
 	return p, nil
+}
+
+// CatchUp records what an incident's stored answers imply but its log lacks
+// (its classification, T2), as a redial would, and reports whether dispatch
+// is under way (the abandonment sweeper; F-04).
+func (s *Service) CatchUp(ctx context.Context, id uuid.UUID) (bool, error) {
+	p, err := s.catchUp(ctx, id, "")
+	return p.T[2] != nil, err
 }
 
 // Flags recorded by intake.
