@@ -55,6 +55,7 @@ class Phone {
     this.mode = "idle"; // idle | con | end
     this.session = "";
     this.busy = false;
+    this.gen = 0; // bumped when the phone changes or hangs up: a late reply is then dropped
     const id = "in-" + kind;
     this.text = h("p", { class: "screen-text", "aria-live": "polite", "aria-atomic": "true" });
     this.meta = h("span", { class: "screen-meta" });
@@ -93,6 +94,7 @@ class Phone {
   setPhone(p) {
     if (this.p && p && this.p.id === p.id) return;
     this.p = p;
+    this.gen++;
     this.mode = "idle";
     this.session = "";
     this.lastCount = undefined;
@@ -115,6 +117,7 @@ class Phone {
 
   end() {
     // Hanging up a USSD session simply abandons it, as on a handset.
+    this.gen++;
     this.mode = "idle";
     this.session = "";
     this.note.hidden = true;
@@ -131,11 +134,17 @@ class Phone {
   }
 
   async send(body) {
+    const gen = this.gen;
     this.busy = true;
     this.note.hidden = true;
     this.render();
     const { status, data } = await api("POST", "api/ussd", body);
     this.busy = false;
+    if (gen !== this.gen) {
+      // Another phone was selected, or this one hung up, while the reply was on its way.
+      this.render();
+      return;
+    }
     if (status === 200 || status === 410) {
       this.mode = data.end ? "end" : "con";
       this.session = data.session || "";
@@ -371,14 +380,21 @@ async function reset() {
     return;
   }
   app.phase = "resetting";
+  clearRun();
+  showPhase();
+}
+
+// clearRun forgets everything that belonged to the run that ended, whether
+// this browser or another one reset it: sessions, inboxes, board, audit.
+function clearRun() {
   app.inbox = {};
   app.seen = {};
+  app.phones = [];
   app.boardKey = "";
   $("#audit-result").hidden = true;
   $("#board").replaceChildren();
   callerPhone.setPhone(null);
   respPhone.setPhone(null);
-  showPhase();
 }
 
 // ---------- Polling ----------
@@ -403,6 +419,8 @@ async function pollState() {
   if (status !== 200) { app.phase = ""; showPhase(); return; }
   const was = app.phase;
   app.phase = data.phase;
+  if ((was === "ready" && data.phase !== "ready") || (app.run !== undefined && data.run !== app.run)) clearRun();
+  app.run = data.run;
   if (data.codes) app.codes = data.codes;
   if (data.phase === "ready" && data.phones) {
     const changed = JSON.stringify(data.phones) !== JSON.stringify(app.phones) || was !== "ready";

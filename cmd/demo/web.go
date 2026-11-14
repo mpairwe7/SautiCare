@@ -47,6 +47,7 @@ type app struct {
 	mu    sync.Mutex
 	st    *stack
 	phase string
+	run   int // counts the runs that came up, so a browser sees a reset it missed
 	wg    sync.WaitGroup
 
 	start func(context.Context, options, io.Writer) (*stack, error) // startStack; a seam for tests
@@ -82,6 +83,7 @@ func (a *app) boot() {
 			st.stop()
 		default:
 			a.st, a.phase = st, phaseReady
+			a.run++
 			a.log.Info("demo ready")
 		}
 	})
@@ -160,9 +162,9 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 
 func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 	a.mu.Lock()
-	st, phase := a.st, a.phase
+	st, phase, run := a.st, a.phase, a.run
 	a.mu.Unlock()
-	out := map[string]any{"phase": phase, "codes": map[string]string{"caller": callerCode, "responder": responderCode}}
+	out := map[string]any{"phase": phase, "run": run, "codes": map[string]string{"caller": callerCode, "responder": responderCode}}
 	if st != nil {
 		phones := make([]phone, len(st.phones))
 		for i, p := range st.phones {
