@@ -147,3 +147,46 @@ func TestEscalationsListsEachRoleOfAReason(t *testing.T) {
 		t.Fatalf("text:\n%s", s)
 	}
 }
+
+// CodeRabbit (PR #13, C3): the runbook's recovery step for a lost hand-over
+// escalation records exactly the escalation ivr-controller could not (the
+// same key), so a retry, or an escalation that was in fact written, adds
+// nothing; a call with no voice session is refused.
+func TestIncidentEscalateHandoverRecordsTheLostEscalationOnce(t *testing.T) {
+	t.Setenv("SAUTI_ENV", "dev")
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	pool, err := pg.Connect(ctx, c.DSN(pg.StoreOperational, "op_intake"), "test", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	ref, err := incident.NewReference(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := opstore.New(pool).OpenIncident(ctx, incident.OpenParams{Reference: ref, Channel: incident.ChannelIVR, SessionID: uuid.NewV7(),
+		ProviderSessionID: "ch-lost-1", IdemKey: "ivr:ch-lost-1:start",
+		Phone: crypto.Sealed{KeyID: "dev:k:2", Ciphertext: []byte{1, 2, 3}}, PhoneMAC: crypto.MAC{KeyID: "dev:k:2", Sum: make([]byte, 32)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn := c.DSN(pg.StoreOperational, "op_ivr")
+	for range 2 {
+		var out, errOut bytes.Buffer
+		if code := Main([]string{"incident", "escalate-handover", "--dsn", dsn, "--call", "ch-lost-1"}, &out, &errOut); code != 0 ||
+			!strings.Contains(out.String(), o.IncidentID.String()) {
+			t.Fatalf("exit %d: %s %s", code, out.String(), errOut.String())
+		}
+	}
+	var n int
+	if err := c.Owner(t, pg.StoreOperational).QueryRow(ctx, `SELECT count(*) FROM op.incident_events WHERE incident_id = $1
+		AND type = 'incident.escalated' AND payload ->> 'reason' = 'voice_handed_over' AND idem_key = 'escalate:voice_handed_over:-:handover:ch-lost-1'`,
+		o.IncidentID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("escalations %d %v, want one with the hand-over's key", n, err)
+	}
+	var out, errOut bytes.Buffer
+	if code := Main([]string{"incident", "escalate-handover", "--dsn", dsn, "--call", "nobody"}, &out, &errOut); code == 0 {
+		t.Fatalf("a call with no voice session was escalated: %s", out.String())
+	}
+}

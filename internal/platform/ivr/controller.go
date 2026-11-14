@@ -80,6 +80,9 @@ type Options struct {
 	// App is the Stasis application the controller serves (default
 	// sauti-ivr): Adopt hands over the calls parked in it.
 	App string
+	// OnEscalationLost is called when a hand-over escalation is still
+	// refused after 10 minutes of retries (the lost-escalation metric).
+	OnEscalationLost func()
 }
 
 // maxCallbackDigits bounds a typed callback number (E.164 is at most 15).
@@ -548,7 +551,11 @@ func (c *Controller) retryHandOver(ctx context.Context, ch string, call intake.I
 			return
 		}
 		if !time.Now().Before(until) {
-			c.log.Error("ivr hand-over escalation lost", "channel", ch, "incident", call.IncidentID, "err", err)
+			// IDs only: the runbook recovers it from the call ID.
+			c.log.Error("ivr hand-over escalation lost", "call", ch, "incident", call.IncidentID, "err", err)
+			if c.opt.OnEscalationLost != nil {
+				c.opt.OnEscalationLost()
+			}
 			return
 		}
 	}

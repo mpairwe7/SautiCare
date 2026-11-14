@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 )
@@ -124,3 +125,44 @@ func severityName(s string) string {
 }
 
 func secs(n int) string { return (time.Duration(n) * time.Second).String() }
+
+// cmdEscalateHandover recovers a hand-over escalation ivr-controller logged
+// as lost ("ivr hand-over escalation lost", with the call ID): it records the
+// same incident.escalated event, under the same key, through the single
+// write path, so the coordinator line rings. A retry, or an escalation that
+// was in fact written, is a no-op. It runs as op_ivr, the role that would
+// have written it, on Sauti's servers.
+func cmdEscalateHandover(ctx context.Context, args []string, out io.Writer) error {
+	fs := flags("incident escalate-handover")
+	dsn := fs.String("dsn", "", "operational store DSN as op_ivr")
+	callID := fs.String("call", "", "the call ID from the log line")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *dsn == "" || *callID == "" {
+		return errors.New("--dsn (op_ivr) and --call are required")
+	}
+	pool, err := pg.Connect(ctx, *dsn, "sautictl", 2)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	store := opstore.New(pool)
+	id, ok, err := store.IVRCallIncident(ctx, *callID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("no voice session has that call ID: nothing to escalate (the call never opened an incident)")
+	}
+	payload, err := json.Marshal(map[string]string{"reason": incident.ReasonVoiceHandedOver})
+	if err != nil {
+		return err
+	}
+	if _, err := store.Append(ctx, incident.AppendParams{IncidentID: id, Type: incident.EvEscalated, Payload: payload,
+		ActorKind: incident.ActorSystem, IdemKey: intake.HandOverKey(incident.ReasonVoiceHandedOver, *callID)}); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "incident %s: voice_handed_over escalation recorded (a repeat is a no-op); the coordinator line rings until acknowledged\n", id)
+	return nil
+}

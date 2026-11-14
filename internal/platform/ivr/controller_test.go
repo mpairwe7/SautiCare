@@ -823,3 +823,35 @@ func TestALongClosingPromptIsNotCutOff(t *testing.T) {
 		}
 	})
 }
+
+// CodeRabbit (PR #13, C3): a hand-over escalation still refused after 10
+// minutes is lost from memory; it is counted (the metric pages, with the
+// runbook's recovery step) and stops retrying.
+func TestALostHandOverEscalationIsCounted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &scripted{prompts: prompts(), failOn: "1", failHand: 1 << 20}
+		a := &fakeARI{}
+		var lost int
+		c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, OnEscalationLost: func() { lost++ }})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		synctest.Wait()
+		pb, _ := a.lastPlay()
+		c.Handle(ctx, Event{Type: EventPlaybackStarted, ChannelID: "ch1", PlaybackID: pb})
+		c.Handle(ctx, key("ch1", "1"))
+		time.Sleep(9 * time.Minute)
+		synctest.Wait()
+		if lost != 0 {
+			t.Fatalf("counted lost after 9 minutes")
+		}
+		time.Sleep(2 * time.Minute)
+		synctest.Wait()
+		n := len(s.handedOver())
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		if lost != 1 || len(s.handedOver()) != n {
+			t.Fatalf("lost %d, retries went on: %d then %d", lost, n, len(s.handedOver()))
+		}
+	})
+}

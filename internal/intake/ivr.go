@@ -52,6 +52,13 @@ func (s *Service) StartIVR(ctx context.Context, callID string, phone pii.Phone) 
 	return IVRTurn{Call: call, Prompt: pr}, nil
 }
 
+// HandOverKey is the idempotency key of a voice call's hand-over
+// escalation: once per call, whoever records it (ivr-controller, or the
+// operator's recovery of a lost one).
+func HandOverKey(reason, callID string) string {
+	return incident.EscalationKey(reason, "") + ":handover:" + callID
+}
+
 // HandOver records that the voice line is handing the call to a
 // coordinator: an incident.escalated event, once per call, so the
 // coordinator line rings even if the transfer itself fails (ADR-0029 rule
@@ -71,7 +78,7 @@ func (s *Service) HandOver(ctx context.Context, call IVRCall, reason string) err
 		return err
 	}
 	esc, err := newEvent(p.ID, incident.EvEscalated, incident.ActorSystem, map[string]string{"reason": reason},
-		incident.EscalationKey(reason, "")+":handover:"+call.CallID, "")
+		HandOverKey(reason, call.CallID), "")
 	if err != nil {
 		return err
 	}

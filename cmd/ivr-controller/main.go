@@ -143,10 +143,14 @@ func run(log *slog.Logger) error {
 	}
 	// A handed-over call's caller ID is masked by the fallback dialplan
 	// (SAUTI_CALLER_ID in extensions.conf), never by an ARI request (rule 5).
-	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2, MaxNoMatch: 3,
-		OpTimeout: 3 * time.Second, PromptMax: 30 * time.Second, App: env.Default("SAUTI_ARI_APP", "sauti-ivr")})
-
 	reg := metrics.NewRegistry()
+	// A hand-over escalation still refused after its retries is lost; the
+	// runbook recovers it with sautictl incident escalate-handover.
+	lost := reg.Counter("sauti_ivr_handover_escalation_lost_total", "Hand-over escalations still refused after 10 minutes of retries.")
+	ctrl := ivr.New(client, built.Service, log, ivr.Options{NoInput: 15 * time.Second, MaxReprompts: 2, MaxNoMatch: 3,
+		OpTimeout: 3 * time.Second, PromptMax: 30 * time.Second, App: env.Default("SAUTI_ARI_APP", "sauti-ivr"),
+		OnEscalationLost: func() { lost.Add(1) }})
+
 	admin := http.NewServeMux()
 	admin.Handle("/livez", health.Handler(map[string]health.Check{}, nil))
 	// The outbound leader's stream joins readiness (a no-op on instances that
