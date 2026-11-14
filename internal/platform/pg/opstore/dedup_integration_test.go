@@ -5,6 +5,7 @@ package opstore_test
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"regexp"
 	"strings"
 	"sync"
@@ -103,24 +104,22 @@ func TestMergeCarriesSeverityAndEscalation(t *testing.T) {
 	}
 	evs, _ := s.Events(ctx, survivor.IncidentID)
 	var raised []string
-	escalations := 0
+	pairs := map[intake.EscalationPair]int{} // each pair the red call held, as it was recorded (PR #14 review)
 	for _, e := range evs {
 		switch e.Type {
 		case incident.EvSeverityRaised:
 			raised = append(raised, string(e.Payload))
 		case incident.EvEscalated:
-			escalations++ // each pair the red call held, as it was recorded (PR #14 review)
 			var pl map[string]string
-			_ = json.Unmarshal(e.Payload, &pl) // a malformed payload matches neither case
-			ruleError := len(pl) == 1 && pl["reason"] == "triage_rule_error"
-			noVHT := len(pl) == 2 && pl["reason"] == "no_eligible_responder" && pl["role"] == "vht"
-			if !ruleError && !noVHT {
-				t.Errorf("escalation payload %s", e.Payload)
+			if err := json.Unmarshal(e.Payload, &pl); err != nil {
+				t.Fatalf("escalation payload %s: %v", e.Payload, err)
 			}
+			pairs[intake.EscalationPair{Reason: pl["reason"], Role: pl["role"]}]++
 		}
 	}
-	if len(raised) != 2 || escalations != 2 {
-		t.Fatalf("severity_raised %v, escalations %d", raised, escalations)
+	want := map[intake.EscalationPair]int{{Reason: "triage_rule_error"}: 1, {Reason: "no_eligible_responder", Role: "vht"}: 1}
+	if len(raised) != 2 || !maps.Equal(pairs, want) {
+		t.Fatalf("severity_raised %v, escalation pairs %v, want each of %v once", raised, pairs, want)
 	}
 	if _, drift, err := opstore.VerifyProjections(ctx, storeAs(t, c, "op_readonly")); err != nil || len(drift) != 0 {
 		t.Fatalf("drift %v %v", drift, err)
