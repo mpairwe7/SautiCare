@@ -936,7 +936,12 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 - A trigger `incident_events_append_only` on `op.incident_events` (row-level, every role) refuses `UPDATE` and `DELETE`, and a statement trigger refuses `TRUNCATE`, as 0016 does. Partitions are still dropped by the partition runbook, so M6 retention is unaffected.
 - A trigger `outbox_append_only` on `op.outbox` refuses `DELETE` and `TRUNCATE`, and every `UPDATE` except the relay's own: `delivered_at` from NULL to a time, with every other column unchanged (`op.mark_outbox_delivered`, 0002). No job deletes from `op.outbox` on `main`; M6's retention (F-87) relaxes the trigger for delivered rows only.
 - **Who the triggers bind.** Both tables are owned by `op_owner`, the store's migration role (ADR-0006), which no runtime process or operator command uses. No runtime role (`op_intake`, `op_ivr`, `op_dispatch`, `op_relay`, `op_console`, `op_readonly`) owns a table or may set `session_replication_role`, so none can disable or drop a trigger. The owner or a superuser can. As for the ledger (ADR-0005), that is outside what the database can prevent:
-  - Detection is the platform's (P0, R-16). DDL is logged off the database host (`log_statement = 'ddl'`), so a `DISABLE TRIGGER` or `DROP TRIGGER` leaves a record that the owner cannot erase.
+  - **Detection that does not depend on the relay (P0, R-16).** `pgaudit` (built for PostgreSQL 18) writes to the off-host log, which the database owner cannot alter, so every step of a bypass leaves a record before relay, not only after it:
+    - session logging `pgaudit.log = 'ddl, role, misc_set'`, which records `DISABLE TRIGGER`, `DROP TRIGGER`, `GRANT`, `SET ROLE` and `SET session_replication_role`;
+    - object logging through an `op_auditor` role holding only `DELETE` on `op.incident_events` and `op.outbox`, which records every delete on those tables. `pgaudit.log_parameter = off`, so no values reach the log.
+  - `log_statement = 'ddl'` stays as a second record.
+  - **Residual risk.** Root on the database host can still stop logging or edit files. That is the platform's to detect (host audit, P0), not the database's. This residual risk must be accepted by the operator and the DPO before go-live (R-16). Until it is accepted, Task 5.6 records it as open in `threat-model/threats.yaml`.
+  - **Proof, a P0 drill, not CI.** CI's embedded PostgreSQL has no `pgaudit`. As a superuser on staging: set `session_replication_role = replica`, delete a test event and its outbox row, then confirm that the off-host log holds the `SET` and both `DELETE`s.
   - A row deleted after relay is caught by `verify-coverage` (Task 5.3) against the witnessed ledger.
   - A witness count of these tables would add nothing: the only window it would have to catch is the seconds between commit and relay.
   - Task 5.6 records this in `threat-model/threats.yaml`, with the test below as `verified_by`.
@@ -944,6 +949,10 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 - [ ] **Step 1: Write the failing tests** (integration):
   - `TestEveryStateChangingControlFunctionWritesOneLedgerEntry`. The function list is generated from `pg_proc`: `SECURITY DEFINER` in schema `op`, granted to `op_console` or the owner, not `STABLE`, minus an allow-list of read helpers. Each call leaves one `op.control_changes` row and one outbox entry whose `event_id` is that row's ID and whose hash verifies with its salt. A new function without a ledger entry fails the test.
   - `TestRuntimeRolesCannotDisableTheAppendOnlyTriggers`: as each runtime role, `ALTER TABLE … DISABLE TRIGGER` on `op.incident_events` and on `op.outbox`, and `SET session_replication_role = replica`, each fail with 42501.
+  - `TestNoRuntimeOrOperatorRoleCanBecomeAnOwner`. For every login role other than the migration owners and the bootstrap superuser, found from `pg_roles` so a new role is covered without a code change:
+    - `pg_has_role(role, owner, 'MEMBER')` and `'USAGE'` are false for `op_owner` and the audit store's owner. `pg_has_role` follows indirect membership.
+    - `rolsuper`, `rolcreaterole` and `rolbypassrls` are false.
+    - Connected as that role, `SET ROLE op_owner` fails with 42501.
   - `TestIncidentEventsRefuseUpdateAndDeleteEvenForTheOwner`.
   - `TestOutboxRefusesDeleteAndPayloadRewrite`: `DELETE`, `TRUNCATE`, a payload change, `delivered_at` back to NULL, and a second `delivered_at` on a delivered row are each refused.
   - `TestOutboxRelayStillMarksDelivered`: `op.mark_outbox_delivered` on a pending row returns 1, and `op.claim_outbox` no longer returns it.
