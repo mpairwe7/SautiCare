@@ -128,6 +128,72 @@ type boardView struct {
 	}
 }
 
+// runnerProc is the demo runner under test. logs may be read only once
+// done is closed.
+type runnerProc struct {
+	cmd  *exec.Cmd
+	logs bytes.Buffer
+	done chan struct{}
+	err  error
+	base string
+}
+
+// startRunner starts the runner on a free port and waits until its UI
+// answers. A port free when picked can be taken before the runner binds it;
+// the runner then exits with "address already in use" and is started again
+// on a new port, up to three times (CodeRabbit PR #15).
+func startRunner(t *testing.T, path string, args ...string) *runnerProc {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		ports, err := freePorts(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := &runnerProc{done: make(chan struct{}), base: "http://127.0.0.1:" + ports[0]}
+		r.cmd = exec.Command(path, append(args, "--addr", "127.0.0.1:"+ports[0])...)
+		r.cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		r.cmd.Stdout, r.cmd.Stderr = &r.logs, &r.logs
+		if err := r.cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		go func() { r.err = r.cmd.Wait(); close(r.done) }()
+		if r.up() {
+			t.Cleanup(func() {
+				_ = r.cmd.Process.Kill()
+				<-r.done
+				if t.Failed() {
+					t.Logf("runner log:\n%s", r.logs.String())
+				}
+			})
+			return r
+		}
+		if attempt == 3 || !strings.Contains(r.logs.String(), "address already in use") {
+			t.Fatalf("the runner exited (attempt %d): %v\n%s", attempt, r.err, r.logs.String())
+		}
+	}
+}
+
+// up waits until the runner's UI answers (true) or the runner exits (false).
+func (r *runnerProc) up() bool {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-r.done:
+			return false
+		default:
+		}
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, r.base+"/api/state", nil)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = r.cmd.Process.Kill()
+	<-r.done
+	return false
+}
+
 // Scenario 1 through the demo, over HTTP, as a presenter would run it: the
 // runner starts its own PostgreSQL and the three services; a caller reports
 // a red trauma on USSD; the alert SMS reaches the responders' inboxes; one
@@ -145,29 +211,9 @@ func TestDemoScenario1OverHTTP(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	ports, err := freePorts(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := ports[0]
 	data := t.TempDir()
-	var logs bytes.Buffer
-	runner := exec.Command(filepath.Join(bin, "demo"), "--pg-bin", pg, "--data", data, "--addr", "127.0.0.1:"+port,
-		"--config-dir", "../../config", "--rules-root", "../..")
-	runner.Env = []string{"PATH=" + os.Getenv("PATH")}
-	runner.Stdout, runner.Stderr = &logs, &logs
-	if err := runner.Start(); err != nil {
-		t.Fatal(err)
-	}
-	exited := make(chan error, 1)
-	go func() { exited <- runner.Wait() }()
-	t.Cleanup(func() {
-		_ = runner.Process.Kill()
-		if t.Failed() {
-			t.Logf("runner log:\n%s", logs.String())
-		}
-	})
-	c := client{t: t, base: "http://127.0.0.1:" + port}
+	r := startRunner(t, filepath.Join(bin, "demo"), "--pg-bin", pg, "--data", data, "--config-dir", "../../config", "--rules-root", "../..")
+	c := client{t: t, base: r.base}
 	ready := func() bool {
 		var s struct{ Phase string }
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, c.base+"/api/state", nil)
@@ -274,13 +320,13 @@ func TestDemoScenario1OverHTTP(t *testing.T) {
 	}
 
 	// SIGTERM: a clean exit that erases the run's directory.
-	if err := runner.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := r.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case err := <-exited:
-		if err != nil {
-			t.Fatalf("exit: %v", err)
+	case <-r.done:
+		if r.err != nil {
+			t.Fatalf("exit: %v", r.err)
 		}
 	case <-time.After(time.Minute):
 		t.Fatal("the demo did not stop on SIGTERM")
