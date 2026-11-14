@@ -114,7 +114,7 @@ func run(log *slog.Logger) error {
 	reg := metrics.NewRegistry()
 	passFailures := reg.Counter("sauti_dispatch_pass_failures_total", "Dispatch passes that failed and were escalated.")
 	lastPassAge := reg.Gauge("sauti_dispatch_last_pass_age_seconds", "Seconds since the leader's last successful pass (0 on a standby).")
-	overdue := reg.Gauge("sauti_dispatch_oldest_overdue_seconds", "How late the most overdue dispatch wake is.")
+	gauges := newDispatchGauges(reg)
 	suspendedGauge := reg.Gauge("sauti_dispatch_suspended", "1 while dispatch is suspended (O6).")
 	admin := http.NewServeMux()
 	admin.Handle("/livez", health.Handler(map[string]health.Check{}, nil))
@@ -129,8 +129,8 @@ func run(log *slog.Logger) error {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
 		for {
-			if d, err := store.OldestOverdueDispatch(ctx); err == nil {
-				overdue.Set(d.Seconds())
+			if err := gauges.readOverdue(ctx, store); err != nil && ctx.Err() == nil {
+				log.Error("overdue dispatch not read", "err", err)
 			}
 			if on, err := store.DispatchSuspended(ctx); err == nil {
 				suspendedGauge.Set(map[bool]float64{true: 1}[on])
@@ -168,13 +168,15 @@ func run(log *slog.Logger) error {
 		leaderErr <- pg.RunAsLeader(ctx, pool, leaderKey, 5*time.Second, func(lctx context.Context) error {
 			leading.Store(true)
 			defer leading.Store(false)
-			// The availability-expiry reminders (review focus 4) run with the
-			// leader, each period once.
-			go func() {
-				_ = dispatch.Reminders{Store: store, Sender: msg}.Run(lctx, time.Minute,
-					func(err error) { log.Error("availability reminder failed", "err", err) })
-			}()
-			return built.Engine.Run(lctx, poll, batch, lease, onErr)
+			return lead(lctx, gauges, func(lctx context.Context) error {
+				// The availability-expiry reminders (review focus 4) run with the
+				// leader, each period once.
+				go func() {
+					_ = dispatch.Reminders{Store: store, Sender: msg}.Run(lctx, time.Minute,
+						func(err error) { log.Error("availability reminder failed", "err", err) })
+				}()
+				return built.Engine.Run(lctx, poll, batch, lease, onErr)
+			})
 		})
 	}()
 
@@ -212,6 +214,44 @@ func await(ctx context.Context, stop context.CancelFunc, adminErr, leaderErr <-c
 		return nil
 	}
 	return err
+}
+
+// dispatchGauges let an alert tell a silent dispatch from a healthy one
+// (V-01): which instance leads, and whether the overdue age is fresh.
+type dispatchGauges struct{ leader, overdue, overdueReadOK *metrics.Gauge }
+
+func newDispatchGauges(reg *metrics.Registry) *dispatchGauges {
+	return &dispatchGauges{
+		leader:        reg.Gauge("sauti_dispatch_leader", "1 while this instance leads dispatch."),
+		overdue:       reg.Gauge("sauti_dispatch_oldest_overdue_seconds", "How late the most overdue dispatch wake is."),
+		overdueReadOK: reg.Gauge("sauti_dispatch_overdue_read_ok", "1 after a successful read of the overdue dispatch wakes, 0 after a failed one."),
+	}
+}
+
+// lead runs one leader term with the leader gauge at 1, and 0 again however
+// the term ends.
+func lead(ctx context.Context, g *dispatchGauges, run func(context.Context) error) error {
+	g.leader.Set(1)
+	defer g.leader.Set(0)
+	return run(ctx)
+}
+
+// overdueReader reads how late the most overdue dispatch wake is.
+type overdueReader interface {
+	OldestOverdueDispatch(ctx context.Context) (time.Duration, error)
+}
+
+// readOverdue exports the overdue age; a failed read keeps the last age and
+// marks it unread.
+func (g *dispatchGauges) readOverdue(ctx context.Context, r overdueReader) error {
+	d, err := r.OldestOverdueDispatch(ctx)
+	if err != nil {
+		g.overdueReadOK.Set(0)
+		return err
+	}
+	g.overdue.Set(d.Seconds())
+	g.overdueReadOK.Set(1)
+	return nil
 }
 
 // adminServer serves health and metrics. Every phase of a connection is
