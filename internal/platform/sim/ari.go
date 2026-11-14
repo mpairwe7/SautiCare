@@ -33,6 +33,7 @@ type FakeARI struct {
 	srv        *httptest.Server
 	user, pass string
 	mu         sync.Mutex
+	emitMu     sync.Mutex // orders writes to the event streams
 	requests   []string
 	plays      map[string][][]string
 	hungUp     map[string]bool
@@ -297,6 +298,12 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 
 // Emit sends one event to every connected client.
 func (f *FakeARI) Emit(ev map[string]any) {
+	f.emitMu.Lock()
+	defer f.emitMu.Unlock()
+	f.emitLocked(ev)
+}
+
+func (f *FakeARI) emitLocked(ev map[string]any) {
 	b, _ := json.Marshal(ev)
 	f.mu.Lock()
 	conns := append([]*websocket.Conn(nil), f.conns...)
@@ -324,10 +331,14 @@ func (f *FakeARI) StartCall(channelID, callerNumber string) {
 		"channel": map[string]any{"id": channelID, "state": "Ring", "caller": map[string]string{"number": callerNumber}}})
 }
 
-// Press sends DTMF digits, one event each.
+// Press sends DTMF digits, one event each, back to back: no event the
+// controller's requests cause comes between them, as on a handset whose
+// keys arrive faster than a prompt can start.
 func (f *FakeARI) Press(channelID, digits string) {
+	f.emitMu.Lock()
+	defer f.emitMu.Unlock()
 	for _, d := range digits {
-		f.Emit(event{"type": "ChannelDtmfReceived", "digit": string(d), "channel": map[string]any{"id": channelID}})
+		f.emitLocked(event{"type": "ChannelDtmfReceived", "digit": string(d), "channel": map[string]any{"id": channelID}})
 	}
 }
 
