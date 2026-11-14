@@ -178,6 +178,7 @@ func run(log *slog.Logger) error {
 			go func() {
 				t := time.NewTicker(sweepEvery)
 				defer t.Stop()
+				defer gauges.reset()
 				for {
 					if err := gauges.update(lctx, store); err != nil && lctx.Err() == nil {
 						log.Error("escalation gauges not updated", "err", err)
@@ -217,12 +218,15 @@ type escalationAges interface {
 // escalationGauges are the dead-man signal: how many open incidents hold an
 // escalation no coordinator has acknowledged, and the oldest one's age. An
 // alert on the age pages the on-call engineer (P0 alerting).
-type escalationGauges struct{ count, oldest *metrics.Gauge }
+// Only the leader exports them; leader is 1 while it does, so the alert can
+// tell a fresh value from a former leader's (review R4).
+type escalationGauges struct{ count, oldest, leader *metrics.Gauge }
 
 func newEscalationGauges(reg *metrics.Registry) escalationGauges {
 	return escalationGauges{
 		count:  reg.Gauge("sauti_escalations_unacknowledged", "Open incidents with an escalation no coordinator has acknowledged."),
 		oldest: reg.Gauge("sauti_escalation_oldest_unacknowledged_seconds", "Age of the oldest unacknowledged escalation (0 when none)."),
+		leader: reg.Gauge("sauti_escalation_gauges_leader", "1 while this instance leads and exports the escalation gauges."),
 	}
 }
 
@@ -233,7 +237,15 @@ func (g escalationGauges) update(ctx context.Context, r escalationAges) error {
 	}
 	g.count.Set(float64(n))
 	g.oldest.Set(secs)
+	g.leader.Set(1)
 	return nil
+}
+
+// reset clears the gauges when the leader term ends.
+func (g escalationGauges) reset() {
+	g.count.Set(0)
+	g.oldest.Set(0)
+	g.leader.Set(0)
 }
 
 // deliveryRecorder stores delivery reports (the operational store, op_intake).

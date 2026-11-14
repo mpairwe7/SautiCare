@@ -106,3 +106,29 @@ func TestEscalationGaugesExportTheDeadManSignal(t *testing.T) {
 		t.Fatal("a failed read was not reported")
 	}
 }
+
+// Review R4: a former leader does not keep exporting the last values it
+// read: when its term ends the gauges go to 0 and the leader gauge to 0, so
+// the alert sees which instance exports and never a stale age.
+func TestEscalationGaugesResetWhenTheTermEnds(t *testing.T) {
+	reg := metrics.NewRegistry()
+	g := newEscalationGauges(reg)
+	if err := g.update(context.Background(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 420, 2, nil })); err != nil {
+		t.Fatal(err)
+	}
+	scrape := func() string {
+		rec := httptest.NewRecorder()
+		reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		return rec.Body.String()
+	}
+	if body := scrape(); !strings.Contains(body, "sauti_escalation_gauges_leader 1") {
+		t.Fatalf("leading:\n%s", body)
+	}
+	g.reset()
+	body := scrape()
+	for _, want := range []string{"sauti_escalations_unacknowledged 0", "sauti_escalation_oldest_unacknowledged_seconds 0", "sauti_escalation_gauges_leader 0"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("after the term, %q missing:\n%s", want, body)
+		}
+	}
+}
