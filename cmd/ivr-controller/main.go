@@ -330,6 +330,14 @@ func outboundTerm(events func(context.Context, func(ari.Event)) error, st *outbo
 	return func(lctx context.Context) error {
 		st.leading.Store(true)
 		defer st.leading.Store(false)
+		// On every exit from the term, once the subscription and the loops
+		// have stopped (defers run last-in first-out), the calls' timers
+		// stop: the next leader owns the calls' timing.
+		defer func() {
+			if out.Alerts != nil {
+				out.Alerts.DisarmAll()
+			}
+		}()
 		var sub sync.WaitGroup
 		defer sub.Wait()
 		sub.Go(func() { _ = events(lctx, func(e ari.Event) { out.Handle(lctx, e) }) })
@@ -357,9 +365,6 @@ func outboundTerm(events func(context.Context, func(ari.Event)) error, st *outbo
 			stop()
 			wg.Wait()
 			if err := lctx.Err(); err != nil {
-				if out.Alerts != nil {
-					out.Alerts.DisarmAll() // the term is over: the next leader owns the calls' timing
-				}
 				return err
 			}
 		}

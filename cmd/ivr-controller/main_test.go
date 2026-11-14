@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"uuid"
 
+	"sautihealth.com/sauti/internal/crypto"
+	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/platform/ari"
 	"sautihealth.com/sauti/internal/platform/health"
 	"sautihealth.com/sauti/internal/platform/ivr"
@@ -154,5 +158,69 @@ func TestNoInputSetting(t *testing.T) {
 		if _, err := noInputSetting(v); err == nil {
 			t.Errorf("%q accepted", v)
 		}
+	}
+}
+
+// termARI and termStore are just enough of Asterisk and the store for one
+// answered alert call; the fake locks what the call's timer goroutine writes.
+type termARI struct {
+	mu    sync.Mutex
+	plays int
+}
+
+func (a *termARI) Originate(context.Context, string, string, []string, time.Duration) (string, error) {
+	return "", nil
+}
+func (a *termARI) Answer(context.Context, string) error { return nil }
+func (a *termARI) Play(context.Context, string, string, []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.plays++
+	return nil
+}
+func (a *termARI) played() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.plays
+}
+func (a *termARI) StopPlayback(context.Context, string) error { return nil }
+func (a *termARI) Hangup(context.Context, string) error       { return nil }
+
+type termStore struct{ ivr.AlertStore }
+
+func (termStore) AlertForAttempt(context.Context, uuid.UUID) (dispatch.ResponderAlert, uuid.UUID, error) {
+	return dispatch.ResponderAlert{AlertID: uuid.NewV7(), Facts: dispatch.MessageFacts{Reference: "1234567894", Severity: "red"}}, uuid.NewV7(), nil
+}
+
+type nopOpener struct{}
+
+func (nopOpener) Open(context.Context, crypto.Sealed, crypto.AAD) ([]byte, error) { return nil, nil }
+
+// PR #14 review: a leader term that ends while its stream is down (waiting to
+// reconnect) still stops its calls' timers, so no timer of the old term plays
+// or closes a call afterwards.
+func TestATermEndingWhileDisconnectedStopsTheCallTimers(t *testing.T) {
+	a := &termARI{}
+	calls, err := ivr.NewAlertCalls(ivr.AlertCallsConfig{ARI: a, Store: termStore{}, Opener: nopOpener{}, Dial: "PJSIP/{number}@trunk",
+		After: 20 * time.Second, NoInput: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	calls.Handle(ctx, ari.Event{Type: ari.EventStasisStart, ChannelID: "out-1", Args: []string{"alert", uuid.NewV7().String()}})
+	calls.Handle(ctx, ari.Event{Type: ari.EventPlaybackFinished, ChannelID: "out-1", PlaybackID: "out-1-a1"}) // the menu heard: its timer runs
+	var down atomic.Bool
+	st := &outboundStatus{connected: down.Load}
+	lctx, end := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- outboundTerm(func(c context.Context, _ func(ari.Event)) error { <-c.Done(); return c.Err() }, st,
+			ivr.Outbound{Alerts: calls})(lctx)
+	}()
+	end() // the term ends while the stream is still down
+	<-done
+	time.Sleep(300 * time.Millisecond)
+	if n := a.played(); n != 1 {
+		t.Fatalf("plays %d: a timer of the ended term played", n)
 	}
 }
