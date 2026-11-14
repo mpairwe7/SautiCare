@@ -269,6 +269,9 @@ func run(log *slog.Logger) error {
 	select {
 	case <-ctrlDone:
 	case <-sctx.Done():
+		// Escalations still being retried are reported lost before the exit
+		// (the runbook recovers them from the log's call IDs).
+		ctrl.FlushLost()
 	}
 	_ = adminSrv.Shutdown(sctx)
 	return nil

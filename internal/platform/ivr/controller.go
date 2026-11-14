@@ -155,17 +155,19 @@ func (w *worker) pop(ctx context.Context) (item, bool) {
 
 // Controller runs voice calls.
 type Controller struct {
-	ari     ARI
-	in      Intake
-	log     *slog.Logger
-	opt     Options
-	mu      sync.Mutex // guards workers and adopted only: no call's work runs under it
-	workers map[string]*worker
-	adopted map[string]bool // channels Adopt handed over that the last list still showed
-	adoptMu sync.Mutex      // one Adopt at a time
-	pending atomic.Int64    // events queued and not yet handled
-	running sync.WaitGroup  // workers, so Run returns after their hand-overs
-	retries sync.WaitGroup  // hand-over escalations being retried
+	ari       ARI
+	in        Intake
+	log       *slog.Logger
+	opt       Options
+	mu        sync.Mutex // guards workers and adopted only: no call's work runs under it
+	workers   map[string]*worker
+	adopted   map[string]bool // channels Adopt handed over that the last list still showed
+	adoptMu   sync.Mutex      // one Adopt at a time
+	pending   atomic.Int64    // events queued and not yet handled
+	running   sync.WaitGroup  // workers, so Run returns after their hand-overs
+	retries   sync.WaitGroup  // hand-over escalations being retried
+	pendingMu sync.Mutex
+	retrying  map[*pendingEscalation]struct{} // the escalations retries are recording
 }
 
 // New builds a controller.
@@ -188,7 +190,40 @@ func New(a ARI, in Intake, log *slog.Logger, opt Options) *Controller {
 	if opt.App == "" {
 		opt.App = "sauti-ivr"
 	}
-	return &Controller{ari: a, in: in, log: log, opt: opt, workers: map[string]*worker{}, adopted: map[string]bool{}}
+	return &Controller{ari: a, in: in, log: log, opt: opt, workers: map[string]*worker{}, adopted: map[string]bool{},
+		retrying: map[*pendingEscalation]struct{}{}}
+}
+
+// pendingEscalation is a hand-over escalation being retried.
+type pendingEscalation struct {
+	ch       string
+	call     intake.IVRCall
+	reported bool // its loss is logged and counted (once)
+}
+
+// FlushLost reports every hand-over escalation still being retried as lost,
+// at once: logged with its call and incident IDs and counted. main calls it
+// when the shutdown deadline passes before the retries end, so an exit
+// never drops one silently. A retry that ends later does not count it again.
+func (c *Controller) FlushLost() {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	for p := range c.retrying {
+		c.lostLocked(p, errors.New("ivr-controller stopped before the escalation was recorded"))
+	}
+}
+
+// lostLocked reports p lost once; c.pendingMu is held.
+func (c *Controller) lostLocked(p *pendingEscalation, err error) {
+	if p.reported {
+		return
+	}
+	p.reported = true
+	// IDs only: the runbook recovers it from the call ID.
+	c.log.Error("ivr hand-over escalation lost", "call", p.ch, "incident", p.call.IncidentID, "err", err)
+	if c.opt.OnEscalationLost != nil {
+		c.opt.OnEscalationLost()
+	}
 }
 
 // Wait returns once every call's worker, and every hand-over escalation
@@ -532,8 +567,11 @@ func (c *Controller) handOver(ctx context.Context, st *call) bool {
 	hctx, hcancel := c.op(ctx)
 	if err := c.in.HandOver(hctx, st.turn.Call, incident.ReasonVoiceHandedOver); err != nil {
 		c.log.Error("ivr hand-over escalation failed; retrying", "channel", st.ch, "err", err)
-		ch, call := st.ch, st.turn.Call
-		c.retries.Go(func() { c.retryHandOver(ctx, ch, call) })
+		p := &pendingEscalation{ch: st.ch, call: st.turn.Call}
+		c.pendingMu.Lock()
+		c.retrying[p] = struct{}{} // before the retry starts: FlushLost sees it at once
+		c.pendingMu.Unlock()
+		c.retries.Go(func() { c.retryHandOver(ctx, p) })
 	}
 	hcancel()
 	c.present(ctx, st)
@@ -562,7 +600,12 @@ func (c *Controller) handOver(ctx context.Context, st *call) bool {
 // When the controller stops (ctx ends), one last try is made at once and, if
 // it fails, the loss is logged and counted before Wait returns, so an exit
 // never drops a retry silently.
-func (c *Controller) retryHandOver(ctx context.Context, ch string, call intake.IVRCall) {
+func (c *Controller) retryHandOver(ctx context.Context, p *pendingEscalation) {
+	defer func() {
+		c.pendingMu.Lock()
+		delete(c.retrying, p)
+		c.pendingMu.Unlock()
+	}()
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	until := time.Now().Add(10 * time.Minute) // a local timer, not a recorded time
@@ -574,17 +617,15 @@ func (c *Controller) retryHandOver(ctx context.Context, ch string, call intake.I
 			stopping = true
 		}
 		octx, cancel := c.op(ctx)
-		err := c.in.HandOver(octx, call, incident.ReasonVoiceHandedOver)
+		err := c.in.HandOver(octx, p.call, incident.ReasonVoiceHandedOver)
 		cancel()
 		if err == nil {
 			return
 		}
 		if stopping || !time.Now().Before(until) {
-			// IDs only: the runbook recovers it from the call ID.
-			c.log.Error("ivr hand-over escalation lost", "call", ch, "incident", call.IncidentID, "err", err)
-			if c.opt.OnEscalationLost != nil {
-				c.opt.OnEscalationLost()
-			}
+			c.pendingMu.Lock()
+			c.lostLocked(p, err)
+			c.pendingMu.Unlock()
 			return
 		}
 	}

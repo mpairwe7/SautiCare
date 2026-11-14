@@ -914,3 +914,32 @@ func TestAnEscalationRefusedAtShutdownIsCountedBeforeExit(t *testing.T) {
 		}
 	})
 }
+
+// PR #14 review: when the shutdown deadline passes with a hand-over
+// escalation still being retried, FlushLost reports it lost at once (logged
+// and counted) so the exit never drops it silently; the retry's own end
+// does not count it twice.
+func TestFlushLostReportsEveryPendingRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &scripted{prompts: prompts(), failOn: "1", failHand: 1 << 20}
+		a := &fakeARI{}
+		var lost atomic.Int32
+		c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, OnEscalationLost: func() { lost.Add(1) }})
+		ctx, cancel := context.WithCancel(t.Context())
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		synctest.Wait()
+		pb, _ := a.lastPlay()
+		c.Handle(ctx, Event{Type: EventPlaybackStarted, ChannelID: "ch1", PlaybackID: pb})
+		c.Handle(ctx, key("ch1", "1")) // intake fails: the hand-over's escalation is refused and retried
+		synctest.Wait()
+		c.FlushLost() // the shutdown deadline passed
+		if n := lost.Load(); n != 1 {
+			t.Fatalf("lost %d at the deadline, want 1", n)
+		}
+		cancel()
+		c.Wait()
+		if n := lost.Load(); n != 1 {
+			t.Fatalf("lost %d after the retry ended, want it counted once", n)
+		}
+	})
+}
