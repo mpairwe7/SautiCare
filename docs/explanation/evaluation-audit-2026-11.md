@@ -214,7 +214,7 @@ Each entry gives the sources, the evidence on `main`, the failure scenario, the 
 - **Standard:** ISO/IEC 42001:2023 clause 9.1 (evaluate the effectiveness of controls; read from the publisher's preview, iso.org refused): https://assets.vde-verlag.de/iec-normen/preview-pdf/info_isoiec42001%7Bed1.0%7Den.pdf · NIST AI RMF 1.0 MEASURE 2.1 (AI 100-1, 2023-01-26; a revision is announced, none published): https://airc.nist.gov/airmf-resources/airmf/5-sec-core/ · Go `test2json` (`"Action":"skip"`): https://pkg.go.dev/cmd/test2json
 - **Decision:** EV-8. The integration job saves `go test -json` output; the freshness gate fails unless every Go pointer has a `pass` event for that test in that package; Python pointers must name a collected `TestCase` method. Whether a test guards its control is the mutation signal of V-20.
 
-### V-16 · High · (a), (c) · "No new kind of record without the DPO" has no gate, and M3 adds four tables first
+### V-16 · High · (a), (c) · The DPO sign-off for new record categories (hard constraint 12) has no gate, and M3 adds four tables first
 - **Sources:** EG-3.
 - **Evidence:** `threat-model/threats.yaml:194-207` (T-012) states the open gap: no gate requires DPO approval of a new record category; its pointers test the media store and strict configuration decoding. None of the three gates reads `db/*/migrations`. The M3 plan adds operational tables in 0029 to 0032 (field events, verification, responder reports, handover slips) before the gate planned for M5.
 - **Failure scenario:** an M3 migration adds a free-text column for a responder's note, which may hold a patient's or caller's name. It is a record kind the DPO never classified, with no retention category, so M6's destruction never selects it. The DPO learns of it from a data-subject request or a breach.
@@ -384,7 +384,7 @@ Each audit followed this prompt, with its lens and output file named in the task
 > ## System context
 > Sauti Dispatch is an emergency medical dispatch system for basic phones in Uganda.
 > - **Channels:** callers report over USSD and voice IVR (Asterisk ARI). Responders are alerted by SMS, USSD and voice, and coordinators by voice.
-> - **Code:** Go 1.27, PostgreSQL 18, five stores, and one SECURITY DEFINER write path. Triage is deterministic, and no model may lower a severity. There is a hash-chained audit ledger.
+> - **Code:** Go 1.27, PostgreSQL 18, five stores, and one SECURITY DEFINER write path. Triage is deterministic, and a severity can only ever rise. There is a hash-chained audit ledger.
 > - **Merged so far:** milestones M0–M2 and UX-1 are on `main`. M3–M7 and the infrastructure (P0) are planned.
 > - **Sources** (read them; do not guess):
 >   - repo: `<repository>`. Read it on `main`; open PRs may change it.
@@ -398,8 +398,8 @@ Each audit followed this prompt, with its lens and output file named in the task
 >   - governance: `governance/`, `threat-model/`, `tools/`
 >   - model card: `docs/MODEL_CARD.md`
 > - **Confidential governing texts:**
->   - `<scratchpad>/bp.txt` (Build Prompt)
->   - `<scratchpad>/stack.txt` (Scalable MVP Stack; see its "Principles and service levels", "Security and compliance controls", "Resilience and disaster recovery", "Edge cases" and "AI-augmented triage" sections)
+>   - a local, uncommitted text extract of the Build Prompt
+>   - a local, uncommitted text extract of the Scalable MVP Stack (see its "Principles and service levels", "Security and compliance controls", "Resilience and disaster recovery", "Edge cases" and "AI-augmented triage" sections)
 >
 >   Read them for intent. Never quote them; cite by title and section.
 >
