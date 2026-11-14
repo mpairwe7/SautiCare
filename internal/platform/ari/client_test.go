@@ -366,3 +366,18 @@ func TestClientReportsAChannelNoLongerInTheApplication(t *testing.T) {
 		t.Errorf("500: %v", err)
 	}
 }
+
+// PR #14 review: a channel continued into the dialplan is still live but no
+// longer in the application, so a fresh controller does not take it for an
+// orphan.
+func TestAContinuedChannelLeavesTheApplication(t *testing.T) {
+	f, c := newPair(t)
+	f.StartCall("chan-9", "+256772123456")
+	if err := c.Continue(context.Background(), "chan-9", "sauti-ivr-fallback", "s", 1); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.ListChannels(context.Background())
+	if err != nil || !reflect.DeepEqual(got, []Channel{{ID: "chan-9"}}) {
+		t.Fatalf("channels %+v %v", got, err)
+	}
+}

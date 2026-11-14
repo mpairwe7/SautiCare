@@ -183,7 +183,11 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		list := []channel{}
 		for id := range f.live {
-			list = append(list, channel{ID: id, Dialplan: dialplan{AppName: "Stasis", AppData: f.apps[id]}})
+			ch := channel{ID: id}
+			if app := f.apps[id]; app != "" {
+				ch.Dialplan = dialplan{AppName: "Stasis", AppData: app}
+			}
+			list = append(list, ch)
 		}
 		f.mu.Unlock()
 		slices.SortFunc(list, func(a, b channel) int { return strings.Compare(a.ID, b.ID) })
@@ -205,6 +209,7 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		f.mu.Lock()
 		f.continued[parts[2]] = q.Get("context") + "," + q.Get("extension") + "," + q.Get("priority")
+		delete(f.apps, parts[2]) // still live, now in the dialplan, not the application
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 		f.Emit(event{"type": "StasisEnd", "channel": map[string]any{"id": parts[2]}})
