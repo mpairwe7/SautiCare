@@ -547,3 +547,88 @@ func TestAnAnsweredBackupCallKeepsTheLineFree(t *testing.T) {
 		t.Fatalf("free lines asked for %v, want [2 1]: the answered backup call took a line", st.limits)
 	}
 }
+
+func tierRig(t *testing.T, a *alertARI, lines int, calls ...dispatch.CoordinatorCall) (*CoordinatorCalls, *coordStore) {
+	t.Helper()
+	st := &coordStore{calls: calls, acked: map[uuid.UUID]int64{}}
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", BackupEndpoint: "PJSIP/backup",
+		BackupAfterCalls: 3, Lines: lines, Retry: 2 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cc, st
+}
+
+func tierCall(inc uuid.UUID, seq int64) dispatch.CoordinatorCall {
+	return dispatch.CoordinatorCall{IncidentID: inc, Seq: seq, Reasons: []string{"triage_rule_error"}, Reference: "1234567894", Calls: 4}
+}
+
+// PR #14 review: a primary call answered and acknowledged before Originate
+// returns (StasisStart can come first) ends the round: the backup is not
+// rung for an escalation already acknowledged.
+func TestAnEarlyAcknowledgementStopsTheOtherCall(t *testing.T) {
+	a := &alertARI{}
+	inc := uuid.NewV7()
+	cc, st := tierRig(t, a, 1, tierCall(inc, 7))
+	a.onOriginate = func(ch string) {
+		if ch != "out-1" {
+			return
+		}
+		a.mu.Lock()
+		args := a.args[0]
+		a.mu.Unlock()
+		cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: ch, Args: args})
+		cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+	}
+	if _, err := cc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st.acked[inc] != 7 || !slices.Equal(a.originated, []string{"PJSIP/coordinators"}) || a.hangups("out-1") != 0 {
+		t.Fatalf("acknowledged %v, rang %v, hung up %v (the acknowledging call keeps its closing prompt)", st.acked, a.originated, a.hungUp)
+	}
+}
+
+// PR #14 review: the acknowledgement of an older round (seq 7, on its still
+// live backup call) hangs up only that round's calls; the newer round's
+// (seq 9) keep ringing, as its escalation is not acknowledged.
+func TestAnOldRoundsAcknowledgementLeavesTheNewRoundRinging(t *testing.T) {
+	a := &alertARI{}
+	inc := uuid.NewV7()
+	cc, st := tierRig(t, a, 2, tierCall(inc, 7))
+	if _, err := cc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st.calls = []dispatch.CoordinatorCall{tierCall(inc, 9)}
+	if _, err := cc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.originated) != 4 {
+		t.Fatalf("rang %v", a.originated)
+	}
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "out-2", Args: a.args[1]})
+	cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "out-2", Digit: "1"})
+	if st.acked[inc] != 7 || a.hangups("out-1") != 1 || a.hangups("out-3") != 0 || a.hangups("out-4") != 0 {
+		t.Fatalf("acknowledged %v hung up %v", st.acked, a.hungUp)
+	}
+}
+
+// PR #14 review: an answered sibling Asterisk will not hang up still holds
+// its line (and keeps its no-input time) until it ends.
+func TestASiblingThatCannotBeHungUpKeepsItsLine(t *testing.T) {
+	a := &alertARI{failHangup: map[string]bool{"out-1": true}}
+	inc := uuid.NewV7()
+	cc, _ := tierRig(t, a, 1, tierCall(inc, 7))
+	if _, err := cc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "out-1", Args: a.args[0]})
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "out-2", Args: a.args[1]})
+	cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "out-2", Digit: "1"})
+	cc.mu.Lock()
+	_, busy := cc.busy["out-1"]
+	_, tracked := cc.calls["out-1"]
+	cc.mu.Unlock()
+	if !busy || !tracked {
+		t.Fatalf("the sibling that is still live was released: busy %v tracked %v", busy, tracked)
+	}
+}

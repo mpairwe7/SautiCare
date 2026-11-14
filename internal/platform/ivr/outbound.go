@@ -410,11 +410,13 @@ type CoordinatorCalls struct {
 	// StasisEnd, a hang-up after no input, or a new term finding the channel
 	// gone (reconcile).
 	busy map[string]time.Time
-	// legs holds the channels of an incident's last tier-2 round (the line
-	// and the backup), so the first acknowledgement hangs up the other.
-	// shortcut: an incident closed without an acknowledgement keeps its entry
-	// until the process restarts; prune it if tier 2 rings often.
-	legs map[uuid.UUID][]string
+	// rounds holds each incident's tier-2 rounds still live (the line and
+	// the backup rung together), by the seq they announce, so an
+	// acknowledgement hangs up only the calls it covers, and a call placed
+	// after it is hung up at once.
+	// shortcut: rounds never acknowledged stay until the process restarts
+	// (at most maxRounds per incident); prune by age if tier 2 rings often.
+	rounds map[uuid.UUID][]*tierRound
 }
 
 // NewCoordinatorCalls validates the wiring.
@@ -438,7 +440,7 @@ func NewCoordinatorCalls(c CoordinatorCallsConfig) (*CoordinatorCalls, error) {
 	if c.BackupAfterCalls <= 0 {
 		c.BackupAfterCalls = 3
 	}
-	return &CoordinatorCalls{c: c, calls: map[string]*coordinatorCall{}, busy: map[string]time.Time{}, legs: map[uuid.UUID][]string{}}, nil
+	return &CoordinatorCalls{c: c, calls: map[string]*coordinatorCall{}, busy: map[string]time.Time{}, rounds: map[uuid.UUID][]*tierRound{}}, nil
 }
 
 // RunOnce rings the coordinator line about each escalation due now.
@@ -472,8 +474,14 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 		if k.c.BackupEndpoint != "" && d.Calls > k.c.BackupAfterCalls {
 			endpoints = append(endpoints, k.c.BackupEndpoint)
 		}
-		var legs []string
+		var round *tierRound
+		if len(endpoints) > 1 {
+			round = k.beginRound(d.IncidentID, d.Seq)
+		}
 		for i, endpoint := range endpoints {
+			if round != nil && round.isAcked(&k.mu) {
+				break // acknowledged on an earlier call of this round
+			}
 			legArgs := args
 			if i > 0 {
 				legArgs = append(slices.Clone(args), backupArg)
@@ -486,7 +494,10 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 				k.c.Log.Error("coordinator call not placed", "incident", d.IncidentID, "calls", d.Calls, "tier", i+1, "err", err)
 				continue
 			}
-			legs = append(legs, ch)
+			if round != nil && !k.addLeg(round, ch) {
+				k.hangUpLeg(ctx, ch) // the round was acknowledged while this call was placed
+				continue
+			}
 			if i > 0 {
 				continue
 			}
@@ -497,11 +508,6 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 			if until, answered := k.busy[ch]; !answered || !until.IsZero() {
 				k.busy[ch] = now.Add(k.c.Ring + ringMargin)
 			}
-			k.mu.Unlock()
-		}
-		if len(endpoints) > 1 {
-			k.mu.Lock()
-			k.legs[d.IncidentID] = legs
 			k.mu.Unlock()
 		}
 	}
@@ -703,7 +709,7 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 			st.hangupOn = endAfter(op, k.c.ARI, e.ChannelID, fmt.Sprintf("%s-c%d", e.ChannelID, st.plays),
 				[]string{"sauti/" + k.c.Language + "/escalation-acknowledged"})
 			st.current = st.hangupOn
-			k.hangUpOtherLegs(op, st.incident, e.ChannelID)
+			k.hangUpOtherLegs(op, st.incident, st.seq, e.ChannelID)
 		case "3":
 			k.play(op, e.ChannelID, st, k.sounds(st))
 		}
@@ -727,17 +733,76 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 }
 
 // hangUpOtherLegs ends the other tier's call about an acknowledged incident.
-func (k *CoordinatorCalls) hangUpOtherLegs(ctx context.Context, inc uuid.UUID, acked string) {
+func (k *CoordinatorCalls) hangUpOtherLegs(ctx context.Context, inc uuid.UUID, seq int64, acked string) {
 	k.mu.Lock()
-	legs := k.legs[inc]
-	delete(k.legs, inc)
+	var legs []string
+	var live []*tierRound
+	for _, r := range k.rounds[inc] {
+		if r.seq > seq {
+			live = append(live, r) // a newer escalation, not acknowledged
+			continue
+		}
+		r.acked, r.ackedBy = true, acked
+		legs = append(legs, r.legs...)
+	}
+	k.rounds[inc] = live
 	k.mu.Unlock()
 	for _, ch := range legs {
 		if ch != acked {
-			k.hangup(ctx, ch)
-			k.release(ch, nil)
+			k.hangUpLeg(ctx, ch)
 		}
 	}
+}
+
+// tierRound is one tier-2 round: the calls placed for one claimed seq.
+type tierRound struct {
+	seq     int64
+	legs    []string
+	acked   bool
+	ackedBy string // the call that acknowledged it: never hung up for it
+}
+
+// maxRounds bounds the rounds kept per incident.
+const maxRounds = 4
+
+func (k *CoordinatorCalls) beginRound(inc uuid.UUID, seq int64) *tierRound {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	r := &tierRound{seq: seq}
+	k.rounds[inc] = append(k.rounds[inc], r)
+	if n := len(k.rounds[inc]); n > maxRounds {
+		k.rounds[inc] = k.rounds[inc][n-maxRounds:]
+	}
+	return r
+}
+
+func (r *tierRound) isAcked(mu *sync.Mutex) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return r.acked
+}
+
+// addLeg records a call placed for the round. It reports false for a call
+// to hang up: the round was acknowledged meanwhile, on another call.
+func (k *CoordinatorCalls) addLeg(r *tierRound, ch string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if r.acked {
+		return ch == r.ackedBy
+	}
+	r.legs = append(r.legs, ch)
+	return true
+}
+
+// hangUpLeg ends another call of an acknowledged round. Its line is freed
+// only once Asterisk has taken the hang-up; a call still live keeps its line
+// and its no-input time.
+func (k *CoordinatorCalls) hangUpLeg(ctx context.Context, ch string) {
+	if _, err := bounded(context.WithoutCancel(ctx), k.c.OpTimeout, func(c context.Context) (struct{}, error) { return struct{}{}, k.c.ARI.Hangup(c, ch) }); err != nil {
+		k.c.Log.Error("hanging up the other coordinator call failed; its line stays held", "err", err)
+		return
+	}
+	k.release(ch, nil)
 }
 
 func (k *CoordinatorCalls) sounds(st *coordinatorCall) []string {

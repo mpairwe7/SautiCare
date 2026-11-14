@@ -35,6 +35,7 @@ type alertARI struct {
 	// event handled before the caller stores it).
 	onOriginate func(channelID string)
 	gone        map[string]bool // channels that no longer exist (ChannelExists)
+	failHangup  map[string]bool // channels Asterisk refuses to hang up
 	existsErr   error           // ChannelExists fails
 }
 
@@ -98,6 +99,9 @@ func (a *alertARI) played() [][]string {
 func (a *alertARI) Hangup(_ context.Context, ch string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.failHangup[ch] {
+		return errors.New("asterisk: hangup failed")
+	}
 	a.hungUp = append(a.hungUp, ch)
 	return nil
 }
