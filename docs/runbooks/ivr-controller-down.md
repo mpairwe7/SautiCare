@@ -27,7 +27,7 @@ The toll-free line is answered by Asterisk, which hands each call to the `sauti-
 ## Impact
 Voice intake falls back to people: callers hear the fallback message and are put through to an on-call coordinator, who takes the details by voice. **USSD intake is unaffected** and remains the primary channel. Calls already in progress keep every answer given so far, and a redial within 10 minutes resumes the incident on either channel (a redial also records any classification or T2 a failed request missed).
 
-Also stopped: coordinator escalation calls, responder voice alerts (SMS still goes), forwarding calls and the masked bridge. ivr-controller places all of them. **The dispatch path continues** (dispatch-worker issues alerts by SMS), but nobody is rung about an escalation: escalations are still recorded, and intake-gw still exports the age of the oldest unacknowledged one.
+Also stopped: coordinator escalation calls, responder voice alerts (SMS still goes), forwarding calls and the masked bridge. ivr-controller places all of them. **The dispatch path continues** (dispatch-worker issues alerts by SMS), but nobody is rung about an escalation: escalations are still recorded, and intake-gw still exports the age of the oldest unacknowledged one. A call that reaches the fallback while ivr-controller is down is not recorded and not escalated; only the live dial reaches a coordinator, and the caller's open incident stays covered by intake-gw's sweeper, watchdog and dead-man gauge.
 
 ## Diagnosis
 1. Process: `systemctl status ivr-controller` (Quadlet unit, P0).

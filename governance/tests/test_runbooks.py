@@ -28,3 +28,23 @@ class StaleEscalationPhrasesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+SENTENCE = (
+    "A call that reaches the fallback while ivr-controller is down is not recorded and not escalated; "
+    "only the live dial reaches a coordinator, and the caller's open incident stays covered by "
+    "intake-gw's sweeper, watchdog and dead-man gauge."
+)
+
+
+class FallbackWhileDownTest(unittest.TestCase):
+    """With the Stasis application down, nothing that runs can identify the
+    call's incident, so the fallback records nothing (ADR-0034): the runbook
+    and the ADR say so, in the Impact section and the hand-over section."""
+
+    def test_ivr_down_runbook_says_fallback_calls_are_not_recorded(self):
+        runbook = (ROOT / "docs" / "runbooks" / "ivr-controller-down.md").read_text()
+        impact = runbook.split("## Impact", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(SENTENCE, impact)
+        adr = (ROOT / "docs" / "adr" / "ADR-0034-every-failure-path-ends-with-a-person.md").read_text()
+        self.assertIn(SENTENCE, adr)
