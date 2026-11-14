@@ -64,10 +64,14 @@ func (a *alertARI) ChannelExists(_ context.Context, ch string) (bool, error) {
 	return !a.gone[ch], nil
 }
 func (a *alertARI) Answer(_ context.Context, ch string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.answered = append(a.answered, ch)
 	return nil
 }
 func (a *alertARI) Play(_ context.Context, _, pb string, sounds []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.failPlay {
 		return errors.New("playback refused")
 	}
@@ -79,7 +83,17 @@ func (a *alertARI) Play(_ context.Context, _, pb string, sounds []string) error 
 // finish reports the last prompt as played to the end.
 func (a *alertARI) finish(t *testing.T, h interface{ Handle(context.Context, Event) }, ch string) {
 	t.Helper()
-	h.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: a.pbs[len(a.pbs)-1]})
+	a.mu.Lock()
+	pb := a.pbs[len(a.pbs)-1]
+	a.mu.Unlock()
+	h.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: ch, PlaybackID: pb})
+}
+
+// played copies the prompts played so far; timer goroutines append to them.
+func (a *alertARI) played() [][]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.plays)
 }
 func (a *alertARI) Hangup(_ context.Context, ch string) error {
 	a.mu.Lock()
@@ -335,23 +349,23 @@ func TestAnUnansweredAlertCallRepeatsThenHangsUp(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c, a, st := alertRig(t, false)
 		ch := answer(t, c, a, st)
-		first := a.plays[0]
+		first := a.played()[0]
 		a.finish(t, c, ch) // heard to the end; no key
 		time.Sleep(10*time.Second - time.Millisecond)
 		synctest.Wait()
-		if len(a.plays) != 1 {
-			t.Fatalf("replayed before the no-input time: %v", a.plays)
+		if len(a.played()) != 1 {
+			t.Fatalf("replayed before the no-input time: %v", a.played())
 		}
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
-		if len(a.plays) != 2 || !slices.Equal(a.plays[1], first) {
-			t.Fatalf("plays %v, want the alert again", a.plays)
+		if len(a.played()) != 2 || !slices.Equal(a.played()[1], first) {
+			t.Fatalf("plays %v, want the alert again", a.played())
 		}
 		a.finish(t, c, ch)
 		time.Sleep(10 * time.Second)
 		synctest.Wait()
-		if last := a.plays[len(a.plays)-1]; !slices.Equal(last, []string{"sauti/en/alert-no-input-closing"}) || a.hangups(ch) != 0 {
-			t.Fatalf("plays %v hangups %d", a.plays, a.hangups(ch))
+		if last := a.played()[len(a.played())-1]; !slices.Equal(last, []string{"sauti/en/alert-no-input-closing"}) || a.hangups(ch) != 0 {
+			t.Fatalf("plays %v hangups %d", a.played(), a.hangups(ch))
 		}
 		a.finish(t, c, ch)
 		if a.hangups(ch) != 1 || st.accepted != 0 || len(st.declined) != 0 {
@@ -359,8 +373,8 @@ func TestAnUnansweredAlertCallRepeatsThenHangsUp(t *testing.T) {
 		}
 		time.Sleep(time.Minute)
 		synctest.Wait()
-		if len(a.plays) != 3 {
-			t.Fatalf("played on after closing: %v", a.plays)
+		if len(a.played()) != 3 {
+			t.Fatalf("played on after closing: %v", a.played())
 		}
 	})
 }
