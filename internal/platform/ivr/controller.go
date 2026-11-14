@@ -290,10 +290,9 @@ func (c *Controller) run(ctx context.Context, w *worker) {
 	for !st.ended {
 		it, ok := w.pop(ctx)
 		if !ok {
-			// Stopping with the call live: a coordinator takes it.
-			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			c.handOver(sctx, st)
-			cancel()
+			// Stopping with the call live: a coordinator takes it. Each step
+			// has its own OpTimeout, outliving ctx (c.op).
+			c.handOver(ctx, st)
 			break
 		}
 		c.step(ctx, st, it)
