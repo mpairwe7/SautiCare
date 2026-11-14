@@ -144,7 +144,7 @@ The phone ends the session with:
 
 ```text
 HELP IS COMING
-Incident 811 793 5418
+Incident 284 262 7491
 PENDING-TOOL1 first aid line
 ```
 
@@ -152,13 +152,16 @@ Your incident number will differ.
 
 Then:
 
-1. **The responders get the alert.** Within a few seconds, all five Test Ward 1 responders have this SMS:
-   `PENDING-SMS Sauti 811 793 5418: RED Injury or accident. Dial *384*2# to accept or decline.`
+1. **The responders get the alert.** Within a few seconds, all five Test Ward 1 responders (VHT 1 to 3 and Transporters 1 and 2) have this SMS:
+   `PENDING-SMS Sauti 284 262 7491: RED Injury or accident. Dial *384*2# to accept or decline.`
    The board shows the incident as **RED** with its timeline.
-2. **VHT 1 accepts.** Open **VHT 1**, dial `*384*2#`, and the menu shows the alert with `1 Accept`, `2 Decline` and `3 Availability`. Press `1`:
-   `PENDING-RESPONDER Accepted 811 793 5418. Go to Test Clinic 1, Test Ward 1. Caller: Sauti bridge line.`
+2. **VHT 1 accepts.** Open **VHT 1** and dial `*384*2#`. The menu shows `PENDING-RESPONDER Sauti 284 262 7491: RED Injury or accident` with `1 Accept`, `2 Decline` and `3 Availability`. Press `1`:
+   `PENDING-RESPONDER Accepted 284 262 7491. Go to Test Clinic 1, Test Ward 1. Caller: Sauti bridge line.`
    The responder never sees the caller's number, only the masked bridge line.
-3. **The first acceptance wins.** A few seconds later, the other responders get `... no longer needed. Thank you.`, and their `*384*2#` menu says `Sauti: no active alert.` Caller A's inbox gets `... help is on the way.` The board shows the incident as **assigned** to VHT 1.
+3. **The first acceptance wins, for each role.** A few seconds later, VHT 2 and VHT 3 get `PENDING-SMS Sauti 284 262 7491: no longer needed. Thank you.`, and their `*384*2#` menu shows `PENDING-RESPONDER Sauti: no active alert.` with only `3 Availability`. Caller A's inbox gets `PENDING-SMS Sauti 284 262 7491: help is on the way.` The transporters keep their alerts: a transporter accepts separately.
+4. **Transporter 1 accepts.** Open **Transporter 1**, dial `*384*2#` and press `1`. The menu is the same as VHT 1's, and the answer is:
+   `PENDING-RESPONDER Accepted 284 262 7491. Go to Test Clinic 1, Test Ward 1. Caller: Sauti bridge line.`
+   Transporter 2 then gets `PENDING-SMS Sauti 284 262 7491: no longer needed. Thank you.` The board shows the incident as **Help assigned**, with VHT 1 and Transporter 1 accepted and the other three alerts stood down.
 
 ### Scenario B: a responder declines (about 1 minute)
 
@@ -168,7 +171,7 @@ On **VHT 4**, dial `*384*2#` and press `2`. The screen shows `PENDING-RESPONDER 
 
 Pressing `3` on a responder menu shows the availability screen instead: `You are available until …`, with `1 Available for 8 hours` and `2 Off duty`.
 
-### Scenario C: nobody nearby, so a coordinator is called (about 1 minute)
+### Scenario C: nobody nearby, so an escalation is recorded (about 1 minute)
 
 Press **Reset demo** first, if you like. On **Caller B**, dial `*384*1#`, then answer:
 
@@ -183,7 +186,9 @@ Press **Reset demo** first, if you like. On **Caller B**, dial `*384*1#`, then a
 | `1` | Test Market 3 |
 | `1` | This number |
 
-The caller still hears `HELP IS COMING` with an incident number. No responder can be alerted, so within about 20 seconds the board shows the incident with **Escalated to a coordinator**. Nobody is left without a person.
+The caller still sees `HELP IS COMING` with an incident number. No responder can be alerted, so within a few seconds the board marks the incident (GREEN) **Escalated to a coordinator** and lists two escalations, one for each role, with the reason "no eligible responder".
+
+The demo records the escalation but calls nobody: voice is not part of it. In production, each recorded escalation makes ivr-controller call a coordinator ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)).
 
 ## 8. Verify the audit ledger
 
