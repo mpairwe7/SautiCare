@@ -44,6 +44,7 @@ const app = {
   open: new Set(),
   skew: 0, // server clock minus browser clock, ms
   boardKey: "",
+  gen: 0, // bumped by clearRun: a response to a request from an earlier run is dropped
 };
 
 // ---------- Phones ----------
@@ -352,8 +353,10 @@ async function verify() {
   out.hidden = false;
   out.className = "audit";
   out.replaceChildren(h("p", { text: "Signing a checkpoint and verifying the ledger…" }));
+  const gen = app.gen;
   const { status, data: r } = await api("POST", "api/audit", {});
   btn.disabled = app.phase !== "ready";
+  if (gen !== app.gen) return; // the run was reset while the ledger was verified
   if (status !== 200) {
     out.className = "audit fail";
     out.replaceChildren(h("h3", { text: "Verification did not run" }), h("p", { text: r.error || "Try again." }));
@@ -387,6 +390,7 @@ async function reset() {
 // clearRun forgets everything that belonged to the run that ended, whether
 // this browser or another one reset it: sessions, inboxes, board, audit.
 function clearRun() {
+  app.gen++;
   app.inbox = {};
   app.seen = {};
   app.phones = [];
@@ -438,7 +442,9 @@ async function pollState() {
 
 async function pollData() {
   if (app.phase !== "ready") return;
+  const gen = app.gen;
   const [sms, board] = await Promise.all([api("GET", "api/sms"), api("GET", "api/board")]);
+  if (gen !== app.gen) return; // started before a reset: the data belongs to the old run
   if (sms.status === 200) {
     app.inbox = sms.data;
     callerPhone.renderInbox();
