@@ -39,7 +39,8 @@ type fakeARI struct {
 	seq          []string      // reference, hand-over escalation and continue requests, in order
 	failRef      bool
 	failHangup   bool
-	lists        int // ListChannels requests
+	lists        int    // ListChannels requests
+	onList       func() // runs inside ListChannels, before it answers
 }
 
 func (f *fakeARI) SetReference(_ context.Context, ch, ref string) error {
@@ -67,6 +68,12 @@ func (f *fakeARI) requests() []string {
 // ListChannels reports channels only when the test set them; otherwise it
 // fails, as an unreachable Asterisk does (a silent call is then hung up).
 func (f *fakeARI) ListChannels(context.Context) ([]ari.Channel, error) {
+	f.mu.Lock()
+	hook := f.onList
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lists++
@@ -164,6 +171,7 @@ type scripted struct {
 	failHand  int                 // HandOver fails this many times first
 	log       *fakeARI            // where HandOver notes itself among the ARI requests
 	onHand    func(callID string) // runs inside HandOver, before it returns
+	recorded  int                 // HandOver requests that succeeded
 }
 
 func (s *scripted) HandOver(_ context.Context, c intake.IVRCall, reason string) error {
@@ -182,6 +190,7 @@ func (s *scripted) HandOver(_ context.Context, c intake.IVRCall, reason string) 
 		s.failHand--
 		return errors.New("store down")
 	}
+	s.recorded++
 	return nil
 }
 
@@ -1079,4 +1088,78 @@ func TestTheReadoptionStopsAtShutdown(t *testing.T) {
 			t.Fatalf("adoptions %d while running, %d after the stop: want retries while it runs and none after", before, after)
 		}
 	})
+}
+
+// PR #14 review (round 5): the store refuses escalations while Asterisk
+// refuses transfers, so the call is adopted again every readoptAfter. The
+// adoptions share the call's one escalation recorder: one retry loop runs,
+// and once the store is back the call is escalated once.
+func TestReadoptionsShareOneEscalationRecorder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &scripted{prompts: prompts(), failHand: 1 << 20}
+		a := &fakeARI{failAnswer: true, failContinue: true, failHangup: true, channels: []ari.Channel{{ID: "ch1", App: "sauti-ivr"}}}
+		c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+		ctx, cancel := context.WithCancel(t.Context())
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		time.Sleep(3*readoptAfter + time.Second) // three re-adoptions during the outage
+		synctest.Wait()
+		if n := len(s.handedOver()); n != 4 {
+			t.Fatalf("escalation attempts %d in 16 s: want one recorder (its attempt, then one every 5 s)", n)
+		}
+		a.mu.Lock()
+		a.failContinue, a.failHangup = false, false // Asterisk is back: the next adoption puts the call through
+		a.mu.Unlock()
+		time.Sleep(readoptAfter)
+		synctest.Wait()
+		s.mu.Lock()
+		s.failHand = 0 // the store is back
+		s.mu.Unlock()
+		time.Sleep(readoptAfter)
+		synctest.Wait()
+		s.mu.Lock()
+		recorded := s.recorded
+		s.mu.Unlock()
+		if recorded != 1 || a.count(&a.continues) != 1 {
+			t.Fatalf("escalations recorded %d, continues %d: want one of each", recorded, a.count(&a.continues))
+		}
+		cancel()
+		c.Wait()
+	})
+}
+
+// PR #14 review (round 5): the shutdown deadline passes while Adopt is
+// still discovering its orphans (the channel list in flight). The flush
+// waits for their registration, so each discovered orphan is reported
+// lost exactly once, before main returns.
+func TestTheFlushWaitsForOrphansBeingDiscovered(t *testing.T) {
+	var lost atomic.Int32
+	listing, release, flushed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	s := &scripted{prompts: prompts()}
+	s.onHand = func(string) { <-flushed } // no escalation is recorded before the deadline
+	a := &fakeARI{channels: []ari.Channel{{ID: "ch8", App: "sauti-ivr"}, {ID: "ch9", App: "sauti-ivr"}}}
+	a.onList = func() {
+		close(listing)
+		<-release
+	}
+	c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour, OnEscalationLost: func() { lost.Add(1) }})
+	adopted := make(chan error, 1)
+	go func() { adopted <- c.Adopt(context.Background()) }()
+	<-listing
+	go func() { c.FlushLost(); close(flushed) }()
+	select {
+	case <-flushed:
+		t.Fatal("the flush returned while orphans were being discovered")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-flushed
+	if n := lost.Load(); n != 2 {
+		t.Fatalf("lost %d at the flush, want both discovered orphans", n)
+	}
+	if err := <-adopted; err != nil {
+		t.Fatal(err)
+	}
+	if n := lost.Load(); n != 2 || len(s.handedOver()) > 1 {
+		t.Fatalf("lost %d, escalations attempted %v: want each reported once and none started after the flush", n, s.handedOver())
+	}
 }

@@ -156,21 +156,25 @@ func (w *worker) pop(ctx context.Context) (item, bool) {
 
 // Controller runs voice calls.
 type Controller struct {
-	ari        ARI
-	in         Intake
-	log        *slog.Logger
-	opt        Options
-	mu         sync.Mutex // guards workers and adopted only: no call's work runs under it
-	workers    map[string]*worker
-	adopted    map[string]bool // channels Adopt handed over that the last list still showed
-	adoptMu    sync.Mutex      // one Adopt at a time
-	pending    atomic.Int64    // events queued and not yet handled
-	running    sync.WaitGroup  // workers, so Run returns after their hand-overs
-	retries    sync.WaitGroup  // hand-over escalations being retried
+	ari     ARI
+	in      Intake
+	log     *slog.Logger
+	opt     Options
+	mu      sync.Mutex // guards workers and adopted only: no call's work runs under it
+	workers map[string]*worker
+	adopted map[string]bool // channels Adopt handed over that the last list still showed
+	adoptMu sync.Mutex      // one Adopt at a time
+	// discoverMu is held by Adopt from its channel list through its
+	// orphans' registration, and by FlushLost: a flush either reports the
+	// orphans being discovered or runs first, and Adopt then reports them.
+	discoverMu sync.Mutex
+	pending    atomic.Int64   // events queued and not yet handled
+	running    sync.WaitGroup // workers, so Run returns after their hand-overs
+	retries    sync.WaitGroup // hand-over escalations being retried
 	pendingMu  sync.Mutex
-	retrying   map[*pendingEscalation]struct{} // the escalations being recorded
-	flushed    bool                            // FlushLost ran: the process is exiting
-	readopting atomic.Bool                     // a re-adoption is scheduled
+	escalating map[string]*pendingEscalation // per call ID, the one recorder of its escalation not yet recorded
+	flushed    bool                          // FlushLost ran: the process is exiting
+	readopting atomic.Bool                   // a re-adoption is scheduled
 }
 
 // New builds a controller.
@@ -194,7 +198,7 @@ func New(a ARI, in Intake, log *slog.Logger, opt Options) *Controller {
 		opt.App = "sauti-ivr"
 	}
 	return &Controller{ari: a, in: in, log: log, opt: opt, workers: map[string]*worker{}, adopted: map[string]bool{},
-		retrying: map[*pendingEscalation]struct{}{}}
+		escalating: map[string]*pendingEscalation{}}
 }
 
 // escalate records the hand-over's escalation. It is registered before the
@@ -205,11 +209,15 @@ func (c *Controller) escalate(ctx context.Context, st *call) {
 	c.pendingMu.Lock()
 	p := st.pending
 	if p == nil {
-		p = c.registerLocked(st)
+		var fresh bool
+		if p, fresh = c.registerLocked(st); !fresh {
+			c.pendingMu.Unlock()
+			return // the call's recorder is still at work (an earlier hand-over of it)
+		}
 	}
 	if c.flushed {
 		c.lostLocked(p, errStopping)
-		delete(c.retrying, p)
+		c.settledLocked(p)
 		c.pendingMu.Unlock()
 		return
 	}
@@ -221,10 +229,10 @@ func (c *Controller) escalate(ctx context.Context, st *call) {
 	defer c.pendingMu.Unlock()
 	switch {
 	case err == nil:
-		delete(c.retrying, p)
+		c.settledLocked(p)
 	case c.flushed: // the process is exiting: no retry would outlive it
 		c.lostLocked(p, err)
-		delete(c.retrying, p)
+		c.settledLocked(p)
 	default:
 		c.log.Error("ivr hand-over escalation failed; retrying", "channel", st.ch, "err", err)
 		c.retries.Go(func() { c.retryHandOver(ctx, p) })
@@ -232,11 +240,25 @@ func (c *Controller) escalate(ctx context.Context, st *call) {
 }
 
 // registerLocked registers a call's escalation as not yet recorded, so
-// FlushLost reports it. Under pendingMu.
-func (c *Controller) registerLocked(st *call) *pendingEscalation {
+// FlushLost reports it, and reports whether it is new: a call keeps one
+// recorder (its first attempt, then its retries) until the escalation is
+// recorded or reported lost, however often it is handed over meanwhile.
+// Under pendingMu.
+func (c *Controller) registerLocked(st *call) (*pendingEscalation, bool) {
+	if p := c.escalating[st.ch]; p != nil {
+		return p, false
+	}
 	p := &pendingEscalation{ch: st.ch, call: st.turn.Call}
-	c.retrying[p] = struct{}{}
-	return p
+	c.escalating[st.ch] = p
+	return p, true
+}
+
+// settledLocked ends p's registration: recorded, or reported lost. Under
+// pendingMu.
+func (c *Controller) settledLocked(p *pendingEscalation) {
+	if c.escalating[p.ch] == p {
+		delete(c.escalating, p.ch)
+	}
 }
 
 // errStopping is the loss reported for an escalation the flush stopped.
@@ -257,10 +279,12 @@ type pendingEscalation struct {
 // starts: a later hand-over is reported lost instead. An attempt that
 // succeeds later is not counted again; recovering it is a no-op.
 func (c *Controller) FlushLost() {
+	c.discoverMu.Lock() // waits for orphans being discovered to be registered (bounded: one list request)
+	defer c.discoverMu.Unlock()
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
 	c.flushed = true // from now on no hand-over escalation starts
-	for p := range c.retrying {
+	for _, p := range c.escalating {
 		c.lostLocked(p, errStopping)
 	}
 }
@@ -350,6 +374,13 @@ func (c *Controller) Adopt(ctx context.Context) error {
 	// both hand the same orphan over (review R1).
 	c.adoptMu.Lock()
 	defer c.adoptMu.Unlock()
+	c.discoverMu.Lock()
+	discovering := true
+	defer func() {
+		if discovering {
+			c.discoverMu.Unlock()
+		}
+	}()
 	octx, cancel := c.op(ctx)
 	chans, err := c.ari.ListChannels(octx)
 	cancel()
@@ -377,17 +408,26 @@ func (c *Controller) Adopt(ctx context.Context) error {
 		}
 	}
 	c.mu.Unlock()
-	// Every orphan's escalation is registered before the first is handled:
-	// should the shutdown deadline pass while they are handled one by one,
-	// FlushLost reports the queued ones too.
+	// Every orphan's escalation is registered before the first is handled
+	// and before a flush can run (discoverMu): should the shutdown deadline
+	// pass while they are handled one by one, FlushLost reports the queued
+	// ones too; after a flush, each is reported lost at once. An orphan whose
+	// recorder is still at work (an earlier adoption) keeps that one.
 	queued := make([]*call, len(orphans))
 	c.pendingMu.Lock()
 	for i, ch := range orphans {
 		// The channel ID is the call ID: HandOver finds the incident from it.
 		queued[i] = &call{ch: ch, turn: intake.IVRTurn{Call: intake.IVRCall{CallID: ch}}}
-		queued[i].pending = c.registerLocked(queued[i])
+		if p, fresh := c.registerLocked(queued[i]); fresh {
+			queued[i].pending = p
+		}
+		if c.flushed {
+			c.lostLocked(c.escalating[ch], errStopping)
+		}
 	}
 	c.pendingMu.Unlock()
+	c.discoverMu.Unlock()
+	discovering = false
 	for _, st := range queued {
 		ch := st.ch
 		c.log.Warn("ivr call found without a worker; handing over", "channel", ch)
@@ -683,7 +723,9 @@ func (c *Controller) handOver(ctx context.Context, st *call) bool {
 }
 
 // retryHandOver records a refused hand-over escalation, every 5 s for up to
-// 10 minutes; its key (the call) keeps it to one event. A durable retry is
+// 10 minutes. It is the call's only recorder until it ends (escalating, per
+// call ID), and the store's idempotency key, made from the call ID, keeps
+// the escalation to one event. A durable retry is
 // not possible: the store that refused it is the only place it could go,
 // and a database outage pages through P0 alerting.
 //
@@ -693,7 +735,7 @@ func (c *Controller) handOver(ctx context.Context, st *call) bool {
 func (c *Controller) retryHandOver(ctx context.Context, p *pendingEscalation) {
 	defer func() {
 		c.pendingMu.Lock()
-		delete(c.retrying, p)
+		c.settledLocked(p)
 		c.pendingMu.Unlock()
 	}()
 	t := time.NewTicker(5 * time.Second)
