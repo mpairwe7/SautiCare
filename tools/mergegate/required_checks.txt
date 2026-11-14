@@ -1,0 +1,12 @@
+# The CI jobs a pull request must pass, by the name GitHub reports
+# (.github/workflows/ci.yml job names; ruleset 27260742 requires the same).
+# A new CI job is added here and to the ruleset in the same pull request.
+format, vet, boundaries, sqlc
+golangci-lint
+unit tests (race)
+integration + e2e (PostgreSQL 18.6)
+fuzz smoke
+vulnerabilities and licences
+secret scan (full history)
+CycloneDX SBOM
+governance and living docs
