@@ -28,7 +28,7 @@
 - **Server-side time (rule 4).** Tests compare T-times from the database's `recorded_at`, never from Go's clock. The clock-offset gauge (EV-12) stamps nothing. The merge gate's quiet window uses the local clock: it is tooling outside Sauti.
 - **Never reveal a caller's number (rule 5).** Every new test that renders, logs or lists anything scans its output for each fixture number in every form (E.164, national, digits only). New CLI output prints references, never numbers. New metric labels are closed sets.
 - **The audit holds IDs only (rule 8).** No task adds ledger content.
-- **No new record kind without the DPO (rule 12).** No task adds a table or a column. Migration 0039 adds a trigger. The abandoned-call list (EV-5) reads existing flags. The record-category register (EV-7) is governance data about records, owned by the DPO.
+- **No new record kind without the DPO (rule 12).** No task adds a table or a column. Migration 0039 adds a trigger. The abandoned-call list (EV-5) reads existing flags. The record-category register (EV-7) is governance data about records, owned by the DPO; once it merges, a table or column added by any plan needs the DPO's approval in it.
 - **Fail safe to a human (rule 14).** The dead-man rules (EV-2) and the abandoned-call list (EV-5) exist for it. Nothing here closes an incident.
 - **Clinical wording is never invented.** No new caller or responder copy. EV-4's placeholder expectations are derived mechanically from the committed rule, marked `PENDING-MD-PI`, and refused by production until the co-investigators sign their own (P-2).
 - **The amendment gate (rule 11).** EV-3 changes `config/gated/triage.yaml` and EV-4 re-signs `triage-rules/tool1.yaml`. With `study_window_active: false` the gate passes them; if the window is active when they land, each needs an amendment record for its exact content hash.
@@ -54,6 +54,14 @@
 
 Then poll `gh pr checks <PR>` until nothing fails or is pending, answer every CodeRabbit finding (inline comments and review bodies), run `python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR> --dry-run` (from EV-1 on), and **ask the user before merging**. Never post a command asking CodeRabbit to resolve or approve.
 
+**A new CI job.** EV-1's `test_required_checks_match_the_ci_jobs` makes `tools/mergegate/required_checks.txt` list exactly the jobs of `.github/workflows/ci.yml`, and the gate refuses unless the ruleset requires every name on that list. A phase that adds a job to `ci.yml` (EV-2) merges in this order:
+1. The PR adds the job to `ci.yml` and its name to `required_checks.txt`.
+2. The job passes on the PR's head, and a dry run of the gate from a checkout of `main`, whose list does not name the job yet, passes.
+3. The owner records the decision to merge, then adds the name to ruleset 27260742's required checks, with GitHub Actions as its source.
+4. The gate runs and merges at once: from step 3 until the merge, GitHub blocks every other PR on a check that `main` does not run yet.
+
+A job that is not required yet (EV-9's Asterisk job, EV-11's mutation job) goes in `.github/workflows/advisory.yml`, which the list does not cover. The gate still refuses any failed check run, listed or not, so a job meant only to report sets `continue-on-error: true` on its step and writes its result to the job summary. When the owner makes a job required, it moves into `ci.yml` by the four steps above.
+
 **Delivery.** One PR per phase, each under 100 files, each a working tested slice. Merge commits.
 
 | Phase | Branch | Base | Findings | Tasks | Est. files | Migration | ADR |
@@ -61,11 +69,11 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, answer every Co
 | EV-1 | `ev-1-merge-gate` | `ev-0-audit` | V-02, V-03 (a), V-21 (`ParsePhone`) | 5 | ~19 | — | 0042 |
 | EV-2 | `ev-2-dead-man-rules` | `main` | V-01 | 4 | ~18 | — | — |
 | EV-3 | `ev-3-safety-invariants` | `main` | V-04, V-29, V-33 (archcheck) | 7 | ~28 | 0039 | 0043 |
-| EV-4 | `ev-4-clinical-evidence` | `ev-3-…` | V-05, V-06 | 3 | ~22 | — | 0044 |
+| EV-4 | `ev-4-clinical-evidence` | `ev-3-…` | V-05, V-06 | 4 | ~30 | — | 0044 |
 | EV-5 | `ev-5-person-facing` | `main` | V-08, V-09, V-10, V-07 (interim) | 6 | ~24 | — | — |
 | EV-6 | `ev-6-binaries` | `main` | V-11, V-35 (route) | 3 | ~6 | — | — |
-| EV-7 | `ev-7-db-gates` | `main` | V-19, V-16 | 4 | ~13 | — | 0045 |
-| EV-8 | `ev-8-evidence-gates` | `main` | V-15, V-30, V-31, V-34 (a) | 5 | ~22 | — | 0046 |
+| EV-7 | `ev-7-db-gates` | `main` | V-19, V-16 | 4 | ~14 | — | 0045 |
+| EV-8 | `ev-8-evidence-gates` | `main` | V-15, V-30, V-31, V-34 (a) | 5 | ~23 | — | 0046 |
 | EV-9 | `ev-9-provider-contracts` | `main` | V-12 | 4 | ~22 | — | 0047 |
 | EV-10 | `ev-10-latency-failover` | `main` | V-13, V-14 (a), V-28 | 6 | ~16 | — | — |
 | EV-11 | `ev-11-ci-depth` | `main` | V-20, V-21 (rest), V-22, V-23 | 6 | ~18 | — | — |
@@ -74,7 +82,7 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, answer every Co
 
 **Order across the three plans.**
 1. EV-1 is the first merge after the freeze (below). EV-0, this audit's PR, merges through EV-1's gate.
-2. EV-2, EV-3, EV-4 and EV-7 merge before M3 Part A: M3's 0029 is the seventh copy of the append function, which EV-3's tables must meet, and M3's four tables must be the register's first test (EV-7).
+2. EV-2, EV-3, EV-4 and EV-7 merge before M3 Part A: M3's 0029 is the seventh copy of the append function, which EV-3's tables must meet, and M3's four tables must be the register's first test (EV-7): M3 Part A cannot merge until the DPO's approval rows for them are in the register.
 3. EV-5 and EV-6 before go-live; the rest in the order above. The UX phases continue in parallel.
 
 **Coordination with the UX plan.** Where both plans touch one thing, one owner builds it and the other drops or extends it:
@@ -267,14 +275,16 @@ From then on every merge goes through `tools/mergegate`.
 
 **Branch** `ev-2-dead-man-rules` from `main`. **Findings** V-01. **ADR** none (ADR-0041 rule 8; ADR-0029 rule 8 already names tier 3).
 
-### Task 2.1: The intake-gw gauge loop is a function, and a test proves the binary runs it
+### Task 2.1: The intake-gw leader term is a function, and tests prove the binary runs its gauge loop
 
-**Files:** Modify `cmd/intake-gw/main.go:177-191`. Test `cmd/intake-gw/main_test.go`.
+**Files:** Modify `cmd/intake-gw/main.go:172-191`. Test `cmd/intake-gw/main_test.go`.
 
-**Interfaces:** `func runEscalationGauges(ctx context.Context, store escalationAges, g *escalationGauges, every time.Duration)`, where `escalationAges` is the store interface `gauges.update` already takes and `escalationGauges` the existing type at `cmd/intake-gw/main.go:217-253` (rename only if the names differ). `run()` starts it inside the leader's term, as today.
+**Interfaces:**
+- `func runEscalationGauges(ctx context.Context, store escalationAges, g *escalationGauges, every time.Duration)`: the loop at `:177-191`, where `escalationAges` is the store interface `gauges.update` already takes and `escalationGauges` the existing type at `cmd/intake-gw/main.go:217-253` (rename only if the names differ).
+- `func leaderTerm(ctx context.Context, t term) error`: the body of `RunAsLeader`'s callback today. It starts the dispatch watchdog and `runEscalationGauges`, and returns the sweeper's result. `term` holds the store, the gauges, the interval, and the watchdog and the sweeper as `func(context.Context) error`. The callback becomes one line: `return leaderTerm(lctx, t)`.
 
-- [ ] **Step 1:** Write `TestTheLeaderTermExportsTheGauges` in a `synctest` bubble: a fake store reporting 2 unacknowledged escalations, the oldest 700 s; run for one tick; the registry's text holds `sauti_escalation_gauges_leader 1`, `sauti_escalations_unacknowledged 2` and `sauti_escalation_oldest_unacknowledged_seconds 700`; cancel the context; the text holds `sauti_escalation_gauges_leader 0`. Run `go test ./cmd/intake-gw/ -run Gauges -count=1`. Expected: FAIL (no such function).
-- [ ] **Step 2:** Extract the function. Apply the audit's mutant M3 by hand (the update call removed): the test must fail. Revert.
+- [ ] **Step 1:** Write `TestTheLeaderTermExportsTheGauges` in a `synctest` bubble: call `leaderTerm` with a fake store reporting 2 unacknowledged escalations, the oldest 700 s, a sweeper that blocks until its context ends and a watchdog that does nothing; run for one tick; the registry's text holds `sauti_escalation_gauges_leader 1`, `sauti_escalations_unacknowledged 2` and `sauti_escalation_oldest_unacknowledged_seconds 700`; cancel the context; the text holds `sauti_escalation_gauges_leader 0`. Run `go test ./cmd/intake-gw/ -run Gauges -count=1`. Expected: FAIL (no such function).
+- [ ] **Step 2:** Extract both functions. Apply by hand the audit's mutant M3 (the update call removed) and a second mutant (the `runEscalationGauges` call removed from `leaderTerm`): the test must fail on each. Revert. The one-line callback is covered by EV-6 Task 6.1, which reads the gauges from the running binary.
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `test(intake-gw): the leader term exports the dead-man gauges (EV-2 Task 1; EO-1)`.
 
@@ -330,7 +340,7 @@ From then on every merge goes through `tools/mergegate`.
 - Modify: `docs/runbooks/ivr-controller-down.md` (tier 3 now pages on `SautiEscalationUnacknowledged`; staleness pages on its own), `docs/runbooks/dispatch-worker-down.md` (the leader and read gauges and their alerts), `docs/reference/dependencies.md` (promtool), `docs/traceability.md` (hard constraint 14: the rule tests), `threat-model/threats.yaml` (the dead-man mitigation's `verified_by`), the audit's V-01 status line.
 - [ ] **Step 1:** Write the docs; every runbook keeps the template sections.
 - [ ] **Step 2:** Run the four gates. Expected: OK.
-- [ ] **Step 3:** Commit `docs: dead-man alerts in the runbooks (EV-2 Task 4)`. Push, open the PR, gate, and **ask before merging**. After it merges, the owner adds "alert rules (promtool)" to the ruleset's required checks (O-1).
+- [ ] **Step 3:** Commit `docs: dead-man alerts in the runbooks (EV-2 Task 4)`. Push, open the PR, and **ask before merging**. Merge by the four steps of "A new CI job" (Global Constraints): the owner adds "alert rules (promtool)" to the ruleset after the job passes on the head and before the gate merges, because the gate refuses a listed check that the ruleset does not require (O-1).
 
 ---
 
@@ -429,57 +439,82 @@ From then on every merge goes through `tools/mergegate`.
 
 **Files:**
 - Create: `triage-rules/expected.yaml`, `triage-rules/expected.yaml.sig`.
-- Modify: `internal/triage/triage.go` (load and check expectations), `internal/triage/triage_test.go` (delete `oracle()` and `TestRuleTableFromBuildPrompt`), `cmd/sautictl/main.go` (`triage sign --expectations`), `internal/platform/wiring/intake.go` (production refuses pending or dev-signed expectations), every pointer to `TestRuleTableFromBuildPrompt` (`docs/MODEL_CARD.md`, `governance/ai_risk_manifest.yaml`, `threat-model/threats.yaml`, `docs/traceability.md`).
+- Modify: `internal/triage/triage.go` (load and check expectations), `internal/triage/triage_test.go` (delete `oracle()` and `TestRuleTableFromBuildPrompt`), `cmd/sautictl/main.go` (`triage sign --expectations`), `config/gated/triage.yaml` (`expectation_keys:`) and the triage configuration struct and loader under `internal/config/`, `internal/platform/wiring/intake.go` (production refuses pending or dev-signed expectations), every pointer to `TestRuleTableFromBuildPrompt` (`docs/MODEL_CARD.md`, `governance/ai_risk_manifest.yaml`, `threat-model/threats.yaml`, `docs/traceability.md`).
 
 **Interfaces:**
 - `type Expectation struct { When map[string]string; Severity string }`: each key is an input name; the value `"*"` matches any value.
 - `type Expectations struct { Status string; BundleVersion string; Rows []Expectation }`.
-- `func LoadExpectations(data, sig []byte, keys TrustedKeys) (Expectations, error)`: verifies under the context string `"sauti-triage-expectations-v1"`, distinct from the rules' context, using the existing `Sign`/`verify` code path.
+- `func LoadExpectations(data, sig []byte, keys map[string][]byte) (Expectations, error)`: verifies under the context string `"sauti-triage-expectations-v1"`, distinct from the rules' context, using the existing `Sign`/`verify` code path. `keys` is the decoded `expectation_keys`, a trust set separate from the rules' `trusted_keys`: a context separates the documents, not the signers, so only separate keys stop the rules' signer from signing the expectations that check its rules. The configuration loader refuses a public key listed in both sets, and production refuses a `dev-` expectation key as it does a `dev-` rules key.
 - `func (e *Engine) CheckExpectations(x Expectations) []string`: one problem for each combination of `e.Domain()` that matches no row, matches more than one row, or whose classification differs from its row; and one if `x.BundleVersion` differs from the bundle's.
 
-**The placeholder data.** `expected.yaml` has `status: pending`, `authored_by: PENDING-MD-PI` and rows derived mechanically from the committed rule, one per region of the rule, non-overlapping. It is not clinical authorship: the co-investigators replace it with their own (P-2), signed with a key the rules' signer does not hold.
+**The placeholder data.** `expected.yaml` has `status: pending`, `authored_by: PENDING-MD-PI` and rows derived mechanically from the committed rule, one per region of the rule, non-overlapping. It is signed with a second development key (`dev-expectations-…`), so the development rules key cannot sign it either. It is not clinical authorship: the co-investigators replace it with their own (P-2), signed with a key in `expectation_keys` that the rules' signer does not hold.
 
 - [ ] **Step 1: Write the failing tests:**
   - `TestBundleMatchesClinicalExpectations`: the repository's bundle and expectations give no problem.
   - `TestExpectationsCatchUnderTriage`: a table of the audit's bundle mutants applied to an in-memory copy and re-signed with the dev key: child with danger unknown to green (U1); trauma with a screen-5 danger sign to green (U2); obstetric with danger unknown to green (U3); elderly with a screen-5 danger sign to not red (U4); danger yes with age unknown to green (U5); danger unknown with screen-5 yes to green (U6); an over-triage of "other" (O1); a row's severity changed (K1); a row deleted (K2). Each gives at least one problem.
   - `TestExpectationsMustCoverTheDomain`: with one row removed, the problem names the uncovered combination.
   - `TestLoadExpectationsRejectsTheRulesContext`: a signature made under the rules' context is refused.
+  - `TestARulesKeyCannotSignExpectations`: expectations signed under the expectations' context with the rules' key are refused, because that key is not in `expectation_keys`.
+  - `TestConfigRefusesAKeyTrustedForBoth`: a public key listed in both `trusted_keys` and `expectation_keys` fails the configuration load.
 
   Run `go test ./internal/triage/ -run Expectations -count=1`. Expected: FAIL.
 - [ ] **Step 2:** Implement; sign the placeholder with the dev key (`sautictl triage sign --expectations`); delete `oracle()` and `TestRuleTableFromBuildPrompt`; repoint their pointers to `TestBundleMatchesClinicalExpectations`.
 - [ ] **Step 3:** Run the same command, `scripts/ci/unit.sh` and the three gates. Expected: PASS and OK.
 - [ ] **Step 4:** Commit `feat(triage): expected severities as signed data cover the whole domain (EV-4 Task 1; ES-2)`.
 
-### Task 4.2: The labels a caller reads are inside the signature
+### Task 4.2: The questions and labels a caller reads are inside the signature
 
 **Files:**
-- Modify: `triage-rules/tool1.yaml` (each input gains `labels_sha256: {en: <hex>, lg: <hex>}`), `triage-rules/tool1.yaml.sig` (re-signed with the dev key), `config/gated/triage.yaml` (the new `approved_sha256`), `internal/triage/triage.go`, `internal/intake/machine.go:423-448` (`CheckTriageDomain`), `cmd/sautictl/main.go` (`triage labels`).
+- Modify: `triage-rules/tool1.yaml` (each input gains `screen_sha256: {en: <hex>, lg: <hex>}`), `triage-rules/tool1.yaml.sig` (re-signed with the dev key), `config/gated/triage.yaml` (the new `approved_sha256`), `internal/triage/triage.go`, `internal/intake/machine.go:423-448` (`CheckTriageDomain`), `cmd/sautictl/main.go` (`triage screens`).
 - Test: `internal/intake/machine_test.go`, `internal/triage/triage_test.go`, `tests/e2e/m1_intake_test.go`.
 
 **Interfaces:**
-- `func LabelsDigest(pairs [][2]string) string` in `internal/triage`: the hex sha256 of each `(value, label)` pair in catalogue order, each field followed by `0x1f` and each pair by `0x1e`. It takes plain strings, so `internal/triage` still imports nothing from `internal/config`.
-- `func (e *Engine) LabelsSHA256(input, lang string) string`.
-- `CheckTriageDomain` also compares, for screens 2 to 5 and each language, `LabelsDigest` of the catalogue's options with the bundle's value, and reports "<input> labels (<lang>) differ from the signed bundle".
-- `sautictl triage labels --catalogue config/gated/tool1.yaml` prints each input's digests for the signer to paste.
+- `func ScreenDigest(prompts, options [][2]string) string` in `internal/triage`: the hex sha256 of each `(key, question)` pair, then a `0x1d`, then each `(value, label)` pair in catalogue order; each field is followed by `0x1f` and each pair by `0x1e`. Screens 2 to 4 have one question with the key `""`; screen 5 has each category-specific question from `specific_danger.prompts` with its key (`acute_medical_child` included), in key order, so a reworded question or two categories' questions swapped changes the digest. It takes plain strings, so `internal/triage` still imports nothing from `internal/config`.
+- `func (e *Engine) ScreenSHA256(input, lang string) string`.
+- `CheckTriageDomain` also compares, for screens 2 to 5 and each language, `ScreenDigest` of the catalogue's questions and options with the bundle's value, and reports "<input> screen (<lang>) differs from the signed bundle".
+- `sautictl triage screens --catalogue config/gated/tool1.yaml` prints each input's digests for the signer to paste.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `TestCatalogueLabelsMatchTheSignedBundle`: with the danger screen's "Yes" and "No" labels swapped in a copy of the catalogue, `CheckTriageDomain` returns an error naming `danger` and `en`; the committed catalogue passes.
-  - `TestLabelsDigestDependsOnOrderValueAndLabel`.
+  - `TestCatalogueScreensMatchTheSignedBundle`, with subtests on a copy of the catalogue: the danger screen's "Yes" and "No" labels swapped; the danger question reworded; the trauma and obstetric questions of screen 5 swapped. Each makes `CheckTriageDomain` return an error naming the input and `en`; the committed catalogue passes.
+  - `TestScreenDigestDependsOnEveryField`: order, value, label, question key and question text each change the digest.
   - `TestScenario3ByLabel` (e2e, integration): walks Tool 1 choosing each option by its label text through a helper `walkByLabel(t, …, label string)` that finds the digit in the rendered screen, and reaches yellow as scenario 3 requires.
 
-  Run `go test ./internal/intake/ ./internal/triage/ -run 'Labels' -count=1`. Expected: FAIL.
+  Run `go test ./internal/intake/ ./internal/triage/ -run 'Screen' -count=1`. Expected: FAIL.
 - [ ] **Step 2:** Implement; compute and paste the digests; re-sign; update `approved_sha256`.
 - [ ] **Step 3:** Run the same command, `go test -tags integration ./tests/e2e/ -run ByLabel -count=1`, and the unit suite. Expected: PASS.
-- [ ] **Step 4:** Commit `feat(triage): the signed bundle binds each screen's labels (EV-4 Task 2; ES-3)`.
+- [ ] **Step 4:** Commit `feat(triage): the signed bundle binds each screen's questions and labels (EV-4 Task 2; ES-3)`.
 
-### Task 4.3: EV-4 docs: ADR-0044
+### Task 4.3: What a voice caller hears is inside the signature too
+
+`ivr.Sounds` (`internal/platform/ivr/sounds.go`) names each recording after its screen and the option's value (`sauti/en/danger-yes`), and `TestPromptCatalogueIsComplete` keeps `telephony/prompts/catalogue.yaml` in step, so which code a recording stands for is fixed in code. What can differ is the audio: a "No" recorded as `danger-yes` makes a voice caller give the opposite answer, and Task 4.2's digest cannot see it. The recordings are not in the repository and not yet made.
 
 **Files:**
-- Create: `docs/adr/ADR-0044-signed-expectations-and-label-binding.md` (index it; supersedes ADR-0019 in part: expectations are signed clinical data under their own context; the bundle binds labels; production refuses pending expectations; the catch-all's severity is the co-investigators' choice, P-2).
-- Modify: `docs/MODEL_CARD.md` §3 and §4 (the expectations replace the "independent oracle"; label binding; what production refuses), `governance/ai_risk_manifest.yaml`, `threat-model/threats.yaml`, `docs/traceability.md` (hard constraint 3), `docs/reference/tool1-flow.md`, `docs/reference/cli-sautictl.md`, `docs/runbooks/triage-rule-error.md` (the label-mismatch refusal), the audit's V-05 and V-06 status lines.
+- Modify: `telephony/prompts/catalogue.yaml` (each sound gains `sha256:`, empty until the recording is made and approved; the `-update` path keeps existing digests), `internal/platform/ivr/` (load the catalogue; the check), `triage-rules/tool1.yaml` (each input gains `recordings_sha256: {en: <hex>, lg: <hex>}`), `triage-rules/tool1.yaml.sig`, `config/gated/triage.yaml` (the new `approved_sha256`), `cmd/sautictl/main.go` (`prompts verify`), `cmd/ivr-controller/main.go`.
+- Test: `internal/platform/ivr/catalogue_test.go`, `cmd/sautictl/` tests, `cmd/ivr-controller/` tests.
+
+**Rules:**
+- `recordings_sha256` is `ScreenDigest`'s encoding over the `(sound ID, sha256)` pairs of the screen's question and option recordings, so the clinicians and translators who sign the bundle sign which audio voices which code (P-3).
+- ivr-controller compares the catalogue with the bundle at start-up, as intake-gw compares the screens, in every environment. In production it also refuses a `placeholder` catalogue or a screen 2 to 5 recording with no `sha256`.
+- `sautictl prompts verify --catalogue telephony/prompts/catalogue.yaml --sounds <dir>` hashes each file the catalogue names and fails on a missing file or a different digest, naming each. The P0 deployment runs it on the Asterisk host before Asterisk starts (deferred list).
+
+- [ ] **Step 1: Write the failing tests:**
+  - `TestRecordingsAreBoundToTheBundle`: a catalogue whose `danger-yes` digest differs from the one the bundle binds is refused, naming `danger` and the language; the committed catalogue passes.
+  - `TestPromptsVerifyRefusesASwappedRecording`: a temporary sounds directory with the `danger-yes` and `danger-no` files swapped fails, naming both.
+  - `TestProductionRefusesUnapprovedRecordings`: a `placeholder` catalogue, and an approved one with an empty `sha256` on a screen 2 to 5 recording, each stop ivr-controller under `SAUTI_ENV=production`.
+
+  Run `go test ./internal/platform/ivr/ ./cmd/sautictl/ ./cmd/ivr-controller/ -run 'Recording' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Implement; paste the digests; re-sign; update `approved_sha256`.
+- [ ] **Step 3:** Run the same command and the unit suite. Expected: PASS.
+- [ ] **Step 4:** Commit `feat(ivr): the signed bundle binds the approved recordings (EV-4 Task 3; ES-3)`.
+
+### Task 4.4: EV-4 docs: ADR-0044
+
+**Files:**
+- Create: `docs/adr/ADR-0044-signed-expectations-and-label-binding.md` (index it; supersedes ADR-0019 in part: expectations are signed clinical data under their own context and keys; the bundle binds questions, labels and recordings; production refuses pending expectations and unapproved recordings; the catch-all's severity is the co-investigators' choice, P-2).
+- Modify: `docs/MODEL_CARD.md` §3 and §4 (the expectations replace the "independent oracle"; screen and recording binding; what production refuses), `governance/ai_risk_manifest.yaml`, `threat-model/threats.yaml`, `docs/traceability.md` (hard constraint 3), `docs/reference/tool1-flow.md`, `docs/reference/cli-sautictl.md`, `docs/runbooks/triage-rule-error.md` (the screen and recording mismatch refusals), the audit's V-05 and V-06 status lines.
 - [ ] **Step 1:** Write the docs.
 - [ ] **Step 2:** Run the four gates. Expected: OK.
-- [ ] **Step 3:** Commit `docs: ADR-0044, model card, triage reference (EV-4 Task 3)`. Push, open the PR, gate, and **ask before merging**.
+- [ ] **Step 3:** Commit `docs: ADR-0044, model card, triage reference (EV-4 Task 4)`. Push, open the PR, gate, and **ask before merging**.
 
 ---
 
@@ -517,7 +552,7 @@ From then on every merge goes through `tools/mergegate`.
 - [ ] **Step 1: Write the failing tests:**
   - `TestRedactionBoundaries`: exactly 9 digits (`772123456`) is redacted; `int64` and `uint64` attributes of 9 or more digits are redacted; a nested struct's number is redacted; an 8-digit control is kept. Mutants L1 (`redact.go:59`, `>=` to `>`) and L2 (`:78`) must fail it.
   - `TestRedactionSeparators`: `0772.123.456`, `(0772) 123456`, `0772/123/456`, `0772_123_456` and `0772` NBSP `123` NBSP `456` are each redacted.
-  - `FuzzRedactNeverLeavesNineDigits`: a random 10-digit number with random separators from that set; no run of 9 or more digits survives.
+  - `FuzzRedactNeverLeavesNineDigits`: a random 10-digit number with none, one or several separators from that set between any two digits; once every separator character is removed from the output, no run of 9 or more digits remains. Checking the raw output alone would pass a number spaced out digit by digit and left whole.
   - `TestNoCallerNumberInLogs` also dials a `+254` caller and scans every captured line with a regex for the fixture numbers' digits in any grouping.
 
   Run `go test ./internal/platform/logging/ -count=1`. Expected: FAIL.
@@ -567,7 +602,7 @@ From then on every merge goes through `tools/mergegate`.
 **Behaviour:**
 1. `go build -o <tmp> ./cmd/...`.
 2. Bootstrap one cluster through `pgtest` and give each binary the DSNs and environment its `main` reads (`SAUTI_ENV=test`, simulated delivery, development keys; read each `cmd/*/main.go` for the list).
-3. Start intake-gw, dispatch-worker and outbox-relay as child processes, capturing stdout and stderr; wait for each `/readyz`.
+3. Start intake-gw, dispatch-worker and outbox-relay as child processes, capturing stdout and stderr; wait for each `/readyz`. Read intake-gw's admin `/metrics` until it holds `sauti_escalation_gauges_leader 1`, within 20 s.
 4. Register one responder through the real `sautictl` binary, or the store if no command exists.
 5. Walk scenario 3 with `sim.USSD` against intake-gw's real callback route, path token included.
 6. Within 30 s expect an `alert.issued` event and a simulated SMS log line naming only the alert ID, and a ledger that grows.
@@ -575,7 +610,7 @@ From then on every merge goes through `tools/mergegate`.
 8. Send SIGTERM to each child: each exits 0 within 10 s.
 9. Scan every child's captured output for each fixture number in every form: none.
 
-- [ ] **Step 1:** Write `TestBinariesDispatchAScenarioEndToEnd`. Apply by hand the audit's mutant M1 (`cmd/dispatch-worker/main.go:177`: the leader parks instead of running the engine) and a leader key shared by two binaries: each fails. Revert. Run `go test -tags integration ./tests/smoke/ -count=1`. Expected after the test is written: PASS on `main`, FAIL on each mutant.
+- [ ] **Step 1:** Write `TestBinariesDispatchAScenarioEndToEnd`. Apply by hand the audit's mutant M1 (`cmd/dispatch-worker/main.go:177`: the leader parks instead of running the engine), a leader key shared by two binaries, and intake-gw's leader callback no longer starting the gauge loop (EV-2 Task 2.1's `leaderTerm` not called): each fails. Revert. Run `go test -tags integration ./tests/smoke/ -count=1`. Expected after the test is written: PASS on `main`, FAIL on each mutant.
 - [ ] **Step 2:** Commit `test(smoke): the built binaries dispatch a scenario end to end (EV-6 Task 1; EA-3, EO-4, EG-8)`.
 
 ### Task 6.2: The production refusal is proven on the artifacts
@@ -613,10 +648,15 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 7.3: The record-category register
 
-**Files:** Create `governance/record-categories.yaml`. Modify `governance/compliance_check.py`. Test `internal/platform/pg/schemas_integration_test.go`, `governance/tests/test_compliance_check.py`.
+**Files:** Create `governance/record-categories.yaml`, `governance/record-categories-baseline.txt`. Modify `governance/compliance_check.py`. Test `internal/platform/pg/schemas_integration_test.go`, `governance/tests/test_compliance_check.py`.
 
 **Format:** `<store>: {<schema.table>: {retention: <category or PENDING-DPO>, approved_by: <role or pending>, approved_on: <date or null>, columns: [<names>]}}`. The engineers list every table and column; the retention categories stay `PENDING-DPO` until the DPO fills them (D-1). No category name is copied from the confidential records policy.
-- [ ] **Step 1:** Write `TestEveryColumnIsInTheDPORegister`: migrate all five stores and compare `information_schema.columns` with the register in both directions. A migration adding `op.probe(x text)`, and a column removed from the register, must each fail it. Add `test_register_rows_name_a_category_and_an_approval` to the compliance tests. Run both. Expected: FAIL, then PASS once the register lists today's schema.
+
+**The baseline.** `record-categories-baseline.txt` lists, one `<store> <schema.table>` or `<store> <schema.table>(<column>)` per line, the tables and columns that exist when EV-7 merges. Pending approval is allowed only for them:
+- A row whose `retention` is `PENDING-DPO`, whose `approved_by` is `pending` or whose `approved_on` is null fails unless its table and each of its columns are in the baseline. So a table or column added after EV-7 fails until its row names a category, the approving role and a date, starting with M3 Part A's four tables.
+- The baseline may only shrink. `compliance_check.py` reads the copy at the base commit (`git show <base>:governance/record-categories-baseline.txt`, the base taken from `AMENDGATE_BASE` as the amendment gate takes it) and fails on any line the branch adds; with no copy at the base (EV-7's own PR) it passes. The DPO deletes a line as its row is approved.
+- The approval is recorded, not proven: a signed DPO approval waits for the DPO's account and code-owner review (O-1, O-2, D-1).
+- [ ] **Step 1:** Write `TestEveryColumnIsInTheDPORegister`: migrate all five stores and compare `information_schema.columns` with the register in both directions. A migration adding `op.probe(x text)`, and a column removed from the register, must each fail it. Add `test_register_rows_name_a_category_and_an_approval`, `test_a_pending_row_outside_the_baseline_fails` (a pending `op.probe` row fails; the same row with a category, a role and a date passes) and `test_the_baseline_only_shrinks` (a line added against the base copy fails; a line removed passes) to the compliance tests. Run both. Expected: FAIL, then PASS once the register lists today's schema.
 - [ ] **Step 2:** Commit `feat(governance): every column is in the DPO's register (EV-7 Task 3; EG-3)`.
 
 ### Task 7.4: EV-7 docs: ADR-0045
@@ -632,12 +672,12 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 8.1: A pointer counts only if its test passed
 
-**Files:** Modify `scripts/ci/integration.sh` (also writes `go test -json` to `dist/test-events.json`), `.github/workflows/ci.yml` (the integration job sets up Python from the governance job's pinned steps and runs the check), `tools/freshness/__init__.py`, `tools/freshness/__main__.py`, `tools/freshness/pointers.py`, `governance/tests/test_freshness.py:110-113`.
+**Files:** Modify `scripts/ci/integration.sh` (also writes `go test -json` to `dist/test-events.json`), `.github/workflows/ci.yml` (the integration job sets up Python from the governance job's pinned steps, runs the governance suite through `tools.freshness.pyevents` and runs the check), `tools/freshness/__init__.py`, `tools/freshness/__main__.py`, `tools/freshness/pointers.py`, `governance/tests/test_freshness.py:110-113`. Create `tools/freshness/pyevents.py`.
 
-**Interfaces:** `python3 -m tools.freshness --ran dist/test-events.json`. It collects every non-planned pointer from `docs/traceability.md`, `threat-model/threats.yaml` and `governance/ai_risk_manifest.yaml`, maps each Go pointer's file to its package import path, and fails unless that package has an event `{"Action": "pass", "Test": <name>}`. A `skip`, a `fail` or no event fails, naming the pointer. A Python pointer must name a method of a `unittest.TestCase` subclass in a file under `governance/tests/` (checked with `ast`).
-- [ ] **Step 1:** Write `test_a_skipped_test_fails_the_run_check`, `test_a_test_that_did_not_run_fails`, `test_a_method_outside_a_testcase_fails` (replacing the case at `test_freshness.py:110-113`) and `test_a_passing_test_satisfies_the_run_check`, each on a small events file. Run `python3 -m unittest governance.tests.test_freshness -v`. Expected: FAIL.
+**Interfaces:** `python3 -m tools.freshness --ran dist/test-events.json dist/py-test-events.json`. It collects every non-planned pointer from `docs/traceability.md`, `threat-model/threats.yaml` and `governance/ai_risk_manifest.yaml`, maps each Go pointer's file to its package import path, and fails unless that package has an event `{"Action": "pass", "Test": <name>}`. A `skip`, a `fail` or no event fails, naming the pointer. A Python pointer must name a method of a `unittest.TestCase` subclass in a file under `governance/tests/` (checked with `ast`), and must also have a `pass` event, because a method that calls `skipTest` or carries a skip decorator satisfies the `ast` check. `python3 -m tools.freshness.pyevents dist/py-test-events.json` runs `unittest` discovery over `governance/tests` with a `unittest.TestResult` subclass and writes one event per test in `test2json`'s shape: `Action` `pass` only for a success, `skip` for a skip, and `fail` for a failure, an error, a failed subtest, an expected failure or an unexpected success; `Package` the test file's path; `Test` the method name.
+- [ ] **Step 1:** Write `test_a_skipped_test_fails_the_run_check`, `test_a_test_that_did_not_run_fails`, `test_a_method_outside_a_testcase_fails` (replacing the case at `test_freshness.py:110-113`), `test_a_skipped_python_test_fails_the_run_check` (a `TestCase` method that calls `self.skipTest`, run through `pyevents`, fails its pointer) and `test_a_passing_test_satisfies_the_run_check`, each on a small events file. Run `python3 -m unittest governance.tests.test_freshness -v`. Expected: FAIL.
 - [ ] **Step 2:** Implement. The integration script runs `-tags integration ./...`, a superset of the unit tests, so one events file covers both tag sets.
-- [ ] **Step 3:** Run the tests, then `scripts/ci/integration.sh && python3 -m tools.freshness --ran dist/test-events.json`. Expected: PASS, every pointer passed. Re-create the audit's probes A (a `t.Skip`), B (a commented-out test) and C (a test behind `//go:build drill`) on a scratch branch: each fails the check, naming the pointer.
+- [ ] **Step 3:** Run the tests, then `scripts/ci/integration.sh && python3 -m tools.freshness.pyevents dist/py-test-events.json && python3 -m tools.freshness --ran dist/test-events.json dist/py-test-events.json`. Expected: PASS, every pointer passed. Re-create the audit's probes A (a `t.Skip`), B (a commented-out test) and C (a test behind `//go:build drill`), and a fourth, a pointed-to Python test that calls `self.skipTest`, on a scratch branch: each fails the check, naming the pointer.
 - [ ] **Step 4:** Commit `feat(freshness): a pointer counts only if its test passed in CI (EV-8 Task 1; EG-1, EA-6)`.
 
 ### Task 8.2: Status means something; planned markers expire; reviews are dated
@@ -684,7 +724,7 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 9.1: Asterisk executes the dialplan in CI
 
-**Files:** Create `scripts/tools/install-asterisk.sh` (the Asterisk major that ADR-0023 names, built from the official source tarball, sha256-pinned through `scripts/tools/fetch.sh`, cached by `actions/cache` keyed on that sha256), `tests/contract/asterisk_contract_test.go` (build tag `contract`), `scripts/ci/contract.sh`. Modify `.github/workflows/ci.yml` (a job named "provider contracts (Asterisk)" on every PR; the owner adds it to the required checks after a week without a flake).
+**Files:** Create `scripts/tools/install-asterisk.sh` (the Asterisk major that ADR-0023 names, built from the official source tarball, sha256-pinned through `scripts/tools/fetch.sh`, cached by `actions/cache` keyed on that sha256), `tests/contract/asterisk_contract_test.go` (build tag `contract`), `scripts/ci/contract.sh`. Create or modify `.github/workflows/advisory.yml` (a job named "provider contracts (Asterisk)" on every PR, not yet required; after a week without a flake the owner moves it into `ci.yml` by the steps of "A new CI job").
 
 **Behaviour:** start Asterisk with `telephony/asterisk/*.conf` and no ARI application connected; originate `Local/<did>@<inbound context>` with a test caller ID; observe through AMI that a `Dial` reaches the coordinator endpoint with `CALLERID(num)` equal to `SAUTI_CALLER_ID` before any dial, and that the retries and the closing message follow ADR-0034.
 - [ ] **Step 1:** Write `TestStasisDownReachesACoordinatorWithTheCallerMasked`. A `Goto` to a missing label in the fallback context, and `Set(CALLERID(num)=…)` moved after the first `Dial`, must each fail it. Run `scripts/ci/contract.sh`. Expected: PASS on `main`, FAIL on each fault.
@@ -780,10 +820,10 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 11.4: Mutation testing on the safety packages
 
-**Files:** Modify `build/tools.mod` and `build/tools.sum` (gremlins, the latest release, verified at task time), `docs/reference/dependencies.md`. Create `scripts/ci/mutation.sh`. Modify `.github/workflows/ci.yml` (a job named "mutation (changed lines)").
+**Files:** Modify `build/tools.mod` and `build/tools.sum` (gremlins, the latest release, verified at task time), `docs/reference/dependencies.md`. Create `scripts/ci/mutation.sh`. Create or modify `.github/workflows/advisory.yml` (a job named "mutation (changed lines)").
 
-**Behaviour:** `scripts/ci/mutation.sh <base>` runs gremlins over the lines the PR changes in the packages ADR-0041 rule 3 lists, with logical and loop-control operators on, and fails below 80 % test efficacy. Check the flag names against the pinned release's help before use. The job is report-only (`continue-on-error: true`) until M3 merges; then the owner makes it required. The weekly full run is Task 11.5.
-- [ ] **Step 1:** On a scratch branch that re-applies mutant R1's line change as a "refactor" of `internal/respond/ussd.go` (with EV-5's test absent), run the script. Expected: R1 reported as lived and the job red. Revert.
+**Behaviour:** `scripts/ci/mutation.sh <base>` runs gremlins over the lines the PR changes in the packages ADR-0041 rule 3 lists, with logical and loop-control operators on, and fails below 80 % test efficacy. Check the flag names against the pinned release's help before use. The job is report-only until M3 merges: its step sets `continue-on-error: true` and writes the efficacy and the survivors to the job summary, because the gate refuses a failed check run even when it is not required. Then the owner moves it into `ci.yml` and makes it required by the steps of "A new CI job". The weekly full run is Task 11.5.
+- [ ] **Step 1:** On a scratch branch that re-applies mutant R1's line change as a "refactor" of `internal/respond/ussd.go` (with EV-5's test absent), run the script. Expected: R1 reported as lived and the script exits non-zero (the job summary shows it). Revert.
 - [ ] **Step 2:** Run it on this branch against `main`. Expected: no changed safety lines, PASS.
 - [ ] **Step 3:** Commit `ci: mutation testing on changed safety lines (EV-11 Task 4; EA-10)`.
 
@@ -881,11 +921,12 @@ These belong to the open PRs' own branches, not to an EV phase. The gate's revie
 | V-03 | Human approval, code-owner review, clinical accounts | A person, not code | The owner (O-1, O-2) |
 | V-03 (EG-2, part) | Amendment records signed with a PI key pinned at the base | The study window is inactive | Before the window opens |
 | V-07 | Escalating abandoned yellow and danger-unknown calls | A protocol change | The PI (P-1); EV-5 gives the interim |
+| V-06 (part) | Recording and approving the IVR audio; `sautictl prompts verify` in the deployment | Not yet recorded; no Asterisk host | The co-investigators and translators (P-3); P0 |
 | V-12 (part) | The carrier's connected-line behaviour | Needs the real trunk | P0 staging drill |
 | V-14 (part) | Patroni switchover under load; monthly restore and `pgbackrest verify` | No cluster exists | P0 |
 | V-17 | The under-triage monitor and the clinical metrics | Definitions are clinical | The PI and Medical Director (P-4); then M3 (count) and M6 (metric SQL) |
 | V-18 | Usability engineering | User studies | The PI (P-5); M7 |
-| V-23 (part), V-01 (part) | Production verifier timers, the external witness, paging receivers | Infrastructure | P0 (R-16) |
+| V-23 (part), V-01 (part) | Production verifier timers, the external witness, paging receivers, and a dead man's switch off the monitoring host that pages a person when the Watchdog stops, with a drill that stops Alertmanager | Infrastructure | P0 (R-16) |
 | V-25 | Synthetic probes and drill markers | A study and record-kind decision | The PI and DPO (P-8, D-4); M7 |
 | V-32 | Hazard log, safety case, IEC 62304 class | Needs the acceptability policy | The Medical Director, PI and sponsor (P-6) |
 | V-33 | Shadow-mode evaluation and disclosure for speech assist | Speech assist is P2 | P2, with an amendment and a DPIA; the PI's ADR on the Act (P-9) |
@@ -908,7 +949,7 @@ Every class (a) finding has a task; the rest are in the deferred list.
 | V-03 | 1.1 (ruleset check), 1.5 (docs); deferred (owner) |
 | V-04 | 3.1, 3.2, 3.3, 3.6 |
 | V-05 | 4.1 |
-| V-06 | 4.2 |
+| V-06 | 4.2, 4.3; deferred (recordings, P0) |
 | V-07 | 5.5 (interim); deferred (P-1) |
 | V-08 | 5.1 |
 | V-09 | 5.2, 5.3 |
@@ -950,4 +991,4 @@ Every class (a) finding has a task; the rest are in the deferred list.
 
 No task replaces `op.append_incident_event` or `op.append_event_core`, and none edits a merged file.
 
-**ADRs.** ADR-0041 (EV-0, this plan's strategy), ADR-0042 (1.5), ADR-0043 (3.7), ADR-0044 (4.3), ADR-0045 (7.4), ADR-0046 (8.5), ADR-0047 (9.4).
+**ADRs.** ADR-0041 (EV-0, this plan's strategy), ADR-0042 (1.5), ADR-0043 (3.7), ADR-0044 (4.4), ADR-0045 (7.4), ADR-0046 (8.5), ADR-0047 (9.4).
