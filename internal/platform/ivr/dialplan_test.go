@@ -152,3 +152,30 @@ func extension(lines []string, pattern string) []string {
 	}
 	return out
 }
+
+// Rule 5: the caller's number never reaches a coordinator's phone. The
+// fallback masks the caller ID itself, before it answers and before any
+// dial, on every path into it: an IVR hand-over, the bridge's hand-over, and
+// a Stasis failure where no Go code runs. Nothing after the mask writes the
+// caller ID again.
+func TestFallbackMasksTheCallerBeforeAnyDial(t *testing.T) {
+	conf := dialplan(t)
+	lines := section(conf, FallbackContext)
+	num := slices.Index(lines, "same => n,Set(CALLERID(num)=${SAUTI_CALLER_ID})")
+	name := slices.Index(lines, "same => n,Set(CALLERID(name)=SAUTI ${SAUTI_REF})")
+	first := func(app string) int {
+		return slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, app) })
+	}
+	answer, dial := first("Answer("), first("Dial(")
+	if num < 0 || name < 0 || answer < 0 || dial < 0 || max(num, name) > min(answer, dial) {
+		t.Fatalf("the caller ID is not masked before the answer and every dial: %q", lines)
+	}
+	for _, l := range lines[max(num, name)+1:] {
+		if strings.Contains(l, "CALLERID") {
+			t.Fatalf("the caller ID is written again after the mask: %q", l)
+		}
+	}
+	if !slices.ContainsFunc(section(conf, "globals"), func(l string) bool { return strings.HasPrefix(l, "SAUTI_CALLER_ID=") }) {
+		t.Fatal("[globals] does not define SAUTI_CALLER_ID")
+	}
+}
