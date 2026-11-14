@@ -156,20 +156,21 @@ func (w *worker) pop(ctx context.Context) (item, bool) {
 
 // Controller runs voice calls.
 type Controller struct {
-	ari       ARI
-	in        Intake
-	log       *slog.Logger
-	opt       Options
-	mu        sync.Mutex // guards workers and adopted only: no call's work runs under it
-	workers   map[string]*worker
-	adopted   map[string]bool // channels Adopt handed over that the last list still showed
-	adoptMu   sync.Mutex      // one Adopt at a time
-	pending   atomic.Int64    // events queued and not yet handled
-	running   sync.WaitGroup  // workers, so Run returns after their hand-overs
-	retries   sync.WaitGroup  // hand-over escalations being retried
-	pendingMu sync.Mutex
-	retrying  map[*pendingEscalation]struct{} // the escalations being recorded
-	flushed   bool                            // FlushLost ran: the process is exiting
+	ari        ARI
+	in         Intake
+	log        *slog.Logger
+	opt        Options
+	mu         sync.Mutex // guards workers and adopted only: no call's work runs under it
+	workers    map[string]*worker
+	adopted    map[string]bool // channels Adopt handed over that the last list still showed
+	adoptMu    sync.Mutex      // one Adopt at a time
+	pending    atomic.Int64    // events queued and not yet handled
+	running    sync.WaitGroup  // workers, so Run returns after their hand-overs
+	retries    sync.WaitGroup  // hand-over escalations being retried
+	pendingMu  sync.Mutex
+	retrying   map[*pendingEscalation]struct{} // the escalations being recorded
+	flushed    bool                            // FlushLost ran: the process is exiting
+	readopting atomic.Bool                     // a re-adoption is scheduled
 }
 
 // New builds a controller.
@@ -289,6 +290,12 @@ func (c *Controller) Wait() {
 // served, not handed over.
 const adoptGrace = time.Second
 
+// readoptAfter is how long after a failed hand-over (the transfer and the
+// hang-up both refused) the controller adopts again: the call is still in
+// the application with no worker, and the stream may never drop to trigger
+// an adoption.
+const readoptAfter = 5 * time.Second
+
 // Run streams ARI events into the controller until ctx ends. After every
 // (re)connect it adopts the calls it lost; when ctx ends it waits for the
 // live calls to be handed over.
@@ -306,6 +313,32 @@ func (c *Controller) Run(ctx context.Context, client *ari.Client) error {
 			}
 		})
 	}, func(e ari.Event) { c.Handle(ctx, e) })
+}
+
+// readopt schedules one adoption readoptAfter from now, however many
+// hand-overs fail meanwhile; it runs one at a time with the others (adoptMu)
+// and is scheduled again while hand-overs keep failing. It stops with ctx:
+// after shutdown nothing is retried, and FlushLost reports any escalation
+// the last adoption left unrecorded.
+func (c *Controller) readopt(ctx context.Context) {
+	if !c.readopting.CompareAndSwap(false, true) {
+		return
+	}
+	c.running.Go(func() {
+		t := time.NewTimer(readoptAfter)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			c.readopting.Store(false)
+			return
+		case <-t.C:
+		}
+		c.readopting.Store(false)
+		if err := c.Adopt(ctx); err != nil {
+			c.log.Error("ivr re-adoption failed; trying again", "err", err)
+			c.readopt(ctx)
+		}
+	})
 }
 
 // Adopt hands every call parked in the controller's application with no
@@ -638,7 +671,11 @@ func (c *Controller) handOver(ctx context.Context, st *call) bool {
 		return true
 	} else if err != nil {
 		c.log.Error("ivr hand-over to the fallback failed; hanging up", "channel", st.ch, "err", err)
-		return c.hangup(ctx, st)
+		if !c.hangup(ctx, st) {
+			c.readopt(ctx) // still in the application, with no worker
+			return false
+		}
+		return true
 	}
 	c.log.Warn("ivr call handed to the coordinator fallback", "channel", st.ch)
 	st.ended = true

@@ -39,6 +39,7 @@ type fakeARI struct {
 	seq          []string      // reference, hand-over escalation and continue requests, in order
 	failRef      bool
 	failHangup   bool
+	lists        int // ListChannels requests
 }
 
 func (f *fakeARI) SetReference(_ context.Context, ch, ref string) error {
@@ -68,6 +69,7 @@ func (f *fakeARI) requests() []string {
 func (f *fakeARI) ListChannels(context.Context) ([]ari.Channel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lists++
 	if f.channels == nil {
 		return nil, errors.New("asterisk: no channel list in this test")
 	}
@@ -1025,4 +1027,56 @@ func TestTheFlushReportsOrphansStillQueuedInAdopt(t *testing.T) {
 	if n := lost.Load(); n != 3 || len(s.handedOver()) != 1 {
 		t.Fatalf("lost %d, escalations attempted %v: want each orphan reported once and none started after the flush", n, s.handedOver())
 	}
+}
+
+// PR #14 review (round 4): a call whose hand-over failed (the transfer and
+// the hang-up both refused) is still in the application with no worker. The
+// stream never drops, so no reconnect adopts it: a re-adoption is scheduled
+// and puts it through once Asterisk takes requests again.
+func TestAFailedHandOverIsRetriedWhileTheStreamStaysUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &scripted{prompts: prompts()}
+		a := &fakeARI{failAnswer: true, failContinue: true, failHangup: true, channels: []ari.Channel{{ID: "ch1", App: "sauti-ivr"}}}
+		c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+		ctx, cancel := context.WithCancel(t.Context())
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		synctest.Wait() // the answer, the transfer and the hang-up all failed
+		a.mu.Lock()
+		a.failContinue, a.failHangup = false, false // Asterisk takes requests again
+		a.mu.Unlock()
+		time.Sleep(readoptAfter)
+		synctest.Wait()
+		if got := a.count(&a.continues); got != 1 {
+			t.Fatalf("continues %d: the call was left in the application", got)
+		}
+		cancel()
+		c.Wait()
+	})
+}
+
+// PR #14 review (round 4): the re-adoption stops at shutdown: a hand-over
+// that keeps failing is not retried after the controller stops.
+func TestTheReadoptionStopsAtShutdown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &scripted{prompts: prompts()}
+		a := &fakeARI{failAnswer: true, failContinue: true, failHangup: true, channels: []ari.Channel{{ID: "ch1", App: "sauti-ivr"}}}
+		c := New(a, s, slog.New(slog.DiscardHandler), Options{NoInput: time.Hour})
+		ctx, cancel := context.WithCancel(t.Context())
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		time.Sleep(3*readoptAfter + time.Second)
+		synctest.Wait()
+		a.mu.Lock()
+		before := a.lists
+		a.mu.Unlock()
+		cancel()
+		c.Wait()
+		time.Sleep(10 * readoptAfter)
+		synctest.Wait()
+		a.mu.Lock()
+		after := a.lists
+		a.mu.Unlock()
+		if before < 3 || after != before {
+			t.Fatalf("adoptions %d while running, %d after the stop: want retries while it runs and none after", before, after)
+		}
+	})
 }
