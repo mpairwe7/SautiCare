@@ -388,9 +388,14 @@ func (a *AlertCalls) decline(ctx context.Context, ch string, st *alertCall, reas
 // cut the menu and stopped its wait, so without it the answered line would
 // stay open. Its end re-arms the no-input time, and the call closes as an
 // unanswered one does.
+//
+// The refused operation may have used up its deadline, so the replay runs
+// on a fresh one.
 func (a *AlertCalls) menuAgain(ctx context.Context, ch string, st *alertCall) {
 	st.reasons = false
-	a.play(ctx, ch, st, a.alertSounds(st.alert))
+	op, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.c.OpTimeout)
+	defer cancel()
+	a.play(op, ch, st, a.alertSounds(st.alert))
 }
 
 // finish plays the result and hangs up once it has been heard
@@ -418,12 +423,18 @@ func (a *AlertCalls) whereToGo(f dispatch.MessageFacts) []string {
 	return out
 }
 
+// play plays a menu. One that cannot start sends no end event to arm the
+// no-input time, so it is armed here: the menu is tried again, then the call
+// closes, and an answered line is never left open.
 func (a *AlertCalls) play(ctx context.Context, ch string, st *alertCall, sounds []string) {
 	st.plays++
 	pb := fmt.Sprintf("%s-a%d", ch, st.plays)
-	if a.c.ARI.Play(ctx, ch, pb, sounds) == nil {
-		st.current = pb
+	if err := a.c.ARI.Play(ctx, ch, pb, sounds); err != nil {
+		a.c.Log.Error("alert call prompt not played", "alert", st.alert.AlertID, "err", err)
+		a.arm(ctx, ch, st)
+		return
 	}
+	st.current = pb
 }
 
 func (a *AlertCalls) sound(name string) string { return "sauti/" + a.c.Language + "/" + name }

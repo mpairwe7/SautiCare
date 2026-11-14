@@ -70,11 +70,14 @@ func (a *alertARI) Answer(_ context.Context, ch string) error {
 	a.answered = append(a.answered, ch)
 	return nil
 }
-func (a *alertARI) Play(_ context.Context, _, pb string, sounds []string) error {
+func (a *alertARI) Play(ctx context.Context, _, pb string, sounds []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.failPlay {
 		return errors.New("playback refused")
+	}
+	if err := ctx.Err(); err != nil {
+		return err // as an HTTP request on an expired context
 	}
 	a.plays = append(a.plays, sounds)
 	a.pbs = append(a.pbs, pb)
@@ -129,6 +132,7 @@ type alertStore struct {
 	accepted int
 	declined map[uuid.UUID]string
 	failSave error // AcceptAlert and DeclineAlert fail (the store is down)
+	hangSave bool  // AcceptAlert waits until its context ends (the store hangs)
 }
 
 func (s *alertStore) DueVoiceAlerts(context.Context, time.Duration, int) ([]dispatch.VoiceAlert, error) {
@@ -162,9 +166,13 @@ func (s *alertStore) ResponderPhone(_ context.Context, id uuid.UUID) (incident.S
 func (s *alertStore) AlertForAttempt(context.Context, uuid.UUID) (dispatch.ResponderAlert, uuid.UUID, error) {
 	return s.alert, s.who, nil
 }
-func (s *alertStore) AcceptAlert(context.Context, uuid.UUID, uuid.UUID) (dispatch.AcceptOutcome, error) {
+func (s *alertStore) AcceptAlert(ctx context.Context, _, _ uuid.UUID) (dispatch.AcceptOutcome, error) {
 	if s.failSave != nil {
 		return dispatch.AcceptOutcome{}, s.failSave
+	}
+	if s.hangSave {
+		<-ctx.Done()
+		return dispatch.AcceptOutcome{}, ctx.Err()
 	}
 	s.accepted++
 	return dispatch.AcceptOutcome{Result: s.accept}, nil
@@ -418,6 +426,40 @@ func TestTheLeaderTermEndStopsTheAlertTimers(t *testing.T) {
 		synctest.Wait()
 		if p := a.played(); len(p) != 1 || a.hangups(ch) != 0 {
 			t.Fatalf("plays %d hangups %d after the term ended", len(p), a.hangups(ch))
+		}
+	})
+}
+
+// PR #14 review: an answer the store times out on used up the operation's
+// deadline; the menu is replayed on a fresh one, so the call goes on.
+func TestARefusedAnswerAfterAStoreTimeoutStillReplays(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		st.hangSave = true
+		ch := answer(t, c, a, st)
+		c.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+		if p := a.played(); len(p) != 2 || !slices.Equal(p[1], p[0]) {
+			t.Fatalf("plays %d after the timed-out answer, want the menu again", len(p))
+		}
+	})
+}
+
+// PR #14 review: if the replayed menu cannot even start, the call still ends:
+// the no-input time is armed without it, the menu is tried once more, and the
+// closing prompt (or, if it too cannot play, the hang-up) follows.
+func TestARefusedAnswerWhoseReplayCannotPlayStillHangsUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		st.failSave = errors.New("store down")
+		ch := answer(t, c, a, st)
+		a.mu.Lock()
+		a.failPlay = true
+		a.mu.Unlock()
+		c.Handle(t.Context(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if a.hangups(ch) != 1 {
+			t.Fatalf("hangups %d: the call stayed open", a.hangups(ch))
 		}
 	})
 }
