@@ -65,8 +65,9 @@ OBJECTS = re.compile(r"(?i)\b(not|no longer|still|remains?|however|but|unverifie
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[ \t]*$|\Z)", re.M | re.S)
 DETAILS = re.compile(r"<details\b[^>]*>(?:(?!<details\b).)*?</details>", re.S)
 COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
-# Ruleset 27260742 does not require code-owner review (audit V-03). The owner
-# flips this with decision O-1; the docs test then requires the qualifier gone.
+# Ruleset 27260742 does not require code-owner review, by the owner's decision
+# O-1 (audit V-03). If that changes, flip this; the docs test then requires the
+# qualifier gone.
 CODE_OWNER_REVIEW_ENFORCED = False
 DEFER = re.compile(r"^(\d+)=(\d+)$")
 THREADS = """query($owner: String!, $name: String!, $n: Int!, $after: String) {

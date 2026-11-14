@@ -49,7 +49,7 @@ Migrations are forward-only and checksummed (ADR-0010). Each store applies `db/<
 
 ## Escalation
 
-Platform lead. For `db/analytic` changes the PI must have approved the pull request (CODEOWNERS, not enforced until the owner's decision O-1 in the evaluation audit; until then the owner records the merge decision on the pull request); during the study window an amendment record is required.
+Platform lead. For `db/analytic` changes the PI must have approved the pull request (CODEOWNERS, not enforced, by the owner's decision O-1 in the evaluation audit: a pull request merges once CI passes and every CodeRabbit comment is resolved); during the study window an amendment record is required.
 
 ## Verification
 

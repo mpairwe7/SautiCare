@@ -770,13 +770,14 @@ class MergeGateTest(unittest.TestCase):
 
 
 class DocsTest(unittest.TestCase):
-    QUALIFIER = "not enforced until the owner's decision O-1"
+    QUALIFIER = "not enforced, by the owner's decision O-1"
 
     def test_the_docs_name_no_enforced_codeowners_approval(self):
-        """V-03: while main's ruleset does not require code-owner review, no
-        living doc may claim a CODEOWNERS approval without the qualifier, and
-        once the owner enforces it (O-1) no doc may keep the qualifier.
-        Decision records, audits and plans are history and are not scanned."""
+        """V-03: main's ruleset does not require code-owner review, by the
+        owner's decision O-1, so no living doc may claim a CODEOWNERS approval
+        without the qualifier. If the owner ever enforces it, no doc may keep
+        the qualifier. Decision records, audits and plans are history and are
+        not scanned."""
         claims = []
         for f in sorted((ROOT / "docs").rglob("*.md")):
             rel = f.relative_to(ROOT).as_posix()
