@@ -433,7 +433,8 @@ func TestCoordinatorCallSpeaksReasonsInPriorityOrder(t *testing.T) {
 }
 
 // Tier 2 (F-01; ADR-0029 rule 8): once an escalation has rung backup_after
-// times unanswered, the backup line rings as well. The first 1 on either
+// times unanswered, the backup line rings as well, from the next ring on
+// (Calls counts the ring being placed; review R5). The first 1 on either
 // acknowledges, and the other is hung up.
 func TestBackupLineRingsAfterThreeUnansweredCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -444,7 +445,7 @@ func TestBackupLineRingsAfterThreeUnansweredCalls(t *testing.T) {
 		for _, tc := range []struct {
 			calls int
 			want  []string
-		}{{2, []string{"PJSIP/coordinators"}}, {3, []string{"PJSIP/coordinators", "PJSIP/backup"}}} {
+		}{{3, []string{"PJSIP/coordinators"}}, {4, []string{"PJSIP/coordinators", "PJSIP/backup"}}} {
 			a = &alertARI{}
 			st = &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: inc, Seq: 7, Reasons: []string{"triage_rule_error"},
 				Reference: "1234567894", Calls: tc.calls}}, acked: map[uuid.UUID]int64{}}
@@ -490,5 +491,34 @@ func TestCoordinatorCallSpeaksARepeatedReasonOnce(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("plays %v: the reason spoken %d times", a.plays[0], n)
+	}
+}
+
+// Review R5: an answered backup call does not hold one of the coordinator
+// line's calls (SAUTI_COORDINATOR_LINES): the line stays free for the next
+// escalation.
+func TestAnAnsweredBackupCallKeepsTheLineFree(t *testing.T) {
+	a := &alertARI{}
+	inc := uuid.NewV7()
+	st := &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: inc, Seq: 7, Reasons: []string{"triage_rule_error"},
+		Reference: "1234567894", Calls: 4}, {IncidentID: uuid.NewV7(), Seq: 1, Reasons: []string{"dispatch_stalled"}, Reference: "1234567894", Calls: 1}},
+		acked: map[uuid.UUID]int64{}}
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", BackupEndpoint: "PJSIP/backup",
+		BackupAfterCalls: 3, Lines: 2, Retry: 2 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.calls, st.limits = st.calls[:1], nil
+	queued := []dispatch.CoordinatorCall{{IncidentID: uuid.NewV7(), Seq: 1, Reasons: []string{"dispatch_stalled"}, Reference: "1234567894", Calls: 1}}
+	if _, err := cc.RunOnce(context.Background()); err != nil || len(a.originated) != 2 {
+		t.Fatalf("rang %v %v", a.originated, err)
+	}
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "out-2", Args: a.args[1]})
+	st.calls = queued
+	if _, err := cc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(st.limits, []int{2, 1}) {
+		t.Fatalf("free lines asked for %v, want [2 1]: the answered backup call took a line", st.limits)
 	}
 }

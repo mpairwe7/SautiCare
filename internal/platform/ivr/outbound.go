@@ -465,15 +465,20 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 	for _, d := range due {
 		args := []string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reasonRanks(d.Reasons), string(d.Reference)}
 		// Tier 2: after BackupAfterCalls unanswered rings the backup rings
-		// too. It does not take one of the line's calls.
+		// too, from the next ring on (Calls counts the ring being placed). It
+		// takes none of the line's calls.
 		endpoints := []string{k.c.Endpoint}
-		if k.c.BackupEndpoint != "" && d.Calls >= k.c.BackupAfterCalls {
+		if k.c.BackupEndpoint != "" && d.Calls > k.c.BackupAfterCalls {
 			endpoints = append(endpoints, k.c.BackupEndpoint)
 		}
 		var legs []string
 		for i, endpoint := range endpoints {
+			legArgs := args
+			if i > 0 {
+				legArgs = append(slices.Clone(args), backupArg)
+			}
 			ch, err := bounded(ctx, originateTimeout, func(c context.Context) (string, error) {
-				return k.c.ARI.Originate(c, endpoint, k.c.CallerID, args, k.c.Ring)
+				return k.c.ARI.Originate(c, endpoint, k.c.CallerID, legArgs, k.c.Ring)
 			})
 			if err != nil {
 				// The claim stands: the line is rung again after the retry interval.
@@ -501,6 +506,9 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 	}
 	return len(due), nil
 }
+
+// backupArg marks a tier-2 call in its arguments.
+const backupArg = "backup"
 
 // reasonRanks carries the reasons in the call's arguments as their places in
 // the registry, most urgent first ("0.9"): short and free of any text. A
@@ -622,7 +630,8 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 	defer cancel()
 	switch e.Type {
 	case EventStasisStart:
-		if len(e.Args) != 5 {
+		backup := len(e.Args) == 6 && e.Args[5] == backupArg
+		if len(e.Args) != 5 && !backup {
 			k.hangup(op, e.ChannelID)
 			return
 		}
@@ -635,8 +644,11 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 		st := &coordinatorCall{incident: inc, seq: seq, reasons: reasonsOf(e.Args[3]), reference: incident.Reference(e.Args[4])}
 		k.mu.Lock()
 		// Answered: the line is busy until the call ends, whether or not
-		// RunOnce has stored the call yet (CodeRabbit PR #11).
-		k.busy[e.ChannelID] = time.Time{}
+		// RunOnce has stored the call yet (CodeRabbit PR #11). The backup
+		// line is another phone: its call holds none of the line's calls.
+		if !backup {
+			k.busy[e.ChannelID] = time.Time{}
+		}
 		k.calls[e.ChannelID] = st
 		k.mu.Unlock()
 		k.arm(ctx, e.ChannelID, st) // the no-input time runs from the answer
