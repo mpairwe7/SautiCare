@@ -21,7 +21,7 @@ go build -o bin/ ./cmd/... && bin/demo --pg-bin <PostgreSQL 18 bin directory> --
                                                            # the whole system behind a web UI, synthetic data only
 ```
 
-The last line is the MVP demo, also packaged for a Hugging Face Space: see [the demo runbook](docs/runbooks/demo-hf-space.md) and [ADR-0039](docs/adr/ADR-0039-public-demo-on-hugging-face.md).
+The last line is the MVP demo. To run it on your own computer, step by step with a presentation walkthrough, follow [Run the prototype on your own computer](docs/tutorials/run-the-prototype-locally.md). It is also packaged for a Hugging Face Space: see [the demo runbook](docs/runbooks/demo-hf-space.md) and [ADR-0039](docs/adr/ADR-0039-public-demo-on-hugging-face.md).
 
 See [the local development tutorial](docs/tutorials/local-development.md) for the gates CI runs.
 

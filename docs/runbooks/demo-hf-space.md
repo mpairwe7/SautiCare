@@ -24,6 +24,8 @@ What runs where:
 | Responders | VHT 1–3 and Transporter 1–2 in Test Ward 1 (three VHTs, so a red call shows the parallel alerts and the first acceptance winning), VHT 4 and Transporter 3 in Test Ward 2, none in Wards 3 and 4 (a call there shows the escalation). Numbers +256772000201 to +256772000207; callers +256772123456 and +256772000777, all from the test ranges. |
 
 ## Run it locally (no Docker)
+For a step-by-step version with installation help, the three presentation scenarios and troubleshooting, see the tutorial [Run the prototype on your own computer](../tutorials/run-the-prototype-locally.md).
+
 You need PostgreSQL 18 binaries (`initdb`, `postgres`). Use a system install, such as `/usr/lib/postgresql/18/bin` on Debian, or the embedded PostgreSQL that the integration tests cache under `~/.cache/sauti/embedded-postgres/postgresql-18.6*/*/bin`. Run as an ordinary user: PostgreSQL refuses root.
 
 ```bash
