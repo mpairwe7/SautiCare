@@ -146,9 +146,13 @@ func TestWatchdogEscalatesAnOverdueTimerAfterT3(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	got, err := r.intake.ListOverdueDispatch(ctx, intake.DispatchWatchdogAfter)
+	got, err := r.intake.ListOverdueDispatch(ctx, intake.DispatchWatchdogAfter, intake.Overdue{}, 500)
 	if err != nil || len(got) != 1 || got[0].ID != r.incident || got[0].DueAt.IsZero() {
 		t.Fatalf("overdue %+v %v", got, err)
+	}
+	// The next page starts after the last row read (PR #14 review).
+	if next, err := r.intake.ListOverdueDispatch(ctx, intake.DispatchWatchdogAfter, got[0], 500); err != nil || len(next) != 0 {
+		t.Fatalf("page after the last: %+v %v", next, err)
 	}
 	w := intake.NewWatchdog(r.intake, r.intake, intake.DispatchWatchdogAfter)
 	for range 2 {

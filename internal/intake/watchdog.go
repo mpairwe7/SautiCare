@@ -28,8 +28,12 @@ const DispatchWatchdogAfter = 2 * time.Minute
 // timer is overdue by after and unleased (the operational store adapter).
 type StalledReader interface {
 	ListStalledDispatch(ctx context.Context, after time.Duration) ([]uuid.UUID, error)
-	ListOverdueDispatch(ctx context.Context, after time.Duration) ([]Overdue, error)
+	// ListOverdueDispatch reads one page, in (DueAt, ID) order, after from.
+	ListOverdueDispatch(ctx context.Context, after time.Duration, from Overdue, limit int) ([]Overdue, error)
 }
+
+// overduePage is how many overdue timers one query reads.
+const overduePage = 500
 
 // Overdue is a dispatching incident whose dispatch timer was due at DueAt
 // and has not been taken: dispatch-worker died or is stuck after T3 (F-05).
@@ -67,9 +71,17 @@ func (w *Watchdog) RunOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	overdue, err := w.r.ListOverdueDispatch(ctx, w.after)
-	if err != nil {
-		return 0, err
+	var overdue []Overdue
+	for from := (Overdue{}); ; {
+		page, err := w.r.ListOverdueDispatch(ctx, w.after, from, overduePage)
+		if err != nil {
+			return 0, err
+		}
+		overdue = append(overdue, page...)
+		if len(page) < overduePage {
+			break
+		}
+		from = page[len(page)-1]
 	}
 	payload, err := json.Marshal(map[string]string{"reason": ReasonDispatchStalled})
 	if err != nil {

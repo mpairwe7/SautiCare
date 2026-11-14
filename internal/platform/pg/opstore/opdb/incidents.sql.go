@@ -631,9 +631,17 @@ SELECT t.incident_id::uuid AS id, t.due_at::timestamptz AS due_at FROM op.dispat
 JOIN op.incidents i ON i.id = t.incident_id
 WHERE i.state = 'dispatching' AND t.due_at < clock_timestamp() - $1::interval
   AND (t.lease_until IS NULL OR t.lease_until < clock_timestamp())
-ORDER BY t.due_at
-LIMIT 500
+  AND (t.due_at, t.incident_id) > ($2::timestamptz, $3::uuid)
+ORDER BY t.due_at, t.incident_id
+LIMIT $4::int
 `
+
+type ListOverdueDispatchParams struct {
+	After   pgtype.Interval
+	FromDue pgtype.Timestamptz
+	FromID  pgtype.UUID
+	MaxRows int32
+}
 
 type ListOverdueDispatchRow struct {
 	ID    pgtype.UUID
@@ -643,9 +651,15 @@ type ListOverdueDispatchRow struct {
 // Dispatch watchdog, F-05: a dispatching incident whose dispatch timer is
 // overdue by after and not leased (no worker is processing it), T3 or not:
 // dispatch-worker died or is stuck after the first alert. Read by
-// intake-gw's leader (op_intake).
-func (q *Queries) ListOverdueDispatch(ctx context.Context, after pgtype.Interval) ([]ListOverdueDispatchRow, error) {
-	rows, err := q.db.Query(ctx, listOverdueDispatch, after)
+// intake-gw's leader (op_intake), a page at a time after (from_due, from_id),
+// so no overdue timer hides behind the first page.
+func (q *Queries) ListOverdueDispatch(ctx context.Context, arg ListOverdueDispatchParams) ([]ListOverdueDispatchRow, error) {
+	rows, err := q.db.Query(ctx, listOverdueDispatch,
+		arg.After,
+		arg.FromDue,
+		arg.FromID,
+		arg.MaxRows,
+	)
 	if err != nil {
 		return nil, err
 	}
