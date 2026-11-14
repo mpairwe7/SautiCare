@@ -22,14 +22,13 @@ func rewind(t *testing.T, r *dispatchRig) {
 	}
 }
 
-// F-06: one claim announces every reason not yet acknowledged (each once,
-// with the role of its newest event), so an acknowledgement never covers a
-// reason nobody heard; the claim's seq is the newest of them.
+// F-06: one claim announces every reason not yet acknowledged, with its
+// role, so an acknowledgement never covers a reason nobody heard; the
+// claim's seq is the newest of them.
 func TestClaimAnnouncesEveryUnacknowledgedReason(t *testing.T) {
 	r := newDispatchRig(t)
 	ctx := context.Background()
 	appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"triage_rule_error"}`, "")
-	appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"no_eligible_responder","role":"transporter"}`, "")
 	b := appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"no_eligible_responder","role":"vht"}`, "")
 	calls, err := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10)
 	if err != nil || len(calls) != 1 {
@@ -129,5 +128,31 @@ func TestHasUnacknowledgedEscalation(t *testing.T) {
 	}
 	if _, ok, err := r.intake.HasUnacknowledgedEscalation(ctx, r.incident); err != nil || ok {
 		t.Fatalf("acknowledged: %v %v", ok, err)
+	}
+}
+
+// A reason recorded for two roles is two things to hear about (UX-3 speaks
+// the role): the claim keeps one pair per (reason, role), each with its
+// newest event, ordered by that event's seq.
+func TestClaimReturnsEachRoleOfAReason(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	if _, err := r.c.Owner(t, pg.StoreOperational).Exec(ctx, "DELETE FROM op.incident_events WHERE type = 'incident.escalated'"); err != nil {
+		t.Fatal(err)
+	}
+	appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"no_eligible_responder","role":"vht"}`, "")
+	b := appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"reason":"no_eligible_responder","role":"transporter"}`, "")
+	calls, err := r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10)
+	if err != nil || len(calls) != 1 || !slices.Equal(calls[0].Reasons, []string{"no_eligible_responder", "no_eligible_responder"}) ||
+		!slices.Equal(calls[0].Roles, []string{"vht", "transporter"}) || calls[0].Seq != b.Event.Seq {
+		t.Fatalf("claim %+v %v", calls, err)
+	}
+	// The vht pair again (another escalation for the role): still two pairs,
+	// ordered by each pair's newest event.
+	c := appendEv(t, r.intake, r.incident, incident.EvEscalated, `{"role":"vht","reason":"no_eligible_responder"}`, "")
+	rewind(t, r)
+	calls, err = r.ivr.ClaimCoordinatorCalls(ctx, 2*time.Minute, 10)
+	if err != nil || len(calls) != 1 || !slices.Equal(calls[0].Roles, []string{"transporter", "vht"}) || calls[0].Seq != c.Event.Seq {
+		t.Fatalf("claim %+v %v", calls, err)
 	}
 }

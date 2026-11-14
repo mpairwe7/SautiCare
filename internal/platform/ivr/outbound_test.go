@@ -468,3 +468,27 @@ func TestBackupLineRingsAfterThreeUnansweredCalls(t *testing.T) {
 		}
 	})
 }
+
+// Until UX-3 speaks roles, a reason claimed for two roles is spoken once.
+func TestCoordinatorCallSpeaksARepeatedReasonOnce(t *testing.T) {
+	a := &alertARI{}
+	st := &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: uuid.NewV7(), Seq: 4, Reasons: []string{"no_eligible_responder", "no_eligible_responder"},
+		Roles: []string{"vht", "transporter"}, Reference: "1234567894", Calls: 1}}, acked: map[uuid.UUID]int64{}}
+	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Retry: 2 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "esc-1", Args: a.args[0]})
+	n := 0
+	for _, s := range a.plays[0] {
+		if s == "sauti/en/escalation-reason-no_eligible_responder" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("plays %v: the reason spoken %d times", a.plays[0], n)
+	}
+}

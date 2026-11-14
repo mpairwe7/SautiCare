@@ -110,3 +110,40 @@ func TestEscalationsListsOnlyUnacknowledged(t *testing.T) {
 		t.Fatalf("json %+v", got)
 	}
 }
+
+// Each role of a reason is listed, like the claim (UX-1 Task 1.12).
+func TestEscalationsListsEachRoleOfAReason(t *testing.T) {
+	t.Setenv("SAUTI_ENV", "dev")
+	c := pgtest.Cluster(t)
+	ctx := context.Background()
+	pool, err := pg.Connect(ctx, c.DSN(pg.StoreOperational, "op_intake"), "test", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	in := opstore.New(pool)
+	ref, err := incident.NewReference(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := in.OpenIncident(ctx, incident.OpenParams{Reference: ref, Channel: incident.ChannelUSSDAT, SessionID: uuid.NewV7(),
+		ProviderSessionID: "ATUid_" + uuid.NewV4().String(), NetworkCode: "64110", IdemKey: "ussd:at:start",
+		Phone: crypto.Sealed{KeyID: "dev:k:2", Ciphertext: []byte{1, 2, 3}}, PhoneMAC: crypto.MAC{KeyID: "dev:k:2", Sum: make([]byte, 32)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"vht", "transporter"} {
+		payload := `{"reason":"no_eligible_responder","role":"` + role + `"}`
+		if _, err := in.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvEscalated, Payload: []byte(payload),
+			ActorKind: incident.ActorSystem, IdemKey: payload}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, errOut bytes.Buffer
+	if code := Main([]string{"escalations", "--dsn", c.DSN(pg.StoreOperational, "op_readonly")}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if s := out.String(); !strings.Contains(s, "no_eligible_responder (vht)") || !strings.Contains(s, "no_eligible_responder (transporter)") {
+		t.Fatalf("text:\n%s", s)
+	}
+}

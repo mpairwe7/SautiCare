@@ -3,10 +3,11 @@
 -- 1. The coordinator call announces every reason not yet acknowledged (F-06).
 --    0022's claim read only the incident's latest escalation, while one
 --    acknowledgement covers every earlier one: a reason could be
---    acknowledged unheard. The claim now returns each distinct reason with
---    seq > acked_seq, in seq order, with the role of its newest event ('' for
---    none) and the newest seq, which the call's acknowledgement covers: a
---    reason recorded after the claim rings again. It also returns the
+--    acknowledged unheard. The claim now returns each distinct (reason,
+--    role) pair with seq > acked_seq ('' for no role), ordered by each pair's
+--    newest seq, and the newest seq of all, which the call's acknowledgement
+--    covers: a reason recorded after the claim rings again. A reason recorded
+--    for two roles is two pairs. It also returns the
 --    severity (UX-3 speaks it and the roles; returning them now avoids a
 --    second DROP). The return type changes, so the function is dropped and
 --    created; 0022's body is otherwise unchanged.
@@ -33,11 +34,11 @@ BEGIN
           CROSS JOIN LATERAL (
               SELECT max(d.seq) AS seq, max(d.recorded_at) AS recorded_at,
                      array_agg(d.reason ORDER BY d.seq) AS reasons, array_agg(d.role ORDER BY d.seq) AS roles
-                FROM (SELECT DISTINCT ON (e.payload ->> 'reason') e.payload ->> 'reason' AS reason,
-                             coalesce(e.payload ->> 'role', '') AS role, e.seq, e.recorded_at
+                FROM (SELECT DISTINCT ON (e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''))
+                             e.payload ->> 'reason' AS reason, coalesce(e.payload ->> 'role', '') AS role, e.seq, e.recorded_at
                         FROM op.incident_events e
                        WHERE e.incident_id = i.id AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
-                       ORDER BY e.payload ->> 'reason', e.seq DESC) d) l
+                       ORDER BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''), e.seq DESC) d) l
          WHERE i.state NOT IN ('closed', 'merged')
            AND l.seq IS NOT NULL
            AND (c.last_call_at IS NULL OR c.last_call_at < clock_timestamp() - p_retry)

@@ -113,8 +113,8 @@ LIMIT 1;
 
 -- name: ListOpenEscalations :many
 -- sautictl escalations (op_readonly; F-08): every open incident with an
--- escalation no coordinator has acknowledged — each distinct reason with the
--- role of its newest event, the age of the oldest, the rings since the last
+-- escalation no coordinator has acknowledged — each distinct (reason, role)
+-- pair, as the claim, the age of the oldest, the rings since the last
 -- acknowledgement and the last ring's age, on the database's clock (-1:
 -- never rung) — most severe first (unclassified counts as red), then oldest.
 SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
@@ -126,11 +126,12 @@ FROM op.incidents i
 LEFT JOIN op.coordinator_calls c ON c.incident_id = i.id
 CROSS JOIN LATERAL (
     SELECT min(d.first_at) AS oldest, array_agg(d.reason ORDER BY d.seq) AS reasons, array_agg(d.role ORDER BY d.seq) AS roles
-      FROM (SELECT DISTINCT ON (e.payload ->> 'reason') e.payload ->> 'reason' AS reason, coalesce(e.payload ->> 'role', '') AS role,
-                   e.seq, min(e.recorded_at) OVER (PARTITION BY e.payload ->> 'reason') AS first_at
+      FROM (SELECT DISTINCT ON (e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''))
+                   e.payload ->> 'reason' AS reason, coalesce(e.payload ->> 'role', '') AS role, e.seq,
+                   min(e.recorded_at) OVER (PARTITION BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', '')) AS first_at
               FROM op.incident_events e
              WHERE e.incident_id = i.id AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
-             ORDER BY e.payload ->> 'reason', e.seq DESC) d) u
+             ORDER BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''), e.seq DESC) d) u
 WHERE i.state NOT IN ('closed', 'merged') AND u.reasons IS NOT NULL
 ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, u.oldest;
 
