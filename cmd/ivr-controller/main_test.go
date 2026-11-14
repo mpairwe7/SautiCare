@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
@@ -164,8 +165,9 @@ func TestNoInputSetting(t *testing.T) {
 // termARI and termStore are just enough of Asterisk and the store for one
 // answered alert call; the fake locks what the call's timer goroutine writes.
 type termARI struct {
-	mu    sync.Mutex
-	plays int
+	mu      sync.Mutex
+	plays   int
+	hangups int
 }
 
 func (a *termARI) Originate(context.Context, string, string, []string, time.Duration) (string, error) {
@@ -184,7 +186,17 @@ func (a *termARI) played() int {
 	return a.plays
 }
 func (a *termARI) StopPlayback(context.Context, string) error { return nil }
-func (a *termARI) Hangup(context.Context, string) error       { return nil }
+func (a *termARI) Hangup(context.Context, string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.hangups++
+	return nil
+}
+func (a *termARI) hungUp() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.hangups
+}
 
 type termStore struct{ ivr.AlertStore }
 
@@ -223,4 +235,42 @@ func TestATermEndingWhileDisconnectedStopsTheCallTimers(t *testing.T) {
 	if n := a.played(); n != 1 {
 		t.Fatalf("plays %d: a timer of the ended term played", n)
 	}
+}
+
+// PR #14 review (round 4): leadership is lost while the term still waits for
+// a loop to stop, and another process may already lead. An alert call's
+// timer that fires during that wait does nothing: no prompt, no hang-up.
+func TestATimerFiringWhileTheTermWaitsForItsLoopsDoesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := &termARI{}
+		calls, err := ivr.NewAlertCalls(ivr.AlertCallsConfig{ARI: a, Store: termStore{}, Opener: nopOpener{}, Dial: "PJSIP/{number}@trunk",
+			After: 20 * time.Second, NoInput: 50 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		up := func() bool { return true }
+		answered, release := make(chan struct{}), make(chan struct{})
+		events := func(c context.Context, h func(ari.Event)) error {
+			h(ari.Event{Type: ari.EventStasisStart, ChannelID: "out-1", Args: []string{"alert", uuid.NewV7().String()}})
+			h(ari.Event{Type: ari.EventPlaybackFinished, ChannelID: "out-1", PlaybackID: "out-1-a1"}) // the menu heard: its timer runs
+			close(answered)
+			<-c.Done()
+			return c.Err()
+		}
+		slowLoop := func(c context.Context) error { <-c.Done(); <-release; return nil }
+		lctx, lost := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- outboundTerm(events, &outboundStatus{connected: up}, ivr.Outbound{Alerts: calls}, slowLoop)(lctx)
+		}()
+		<-answered
+		lost()                  // the database lock is lost
+		time.Sleep(time.Second) // the no-input timer fires while the loop is still stopping
+		n, hangups := a.played(), a.hungUp()
+		close(release)
+		<-done
+		if n != 1 || hangups != 0 {
+			t.Fatalf("plays %d hangups %d: a timer acted after leadership was lost", n, hangups)
+		}
+	})
 }
