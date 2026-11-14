@@ -74,6 +74,10 @@ type AlertCallsConfig struct {
 	// ends (default 10 s): the menu is heard once more, then a closing
 	// prompt, then the line is freed (ADR-0029 rule 2).
 	NoInput time.Duration
+	// PromptMax is the longest one recording plays (default 30 s): a prompt
+	// whose end event is lost is treated as ended PromptMax + NoInput after
+	// it, or its latest recording, started.
+	PromptMax time.Duration
 }
 
 type alertCall struct {
@@ -114,6 +118,9 @@ func NewAlertCalls(c AlertCallsConfig) (*AlertCalls, error) {
 	}
 	if c.NoInput <= 0 {
 		c.NoInput = 10 * time.Second
+	}
+	if c.PromptMax <= 0 {
+		c.PromptMax = 30 * time.Second
 	}
 	if c.Log == nil {
 		c.Log = slog.Default()
@@ -239,6 +246,13 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		a.disarm(st)
 		cut(op, a.c.ARI, &st.current)
 		a.key(op, e.ChannelID, st, e.Digit)
+	case EventPlaybackStarted, EventPlaybackContinuing:
+		a.mu.Lock()
+		st := a.calls[e.ChannelID]
+		a.mu.Unlock()
+		if st != nil && st.current == e.PlaybackID {
+			a.arm(ctx, e.ChannelID, st, a.c.PromptMax+a.c.NoInput) // per recording, from its start
+		}
 	case EventPlaybackFinished:
 		a.mu.Lock()
 		st := a.calls[e.ChannelID]
@@ -252,9 +266,10 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 		}
 		switch {
 		case (st.hangupOn != "" && st.hangupOn == e.PlaybackID) || (current && failed(e)):
+			a.disarm(st)
 			_ = a.c.ARI.Hangup(op, e.ChannelID)
 		case current && !st.done:
-			a.arm(ctx, e.ChannelID, st) // the menu was heard: wait for a key
+			a.arm(ctx, e.ChannelID, st, a.c.NoInput) // the menu was heard: wait for a key
 		}
 	case EventStasisEnd, EventHangupRequest:
 		a.mu.Lock()
@@ -280,10 +295,10 @@ func (a *AlertCalls) DisarmAll() {
 }
 
 // arm starts the no-input time of a menu just heard.
-func (a *AlertCalls) arm(ctx context.Context, ch string, st *alertCall) {
+func (a *AlertCalls) arm(ctx context.Context, ch string, st *alertCall, after time.Duration) {
 	a.disarm(st)
 	gen, bg := st.timerGen, context.WithoutCancel(ctx) // the wait outlives the event
-	st.timer = time.AfterFunc(a.c.NoInput, func() { a.noInput(bg, ch, st, gen) })
+	st.timer = time.AfterFunc(after, func() { a.noInput(bg, ch, st, gen) })
 }
 
 func (a *AlertCalls) disarm(st *alertCall) {
@@ -303,11 +318,15 @@ func (a *AlertCalls) noInput(ctx context.Context, ch string, st *alertCall, gen 
 	a.mu.Lock()
 	live := a.calls[ch] == st
 	a.mu.Unlock()
-	if !live || st.done || st.timerGen != gen {
+	if !live || st.timerGen != gen {
 		return
 	}
 	op, cancel := context.WithTimeout(ctx, a.c.OpTimeout)
 	defer cancel()
+	if st.done { // the closing prompt's end was never reported
+		_ = a.c.ARI.Hangup(op, ch)
+		return
+	}
 	if st.replays == 0 {
 		st.replays++
 		if st.reasons {
@@ -405,6 +424,9 @@ func (a *AlertCalls) finish(ctx context.Context, ch string, st *alertCall, sound
 	st.plays++
 	st.hangupOn = endAfter(ctx, a.c.ARI, ch, fmt.Sprintf("%s-a%d", ch, st.plays), sounds)
 	st.current = st.hangupOn
+	if st.hangupOn != "" {
+		a.arm(ctx, ch, st, a.c.PromptMax+a.c.NoInput) // the hang-up happens even if the end event is lost
+	}
 }
 
 // whereToGo speaks the incident number, then the ward and the landmark when
@@ -431,10 +453,14 @@ func (a *AlertCalls) play(ctx context.Context, ch string, st *alertCall, sounds 
 	pb := fmt.Sprintf("%s-a%d", ch, st.plays)
 	if err := a.c.ARI.Play(ctx, ch, pb, sounds); err != nil {
 		a.c.Log.Error("alert call prompt not played", "alert", st.alert.AlertID, "err", err)
-		a.arm(ctx, ch, st)
+		a.arm(ctx, ch, st, a.c.NoInput)
 		return
 	}
 	st.current = pb
+	// A fallback longer than any recording, in case the prompt's end event
+	// is lost (the stream reconnecting); its start and each next recording
+	// re-arm it, and its end replaces it with the no-input time.
+	a.arm(ctx, ch, st, a.c.PromptMax+a.c.NoInput)
 }
 
 func (a *AlertCalls) sound(name string) string { return "sauti/" + a.c.Language + "/" + name }

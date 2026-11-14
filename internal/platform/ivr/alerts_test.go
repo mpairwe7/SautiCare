@@ -463,3 +463,27 @@ func TestARefusedAnswerWhoseReplayCannotPlayStillHangsUp(t *testing.T) {
 		}
 	})
 }
+
+// PR #14 review (round 3): an alert call whose prompts' end events are all
+// lost (the event stream reconnecting) still closes. Each prompt arms a
+// fallback longer than any recording (PromptMax + NoInput) when it is
+// requested: the menu is heard again, then the closing prompt, then the line
+// is freed.
+func TestALostEndOfAnAlertPromptStillCloses(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		for i, want := range []int{2, 3} {
+			time.Sleep(40*time.Second + time.Millisecond)
+			synctest.Wait()
+			if n := len(a.played()); n != want {
+				t.Fatalf("step %d: plays %d, want %d", i, n, want)
+			}
+		}
+		time.Sleep(40*time.Second + time.Millisecond)
+		synctest.Wait()
+		if a.hangups(ch) != 1 || st.accepted != 0 {
+			t.Fatalf("hangups %d accepted %d: the call stayed open", a.hangups(ch), st.accepted)
+		}
+	})
+}
