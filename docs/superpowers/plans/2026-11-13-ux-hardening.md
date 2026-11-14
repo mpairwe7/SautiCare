@@ -916,15 +916,16 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
   - the gazetteer load (`gazetteer.loaded`, with the version);
   - `op.finish_bridge_call` (`bridge.call_ended`, with the incident, the result and who began it).
 
-  Each payload holds IDs and codes only, hashed by `op.enqueue_audit`'s salt (0005).
-- A trigger `incident_events_append_only` on `op.incident_events` (row-level, every role) refuses `UPDATE` and `DELETE`. Partitions are still dropped by the partition runbook, so M6 retention is unaffected.
-- A trigger `outbox_append_only` on `op.outbox` refuses `DELETE`, and refuses any `UPDATE` that changes a column other than `delivered_at`, or that sets `delivered_at` back to NULL.
+  Each payload holds IDs and codes only, salted and hashed as `op.log_control` does (0016). `op.enqueue_audit` cannot serve here: it raises unless its ID names an incident event.
+- A trigger `incident_events_append_only` on `op.incident_events` (row-level, every role) refuses `UPDATE` and `DELETE`, and a statement trigger refuses `TRUNCATE`, as 0016 does. Partitions are still dropped by the partition runbook, so M6 retention is unaffected.
+- A trigger `outbox_append_only` on `op.outbox` refuses `DELETE` and `TRUNCATE`, and every `UPDATE` except the relay's own: `delivered_at` from NULL to a time, with every other column unchanged (`op.mark_outbox_delivered`, 0002). No job deletes from `op.outbox` on `main`; M6's retention (F-87) relaxes the trigger for delivered rows only.
 
 - [ ] **Step 1: Write the failing tests** (integration):
   - `TestEveryStateChangingControlFunctionWritesOneLedgerEntry`. The function list is generated from `pg_proc`: `SECURITY DEFINER` in schema `op`, granted to `op_console` or the owner, not `STABLE`, minus an allow-list of read helpers. A new function without a ledger entry fails the test.
   - `TestIncidentEventsRefuseUpdateAndDeleteEvenForTheOwner`.
-  - `TestOutboxRefusesDeleteAndPayloadRewrite`.
-- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ControlFunction|RefuseUpdate|OutboxRefuses' -count=1`. Expected: FAIL.
+  - `TestOutboxRefusesDeleteAndPayloadRewrite`: `DELETE`, `TRUNCATE`, a payload change, `delivered_at` back to NULL, and a second `delivered_at` on a delivered row are each refused.
+  - `TestOutboxRelayStillMarksDelivered`: `op.mark_outbox_delivered` on a pending row returns 1, and `op.claim_outbox` no longer returns it.
+- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ControlFunction|RefuseUpdate|OutboxRefuses|OutboxRelay' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Write the migration. Check that the partition-maintenance runbook's commands still work (`DROP`/`DETACH`, not `DELETE`).
 - [ ] **Step 4:** Run the same command, then `scripts/ci/integration.sh`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(audit): control changes reach the ledger; events and outbox are append-only (UX-5 Task 2)`.
