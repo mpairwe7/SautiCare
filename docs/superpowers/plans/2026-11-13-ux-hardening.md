@@ -38,7 +38,7 @@
 10. **Consent gates the export.** Nothing is exported.
 11. **Amendment gate.** New flags and gated parameters go into `config/gated/` and count toward the fingerprint. Every protocol flag ships `false`.
 12. **No new record kind without the DPO.**
-    - `op.coordinator_call_attempts` (UX-5) holds the attempts of an existing record, as `op.alert_attempts` does. The DPO is informed in the UX-5 PR.
+    - `op.coordinator_call_attempts` (UX-5) holds the attempts of an existing record, as `op.alert_attempts` does. `op.control_changes` (UX-5) is the operational twin of ledger entries, as `op.dispatch_control_log` is: IDs, codes and a salt. The DPO is informed of both in the UX-5 PR.
     - A staff register is **not** built (F-46, R-4).
     - `callback: none` (UX-6) is an answer value, not a record kind.
 13. **No access from outside Uganda.** No new endpoint. `sautictl` subcommands run on Sauti's servers.
@@ -925,22 +925,28 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 - Create: `db/operational/migrations/0037_ledger_controls.sql`, `internal/platform/pg/opstore/ledger_controls_integration_test.go`
 
 **Interfaces (SQL):**
-- `CREATE OR REPLACE` on these functions, with signatures unchanged, so each change also calls `op.enqueue_audit`:
+- `CREATE OR REPLACE` on these functions, with signatures unchanged, so each change also writes one ledger record:
   - `op.register_responder` and `op.set_responder_gates` (type `responder.registered`, `responder.gates_set`);
   - `op.set_availability`, only when the source is staff (`responder.availability_set_by_staff`); a responder's own toggle is not a control change;
   - the gazetteer load (`gazetteer.loaded`, with the version);
   - `op.finish_bridge_call` (`bridge.call_ended`, with the incident, the result and who began it).
 
-  Each payload holds IDs and codes only, salted and hashed as `op.log_control` does (0016). `op.enqueue_audit` cannot serve here: it raises unless its ID names an incident event.
+  Each record is written the way `op.log_control` writes one (0016): one row in `op.control_changes` (`id`, `recorded_at`, `type`, `staff_id`, `payload_salt`; append-only, as `op.dispatch_control_log`), and one outbox entry whose `event_id` is that row's ID. The payload holds IDs and codes only, salted and hashed with that row's salt. `op.enqueue_audit` is not called: it raises unless its ID names an incident event.
 - A trigger `incident_events_append_only` on `op.incident_events` (row-level, every role) refuses `UPDATE` and `DELETE`, and a statement trigger refuses `TRUNCATE`, as 0016 does. Partitions are still dropped by the partition runbook, so M6 retention is unaffected.
 - A trigger `outbox_append_only` on `op.outbox` refuses `DELETE` and `TRUNCATE`, and every `UPDATE` except the relay's own: `delivered_at` from NULL to a time, with every other column unchanged (`op.mark_outbox_delivered`, 0002). No job deletes from `op.outbox` on `main`; M6's retention (F-87) relaxes the trigger for delivered rows only.
+- **Who the triggers bind.** Both tables are owned by `op_owner`, the store's migration role (ADR-0006), which no runtime process or operator command uses. No runtime role (`op_intake`, `op_ivr`, `op_dispatch`, `op_relay`, `op_console`, `op_readonly`) owns a table or may set `session_replication_role`, so none can disable or drop a trigger. The owner or a superuser can. As for the ledger (ADR-0005), that is outside what the database can prevent:
+  - Detection is the platform's (P0, R-16). DDL is logged off the database host (`log_statement = 'ddl'`), so a `DISABLE TRIGGER` or `DROP TRIGGER` leaves a record that the owner cannot erase.
+  - A row deleted after relay is caught by `verify-coverage` (Task 5.3) against the witnessed ledger.
+  - A witness count of these tables would add nothing: the only window it would have to catch is the seconds between commit and relay.
+  - Task 5.6 records this in `threat-model/threats.yaml`, with the test below as `verified_by`.
 
 - [ ] **Step 1: Write the failing tests** (integration):
-  - `TestEveryStateChangingControlFunctionWritesOneLedgerEntry`. The function list is generated from `pg_proc`: `SECURITY DEFINER` in schema `op`, granted to `op_console` or the owner, not `STABLE`, minus an allow-list of read helpers. A new function without a ledger entry fails the test.
+  - `TestEveryStateChangingControlFunctionWritesOneLedgerEntry`. The function list is generated from `pg_proc`: `SECURITY DEFINER` in schema `op`, granted to `op_console` or the owner, not `STABLE`, minus an allow-list of read helpers. Each call leaves one `op.control_changes` row and one outbox entry whose `event_id` is that row's ID and whose hash verifies with its salt. A new function without a ledger entry fails the test.
+  - `TestRuntimeRolesCannotDisableTheAppendOnlyTriggers`: as each runtime role, `ALTER TABLE … DISABLE TRIGGER` on `op.incident_events` and on `op.outbox`, and `SET session_replication_role = replica`, each fail with 42501.
   - `TestIncidentEventsRefuseUpdateAndDeleteEvenForTheOwner`.
   - `TestOutboxRefusesDeleteAndPayloadRewrite`: `DELETE`, `TRUNCATE`, a payload change, `delivered_at` back to NULL, and a second `delivered_at` on a delivered row are each refused.
   - `TestOutboxRelayStillMarksDelivered`: `op.mark_outbox_delivered` on a pending row returns 1, and `op.claim_outbox` no longer returns it.
-- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ControlFunction|RefuseUpdate|OutboxRefuses|OutboxRelay' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ControlFunction|RefuseUpdate|OutboxRefuses|OutboxRelay|RuntimeRolesCannot' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Write the migration. Check that the partition-maintenance runbook's commands still work (`DROP`/`DETACH`, not `DELETE`).
 - [ ] **Step 4:** Run the same command, then `scripts/ci/integration.sh`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(audit): control changes reach the ledger; events and outbox are append-only (UX-5 Task 2)`.
@@ -994,7 +1000,7 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 - Create: `docs/adr/ADR-0036-ledger-coverage-of-control-changes.md` (index it). It decides: attempts for coordinator calls; acknowledgements, control changes and bridge ends as ledger-only records (identifiers and salted hash; no incident event, because `op.append_event_core` stays M3's); append-only triggers; count-based coverage until encoding v2. Its Confirmation lists the tests of Tasks 5.1 to 5.5.
 - Modify: `docs/reference/audit-canonical-encoding.md` (new entry types), `docs/reference/cli-sautictl.md`, `docs/runbooks/audit-ledger-verification-failure.md` (coverage failures), `suspension-and-resumption.md`, `split-wrong-merge.md` and `gazetteer-update.md` (`--yes`, `--dry-run`, `SAUTI_DSN`), `docs/traceability.md`, `threat-model/threats.yaml` (T-006-style tamper threats: the new `verified_by`), `governance/ai_risk_manifest.yaml`.
 - [ ] **Step 1:** Write the docs and run the gates. Expected: all OK.
-- [ ] **Step 2:** Commit `docs: ADR-0036 and audit runbooks (UX-5 Task 6)`. Push and open the PR. Gates, CodeRabbit, then **ask before merging**. In the PR, inform the DPO of `op.coordinator_call_attempts` and the new ledger entry types.
+- [ ] **Step 2:** Commit `docs: ADR-0036 and audit runbooks (UX-5 Task 6)`. Push and open the PR. Gates, CodeRabbit, then **ask before merging**. In the PR, inform the DPO of `op.coordinator_call_attempts`, `op.control_changes` and the new ledger entry types.
 
 
 ---
