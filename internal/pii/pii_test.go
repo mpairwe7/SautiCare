@@ -3,8 +3,10 @@ package pii
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -105,5 +107,67 @@ func TestParsePhoneNormalisesTrunkPrefixAndRejectsCountryCodeZero(t *testing.T) 
 		if _, err := ParsePhone(bad); err == nil {
 			t.Errorf("ParsePhone(%q) accepted country code 0", bad)
 		}
+	}
+}
+
+// canonicalInputs are TestParsePhoneUganda's accepted forms plus foreign
+// numbers; FuzzParsePhoneCanonical seeds from them.
+var canonicalInputs = []string{
+	"0772123456", "256772123456", "+256 772 123 456", "+256-772-123456",
+	"+2560772123456", "+256 0772 123 456", "2560772123456",
+	"+254712345678", "+1 202 555 0143",
+}
+
+// notNumbers look like numbers but have no Ugandan national number: a
+// national significant number never starts with the trunk prefix 0. Screen 8
+// accepted them, and three later paths rejected the stored value (V-21).
+var notNumbers = []string{"0000000000", "0012345678", "+2560077212345", "2560012345678"}
+
+// A parsed number re-parses to itself, so every path that re-reads a stored
+// number accepts what intake accepted (evaluation audit V-21, EA-7).
+func TestParsePhoneIsCanonical(t *testing.T) {
+	for _, in := range canonicalInputs {
+		p := mustPhone(t, in)
+		if q, err := ParsePhone(p.E164()); err != nil || q != p {
+			t.Errorf("ParsePhone(%q) does not re-parse to itself (err %v)", in, err)
+		}
+	}
+	for _, bad := range notNumbers {
+		if _, err := ParsePhone(bad); !errors.Is(err, ErrInvalidPhone) {
+			t.Errorf("ParsePhone(%q) = %v, want ErrInvalidPhone", bad, err)
+		}
+	}
+}
+
+// The same property over generated Ugandan and foreign forms: round trip
+// (parse, render, parse gives the same Phone) and idempotence.
+func TestParsePhoneRoundTripProperty(t *testing.T) {
+	prefixes := []string{"", "+", "0", "00", "256", "+256", "+2560", "2560", "+256 0", "+1 ", "+44-"}
+	gen := func(r *rand.Rand) string {
+		b := []byte(prefixes[r.Intn(len(prefixes))])
+		for range r.Intn(14) {
+			b = append(b, "0123456789 -"[r.Intn(12)])
+		}
+		return string(b)
+	}
+	r := rand.New(rand.NewSource(1))
+	accepted := 0
+	for range 200000 {
+		in := gen(r)
+		p, err := ParsePhone(in)
+		if err != nil {
+			continue
+		}
+		accepted++
+		q, err := ParsePhone(p.E164())
+		if err != nil || q != p {
+			t.Fatalf("ParsePhone(%q) does not re-parse to itself (err %v)", in, err)
+		}
+		if r2, _ := ParsePhone(q.E164()); r2 != q {
+			t.Fatalf("ParsePhone is not idempotent from %q", in)
+		}
+	}
+	if accepted < 1000 {
+		t.Fatalf("the generator reached only %d valid numbers", accepted)
 	}
 }

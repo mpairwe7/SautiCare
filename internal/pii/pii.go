@@ -27,6 +27,8 @@ const (
 // ParsePhone normalises Ugandan local forms (0772123456, 256772123456,
 // "+256 772 123 456") to +256772123456 and accepts any other E.164 number
 // that starts with '+', because roaming and foreign SIMs can still call.
+// A Ugandan national number never starts with the trunk prefix 0, so "00…"
+// is refused: what it accepts re-parses to itself (evaluation audit V-21).
 func ParsePhone(s string) (Phone, error) {
 	var b strings.Builder
 	plus := false
@@ -50,7 +52,7 @@ func ParsePhone(s string) (Phone, error) {
 		// Uganda: drop a national trunk 0 written after the country code
 		// (+256 0772…), so every form of one number normalises identically.
 		national := strings.TrimPrefix(d[len(ugCountryCode):], "0")
-		if len(national) != ugNationalLen {
+		if len(national) != ugNationalLen || national[0] == '0' {
 			return Phone{}, ErrInvalidPhone
 		}
 		return Phone{e164: "+" + ugCountryCode + national}, nil
@@ -59,7 +61,7 @@ func ParsePhone(s string) (Phone, error) {
 			return Phone{}, ErrInvalidPhone
 		}
 		return Phone{e164: "+" + d}, nil
-	case strings.HasPrefix(d, "0") && len(d) == 1+ugNationalLen:
+	case strings.HasPrefix(d, "0") && len(d) == 1+ugNationalLen && d[1] != '0':
 		return Phone{e164: "+" + ugCountryCode + d[1:]}, nil
 	default:
 		return Phone{}, ErrInvalidPhone

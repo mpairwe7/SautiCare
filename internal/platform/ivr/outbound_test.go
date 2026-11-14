@@ -84,7 +84,7 @@ func TestForwardCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(a.originated) != 1 || a.originated[0] != "PJSIP/+256000000001@sauti-trunk" || a.args[0][0] != "forward" || len(st.settled) != 1 {
+	if len(a.originated) != 1 || a.originated[0] != "PJSIP/+12025550101@sauti-trunk" || a.args[0][0] != "forward" || len(st.settled) != 1 {
 		t.Fatalf("originated %v args %v settled %v", a.originated, a.args, st.settled)
 	}
 	ch := "fwd-1"
