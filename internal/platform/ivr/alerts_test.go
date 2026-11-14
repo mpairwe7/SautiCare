@@ -293,6 +293,23 @@ func TestAlertCallAccept(t *testing.T) {
 	}
 }
 
+// Two responders accept at the same moment (Scalable MVP Stack, §Edge cases,
+// row 11): the one who loses on a voice alert hears that the incident is
+// taken, is told nothing of where to go, and the call ends.
+func TestALateVoiceAcceptHearsAlreadyTaken(t *testing.T) {
+	c, a, st := alertRig(t, false)
+	st.accept = dispatch.AlreadyTaken
+	ch := answer(t, c, a, st)
+	c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: "1"})
+	if last := a.plays[len(a.plays)-1]; st.accepted != 1 || !slices.Equal(last, []string{"sauti/en/alert-already-taken"}) {
+		t.Fatalf("accepts %d, last play %v: want only the already-taken prompt", st.accepted, last)
+	}
+	a.finish(t, c, ch)
+	if !slices.Contains(a.hungUp, ch) {
+		t.Fatal("not hung up after the already-taken prompt")
+	}
+}
+
 // A landmark that is not in the gazetteer in force (free text) is never
 // spoken; a result prompt that cannot be played ends the call at once.
 func TestAlertCallResultEdges(t *testing.T) {
