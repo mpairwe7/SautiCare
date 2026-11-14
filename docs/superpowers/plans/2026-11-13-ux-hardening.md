@@ -281,19 +281,18 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 **Interfaces:**
 - Produces:
   - `BridgeStore.OpenIncidentForCaller(ctx, macs [][]byte) (uuid.UUID, bool, error)`: an open incident with a session from these numbers, assigned or not.
-  - `BridgeStore.Escalate(ctx, incidentID uuid.UUID, reason string) error`: appends `incident.escalated` through `op.dispatch_escalate`, which `op_ivr` may already call. If the grant is missing, migration 0033 adds it.
+  - `BridgeStore.Escalate(ctx, incidentID uuid.UUID, reason, scope string, every time.Duration) error`: appends `incident.escalated` once per scope (and, with `every > 0`, once per window of that length on the database clock) through `op.dispatch_escalate`, which `op_ivr` may already call. If the grant is missing, migration 0033 adds it.
 - Behaviour:
   - A caller (`by == caller`) whose other leg rings out or is destroyed unanswered goes to `toCoordinator`, and `bridge_unanswered` is escalated.
-  - A caller with an open but unassigned incident goes to `toCoordinator`, and `bridge_unanswered` is escalated.
-  - An unknown number hears `bridge-no-assignment`; "press 0" then takes it to `toCoordinator` (ADR-0029 rule 1). This is rate-limited by the existing three-tries rule.
+  - An unknown number hears `bridge-no-assignment`; "press 0" then takes it to `toCoordinator` (ADR-0029 rule 1). This is rate-limited by the existing three-tries rule. It has no incident, so nothing is escalated: the live dial is its only path, and a failed `Continue` hangs up as today (ADR-0029 rule 3). A number whose open report has nobody assigned hears exactly the same prompt, and its incident is escalated `bridge_unanswered` quietly, off the call's path, at most once per 10 minutes on the database clock.
   - A responder's no-answer is unchanged.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestBridgeCallerNoAnswerGoesToACoordinator`: assert `continued == ["in-1→sauti-ivr-fallback"]` and one `Escalate(…, "bridge_unanswered")`.
-  - `TestBridgeCallerWithAnUnassignedIncidentGoesToACoordinator`.
+  - `TestBridgeOpenIncidentIsIndistinguishableFromAnUnknownNumber`: the same prompt and keys as an unknown number, and one quiet `bridge_unanswered`.
   - `TestBridgeUnknownNumberCanPressZeroForACoordinator`.
   - `TestBridgeUnknownNumber` stays green: nothing is revealed and no escalation is written.
-- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ -run 'BridgeCaller|BridgeUnknown' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ -run 'BridgeCaller|BridgeUnknown|BridgeOpen' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Implement. Add the query and run `bin/sqlc generate && bin/sqlc diff` (expected: no output).
 - [ ] **Step 4:** Run the same command, then `go test -tags integration ./internal/platform/pg/opstore/ -run Bridge -count=1`. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(bridge): a caller who reaches nobody reaches a coordinator (UX-1 Task 6)`.
@@ -451,7 +450,7 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 - Test: create `tools/freshness/` docs-phrase check (or `governance/tests/test_runbooks.py`): `test_no_stale_escalation_phrases`.
 
 **ADR-0034 (MADR 4.0, the four mandatory sections plus Decision Drivers and Considered Options) decides:**
-- every hand-over escalates (`voice_handed_over`);
+- every hand-over of a call with an incident escalates (`voice_handed_over`); a call with no incident is handed over live and records nothing;
 - three no-matches, and engaged silence, hand over;
 - the bridge sends a caller who reaches nobody to a coordinator;
 - the sweeper escalates any located incident without T2;

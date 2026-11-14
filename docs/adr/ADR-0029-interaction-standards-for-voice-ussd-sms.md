@@ -72,7 +72,7 @@ Settles: F-02, F-29, F-33, F-36; constrains F-82.
 
 ### 3. Every failure path ends with a person
 
-An automated step that errors, times out or exhausts its retries hands over to a coordinator and records an `incident.escalated` event, so the coordinator line keeps ringing even when the hand-over itself fails. This covers:
+An automated step that errors, times out or exhausts its retries hands over to a coordinator and records an `incident.escalated` event on the call's incident, so the coordinator line keeps ringing even when the hand-over itself fails. A call with no incident (an unknown number on the bridge, or a voice call whose intake failed before an incident was opened) is handed over live and records nothing: an escalation needs an incident, and opening one outside Tool 1, or keeping a separate record, is the PI's and the DPO's decision. This covers:
 - an intake error or timeout, an unplayable or failed prompt, the no-match limit, and silence after the caller engaged;
 - a fallback dial nobody answers (a bounded retry, then a closing message, while the escalation rings);
 - a caller's bridge call that is not answered, or that finds an incident with no helper yet;
