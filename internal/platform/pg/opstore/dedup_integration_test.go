@@ -114,6 +114,12 @@ func TestMergeCarriesSeverityAndEscalation(t *testing.T) {
 			if err := json.Unmarshal(e.Payload, &pl); err != nil {
 				t.Fatalf("escalation payload %s: %v", e.Payload, err)
 			}
+			// The exact payload, no extra field: a reason alone, or a reason and its role.
+			ruleError := maps.Equal(pl, map[string]string{"reason": "triage_rule_error"})
+			noVHT := maps.Equal(pl, map[string]string{"reason": "no_eligible_responder", "role": "vht"})
+			if !ruleError && !noVHT {
+				t.Errorf("escalation payload %s", e.Payload)
+			}
 			pairs[intake.EscalationPair{Reason: pl["reason"], Role: pl["role"]}]++
 		}
 	}
