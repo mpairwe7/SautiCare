@@ -33,8 +33,11 @@ const (
 	EventDTMF             = "ChannelDtmfReceived"
 	EventPlaybackStarted  = "PlaybackStarted"
 	EventPlaybackFinished = "PlaybackFinished"
-	EventStasisEnd        = "StasisEnd"
-	EventHangupRequest    = "ChannelHangupRequest"
+	// EventPlaybackContinuing: a playback of several recordings moved on to
+	// the next one.
+	EventPlaybackContinuing = "PlaybackContinuing"
+	EventStasisEnd          = "StasisEnd"
+	EventHangupRequest      = "ChannelHangupRequest"
 	// EventChannelDestroyed: a channel ended, including a call Sauti placed
 	// that was never answered (it never entered the application).
 	EventChannelDestroyed = "ChannelDestroyed"

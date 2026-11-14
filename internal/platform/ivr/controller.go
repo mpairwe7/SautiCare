@@ -24,13 +24,14 @@ import (
 type Event = ari.Event
 
 const (
-	EventStasisStart      = ari.EventStasisStart
-	EventDTMF             = ari.EventDTMF
-	EventPlaybackStarted  = ari.EventPlaybackStarted
-	EventPlaybackFinished = ari.EventPlaybackFinished
-	EventStasisEnd        = ari.EventStasisEnd
-	EventHangupRequest    = ari.EventHangupRequest
-	playbackFailed        = ari.PlaybackFailed
+	EventStasisStart        = ari.EventStasisStart
+	EventDTMF               = ari.EventDTMF
+	EventPlaybackStarted    = ari.EventPlaybackStarted
+	EventPlaybackFinished   = ari.EventPlaybackFinished
+	EventPlaybackContinuing = ari.EventPlaybackContinuing
+	EventStasisEnd          = ari.EventStasisEnd
+	EventHangupRequest      = ari.EventHangupRequest
+	playbackFailed          = ari.PlaybackFailed
 )
 
 // ARI is the subset of the Asterisk client the controller uses.
@@ -327,9 +328,12 @@ func (c *Controller) step(ctx context.Context, st *call, it item) {
 		}
 	case EventDTMF:
 		c.dtmf(ctx, st, e.Digit)
-	case EventPlaybackStarted:
+	case EventPlaybackStarted, EventPlaybackContinuing:
 		if e.PlaybackID == st.current {
 			st.started, st.playing = true, true
+			// The backstop runs per recording, from its start: a long
+			// sequence (the reference, then a message) is never cut off.
+			c.startTimer(st, c.opt.PromptMax+c.opt.NoInput)
 		}
 	case EventPlaybackFinished:
 		if e.PlaybackID != st.current {

@@ -793,3 +793,33 @@ func TestAFailedQuestionPromptHandsOver(t *testing.T) {
 		t.Fatalf("continues %v handovers %v", a.continues, s.handovers)
 	}
 }
+
+// Review R3: a closing message longer than PromptMax (the reference read
+// digit by digit, then its message) is not cut off by the backstop: each
+// recording of the playback re-arms it as it starts (PlaybackContinuing).
+func TestALongClosingPromptIsNotCutOff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		a := &fakeARI{}
+		c := New(a, &scripted{prompts: prompts()[2:]}, slog.New(slog.DiscardHandler),
+			Options{NoInput: 15 * time.Second, PromptMax: 30 * time.Second})
+		c.Handle(ctx, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "+256772123456"})
+		synctest.Wait()
+		pb, _ := a.lastPlay()
+		c.Handle(ctx, Event{Type: EventPlaybackStarted, ChannelID: "ch1", PlaybackID: pb})
+		for range 3 { // each recording plays 40 s
+			time.Sleep(40 * time.Second)
+			c.Handle(ctx, Event{Type: EventPlaybackContinuing, ChannelID: "ch1", PlaybackID: pb})
+			synctest.Wait()
+		}
+		if a.count(&a.hangups) != 0 {
+			t.Fatal("hung up while the closing message played")
+		}
+		c.Handle(ctx, Event{Type: EventPlaybackFinished, ChannelID: "ch1", PlaybackID: pb})
+		synctest.Wait()
+		if a.count(&a.hangups) != 1 {
+			t.Fatalf("hangups %v after the closing message", a.hangups)
+		}
+	})
+}
