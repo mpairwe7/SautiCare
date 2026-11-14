@@ -494,8 +494,10 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 				k.c.Log.Error("coordinator call not placed", "incident", d.IncidentID, "calls", d.Calls, "tier", i+1, "err", err)
 				continue
 			}
-			if round != nil && !k.addLeg(round, ch) {
-				k.hangUpLeg(ctx, ch) // the round was acknowledged while this call was placed
+			// The round was acknowledged while this call was placed: hang it
+			// up. A call to the line whose hang-up fails is still ringing and
+			// keeps its reservation below.
+			if round != nil && !k.addLeg(round, ch) && (k.hangUpLeg(ctx, ch) || i > 0) {
 				continue
 			}
 			if i > 0 {
@@ -794,15 +796,16 @@ func (k *CoordinatorCalls) addLeg(r *tierRound, ch string) bool {
 	return true
 }
 
-// hangUpLeg ends another call of an acknowledged round. Its line is freed
-// only once Asterisk has taken the hang-up; a call still live keeps its line
-// and its no-input time.
-func (k *CoordinatorCalls) hangUpLeg(ctx context.Context, ch string) {
+// hangUpLeg ends another call of an acknowledged round and reports whether
+// Asterisk took the hang-up. Its line is freed only then; a call still live
+// keeps its line and its no-input time.
+func (k *CoordinatorCalls) hangUpLeg(ctx context.Context, ch string) bool {
 	if _, err := bounded(context.WithoutCancel(ctx), k.c.OpTimeout, func(c context.Context) (struct{}, error) { return struct{}{}, k.c.ARI.Hangup(c, ch) }); err != nil {
 		k.c.Log.Error("hanging up the other coordinator call failed; its line stays held", "err", err)
-		return
+		return false
 	}
 	k.release(ch, nil)
+	return true
 }
 
 func (k *CoordinatorCalls) sounds(st *coordinatorCall) []string {

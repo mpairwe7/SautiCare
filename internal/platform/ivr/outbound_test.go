@@ -632,3 +632,32 @@ func TestASiblingThatCannotBeHungUpKeepsItsLine(t *testing.T) {
 		t.Fatalf("the sibling that is still live was released: busy %v tracked %v", busy, tracked)
 	}
 }
+
+// PR #14 review (round 3): an earlier round's backup call acknowledges the
+// same seq while a retry round's primary call is being placed, and that new
+// call's hang-up fails before it answers. It is still ringing, so it keeps
+// its line: another escalation cannot ring the line meanwhile.
+func TestALateCallThatCannotBeHungUpKeepsItsLine(t *testing.T) {
+	a := &alertARI{failHangup: map[string]bool{"out-3": true}}
+	inc := uuid.NewV7()
+	cc, st := tierRig(t, a, 2, tierCall(inc, 7))
+	if _, err := cc.RunOnce(context.Background()); err != nil { // out-1 the line, out-2 the backup
+		t.Fatal(err)
+	}
+	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "out-2", Args: a.args[1]})
+	a.onOriginate = func(ch string) {
+		if ch == "out-3" { // the retry round's call to the line is being placed
+			cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "out-2", Digit: "1"})
+		}
+	}
+	st.calls = []dispatch.CoordinatorCall{tierCall(inc, 7)}
+	if _, err := cc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cc.mu.Lock()
+	_, held := cc.busy["out-3"]
+	cc.mu.Unlock()
+	if !held || len(a.originated) != 3 {
+		t.Fatalf("the ringing call holds a line %v; rang %v", held, a.originated)
+	}
+}
