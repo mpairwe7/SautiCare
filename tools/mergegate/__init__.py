@@ -16,14 +16,18 @@ evaluation audit V-02).
   * every review thread is settled by its last word: CodeRabbit's, and a
     concession; or it is deferred explicitly (--defer) to an open issue,
     on CodeRabbit's own last word, and the merge commit records it.
+If CodeRabbit's latest decisive review still requests changes once every
+thread is settled, it posts `@coderabbitai resolve` (never while a thread is
+open), waits up to 15 minutes for CodeRabbit to stop requesting changes, and
+reads everything again except the quiet window (CodeRabbit just answered).
 Then it re-reads the head, resolves the settled threads, merges with
 `--match-head-commit`, and waits for main's CI on the merge commit.
 Any gh error, timeout, empty or unreadable answer refuses: exit 2, with the
 reason on stderr, and nothing merged. Exit 0: merged and main's CI passed on
 the merge commit (or, with --dry-run, every read passed and nothing was
 written). Exit 3: merged, but main's CI on the merge commit failed or could
-not be confirmed. It never comments, reviews, dismisses a review, or asks
-CodeRabbit for anything.
+not be confirmed. It never reviews or dismisses a review, and the resolve
+command is the only comment it posts.
 """
 import argparse
 import json
@@ -42,6 +46,7 @@ REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 CHECKS_FILE = Path(__file__).with_name("required_checks.txt")
 REVIEWER = "coderabbitai"            # CodeRabbit's login in GraphQL, as a Bot
 REVIEWER_REST = "coderabbitai[bot]"  # and in REST
+RESOLVE_COMMAND = "@coderabbitai resolve"
 # CodeRabbit answers a reply up to 22 minutes later (PR #13: 1324 s), often
 # after first marking the finding addressed; its last word must be final.
 QUIET = timedelta(minutes=30)
@@ -278,12 +283,24 @@ def login(obj: dict, key: str = "user") -> str | None:
     return (obj.get(key) or {}).get("login")
 
 
-def check_review(repo: str, pr: int, head: str) -> bool:
-    """CodeRabbit's latest review is of head, and it has been quiet for QUIET.
-    Returns whether its latest decisive review requests changes."""
+def coderabbit_reviews(repo: str, pr: int) -> list[dict]:
+    """CodeRabbit's submitted reviews, oldest first."""
     mine = [r for r in items(f"repos/{repo}/pulls/{pr}/reviews?per_page=100")
             if login(r) == REVIEWER_REST and r.get("submitted_at")]
-    mine.sort(key=lambda r: when(r["submitted_at"]))
+    return sorted(mine, key=lambda r: when(r["submitted_at"]))
+
+
+def requests_changes(mine: list[dict]) -> bool:
+    """Whether CodeRabbit's latest decisive review requests changes."""
+    decisive = [r["state"] for r in mine if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+    return bool(decisive) and decisive[-1] == "CHANGES_REQUESTED"
+
+
+def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> bool:
+    """CodeRabbit's latest review is of head, and (if quiet) it has been
+    quiet for QUIET. Returns whether its latest decisive review requests
+    changes."""
+    mine = coderabbit_reviews(repo, pr)
     # A thread reply or a command approval is a review with an empty body,
     # stamped with whatever the head was: it is not a review of the code.
     real = [r for r in mine if visible(get(r, "body", str, "a CodeRabbit review")).strip()]
@@ -292,6 +309,8 @@ def check_review(repo: str, pr: int, head: str) -> bool:
     if (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
         raise Refused(f"CodeRabbit's latest review is of {commit[:7]}, not the head {head[:7]} "
                       "(rate-limited or not reviewed yet); re-run once it has reviewed the head")
+    if not quiet:
+        return requests_changes(mine)
     times = [when(r["submitted_at"]) for r in mine]
     for path in (f"repos/{repo}/pulls/{pr}/comments?per_page=100", f"repos/{repo}/issues/{pr}/comments?per_page=100"):
         for cm in items(path):
@@ -300,8 +319,7 @@ def check_review(repo: str, pr: int, head: str) -> bool:
     if (ago := now() - max(times)) < QUIET:
         raise Refused(f"CodeRabbit was active {int(ago.total_seconds())} s ago; "
                       f"re-run after {int(QUIET.total_seconds() // 60)} quiet minutes")
-    decisive = [r["state"] for r in mine if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
-    return bool(decisive) and decisive[-1] == "CHANGES_REQUESTED"
+    return requests_changes(mine)
 
 
 def visible(body: str, keep_markers: bool = False) -> str:
@@ -453,6 +471,21 @@ def check_threads(repo: str, pr: int, dry_run: bool, deferrals: dict[int, int]) 
     return to_resolve, records
 
 
+def post_resolve(repo: str, pr: int) -> None:
+    """Post the resolve command, then wait, bounded, until CodeRabbit's latest
+    decisive review no longer requests changes. Called only once every thread
+    verdict is clean: the command resolves every thread, objections included."""
+    gh("pr", "comment", str(pr), "--repo", repo, "--body", RESOLVE_COMMAND)
+    say(f"posted `{RESOLVE_COMMAND}`; waiting for CodeRabbit's approval")
+    wait = float(os.environ.get("MERGEGATE_APPROVAL_WAIT", "900"))
+    deadline = time.monotonic() + wait
+    while requests_changes(coderabbit_reviews(repo, pr)):
+        if time.monotonic() >= deadline:
+            raise Refused(f"CodeRabbit did not approve within {wait:g} s of `{RESOLVE_COMMAND}`; "
+                          "read its latest comments on the PR, then re-run")
+        time.sleep(float(os.environ.get("MERGEGATE_POLL", "30")))
+
+
 def verify_main(repo: str, pr: int) -> str:
     """Wait for main's CI on the merge commit; its recorded conclusion must
     be success. Returns the merge commit."""
@@ -482,6 +515,35 @@ def say(msg: str) -> None:
     print(f"mergegate: {msg}", flush=True)
 
 
+def verify(repo: str, pr: int, expected: list[str], deferrals: dict[int, int], dry_run: bool,
+           again: str | None = None) -> tuple[dict, list[str], list[str], bool]:
+    """Every read, in order. `again` is the head judged before the resolve
+    command: the head must not have moved, and the quiet window is skipped,
+    because CodeRabbit has just answered the command. Returns the PR, the
+    settled threads to resolve, the deferral records, and whether CodeRabbit's
+    latest decisive review requests changes."""
+    info = check_pr(repo, pr)
+    head = info["head"]
+    if again and head != again:
+        raise Refused("the head moved during the run; re-run")
+    say(f"PR #{pr} is open and mergeable at {head[:7]}")
+    required = check_ruleset(repo, expected)
+    say(f"main's ruleset requires the {len(required)} expected checks and resolved threads")
+    check_main_green(repo)
+    say("main's CI passed on main's head")
+    for w in check_checks(repo, head, required):
+        say(f"WARNING: {w} (not a required check; it does not block)")
+    say(f"every required check passed on {head[:7]}")
+    changes_requested = check_review(repo, pr, head, quiet=not again)
+    say(f"CodeRabbit reviewed {head[:7]}" + ("" if again else
+        f" and has been quiet for {int(QUIET.total_seconds() // 60)} minutes"))
+    to_resolve, deferred = check_threads(repo, pr, dry_run, deferrals)
+    say(f"every review thread is settled ({len(deferred)} deferred)")
+    for d in deferred:
+        say(f"deferred: {d}")
+    return info, to_resolve, deferred, changes_requested
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m tools.mergegate",
                                  description="Merge a pull request into main only if every gate passes.")
@@ -502,26 +564,20 @@ def main(argv: list[str]) -> int:
                 raise Refused(f"--defer {d!r} is not COMMENT=ISSUE (two numbers)")
             deferrals[int(m.group(1))] = int(m.group(2))
         expected = expected_checks()
-        info = check_pr(repo, pr)
+        info, to_resolve, deferred, changes_requested = verify(repo, pr, expected, deferrals, args.dry_run)
         head = info["head"]
-        say(f"PR #{pr} is open and mergeable at {head[:7]}")
-        required = check_ruleset(repo, expected)
-        say(f"main's ruleset requires the {len(required)} expected checks and resolved threads")
-        check_main_green(repo)
-        say("main's CI passed on main's head")
-        for w in check_checks(repo, head, required):
-            say(f"WARNING: {w} (not a required check; it does not block)")
-        say(f"every required check passed on {head[:7]}")
-        changes_requested = check_review(repo, pr, head)
-        say(f"CodeRabbit reviewed {head[:7]} and has been quiet for {int(QUIET.total_seconds() // 60)} minutes")
-        to_resolve, deferred = check_threads(repo, pr, args.dry_run, deferrals)
-        say(f"every review thread is settled ({len(deferred)} deferred)")
-        for d in deferred:
-            say(f"deferred: {d}")
-        if changes_requested:
-            raise Refused("CodeRabbit's latest decisive review requests changes. Every thread verdict is clean, "
-                          "so `@coderabbitai resolve` is now permitted (the gate never posts it); "
-                          "re-run after the quiet window")
+        if changes_requested and args.dry_run:
+            say(f"CodeRabbit still requests changes: would post `{RESOLVE_COMMAND}`, "
+                "wait for its approval and verify again")
+        elif changes_requested:
+            if check_pr(repo, pr)["head"] != head:
+                raise Refused("the head moved during the run; re-run")
+            post_resolve(repo, pr)
+            say("CodeRabbit no longer requests changes; verifying again")
+            info, to_resolve, deferred, changes_requested = verify(repo, pr, expected, deferrals, False, again=head)
+            if changes_requested:
+                raise Refused(f"CodeRabbit requests changes again after `{RESOLVE_COMMAND}`; "
+                              "read its latest review, then re-run after the quiet window")
         if check_pr(repo, pr)["head"] != head:
             raise Refused("the head moved during the run; re-run")
         if args.dry_run:
