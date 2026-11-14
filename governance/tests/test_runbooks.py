@@ -3,7 +3,8 @@
 An escalation rings the coordinator line (M2 Part B), so a runbook that
 still says it is only a recorded event sends a coordinator looking in the
 wrong place. A call-back to the caller needs the audited reveal of the M5
-console, so a step that asks for one must say so.
+console, so a step that asks for one, or a line that promises one, must say
+so (R-3).
 """
 import unittest
 
@@ -19,7 +20,8 @@ class StaleEscalationPhrasesTest(unittest.TestCase):
             for n, line in enumerate(path.read_text().splitlines(), 1):
                 where = f"{path.relative_to(ROOT)}:{n}"
                 problems += [f"{where}: stale phrase {p!r}" for p in STALE if p in line]
-                if "call the caller back" in line.lower() and "M5" not in line:
+                low = line.lower()
+                if ("call the caller back" in low or "will call back" in low) and "M5" not in line:
                     problems.append(f"{where}: a call-back to the caller without M5")
         self.assertEqual(problems, [])
 
