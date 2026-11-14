@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -470,11 +471,15 @@ func TestBackupLineRingsAfterThreeUnansweredCalls(t *testing.T) {
 	})
 }
 
-// Until UX-3 speaks roles, a reason claimed for two roles is spoken once.
-func TestCoordinatorCallSpeaksARepeatedReasonOnce(t *testing.T) {
+// CodeRabbit (PR #13, C1): an acknowledgement covers every (reason, role)
+// pair the claim returned, so the call speaks each pair, the role after its
+// reason, before a coordinator can press 1.
+func TestAcknowledgementCoversOnlyAnnouncedRoles(t *testing.T) {
 	a := &alertARI{}
-	st := &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: uuid.NewV7(), Seq: 4, Reasons: []string{"no_eligible_responder", "no_eligible_responder"},
-		Roles: []string{"vht", "transporter"}, Reference: "1234567894", Calls: 1}}, acked: map[uuid.UUID]int64{}}
+	inc := uuid.NewV7()
+	st := &coordStore{calls: []dispatch.CoordinatorCall{{IncidentID: inc, Seq: 9,
+		Reasons: []string{"no_eligible_responder", "no_eligible_responder", "triage_rule_error"},
+		Roles:   []string{"vht", "transporter", ""}, Reference: "1234567894", Calls: 1}}, acked: map[uuid.UUID]int64{}}
 	cc, err := NewCoordinatorCalls(CoordinatorCallsConfig{ARI: a, Store: st, Endpoint: "PJSIP/coordinators", Retry: 2 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
@@ -483,14 +488,34 @@ func TestCoordinatorCallSpeaksARepeatedReasonOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	cc.Handle(context.Background(), Event{Type: EventStasisStart, ChannelID: "esc-1", Args: a.args[0]})
-	n := 0
-	for _, s := range a.plays[0] {
-		if s == "sauti/en/escalation-reason-no_eligible_responder" {
-			n++
+	b := "sauti/en/"
+	want := []string{b + "escalation-reason-triage_rule_error", b + "escalation-reason-no_eligible_responder", b + "role-vht",
+		b + "escalation-reason-no_eligible_responder", b + "role-transporter", b + "escalation-options"}
+	if got := a.plays[0][len(a.plays[0])-len(want):]; !slices.Equal(got, want) {
+		t.Fatalf("announced %v, want %v", got, want)
+	}
+	cc.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: "esc-1", Digit: "1"})
+	if st.acked[inc] != 9 {
+		t.Fatalf("acknowledged %v", st.acked)
+	}
+}
+
+// Every reason with every role still fits the 128 characters an ARI
+// argument may hold: a call that cannot be placed would never ring.
+func TestEveryReasonAndRoleFitsInTheCallArguments(t *testing.T) {
+	var reasons, roles []string
+	for _, r := range incident.EscalationReasons {
+		for _, role := range []string{"", "vht", "transporter"} {
+			reasons, roles = append(reasons, r), append(roles, role)
 		}
 	}
-	if n != 1 {
-		t.Fatalf("plays %v: the reason spoken %d times", a.plays[0], n)
+	reasons, roles = append(reasons, "not_in_the_registry"), append(roles, "")
+	arg := reasonPairs(reasons, roles)
+	if len(arg) > 128 || !regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`).MatchString(arg) {
+		t.Fatalf("%d characters: %q", len(arg), arg)
+	}
+	if got := len(pairsOf(arg)); got != len(incident.EscalationReasons)*3+1 {
+		t.Fatalf("%d pairs read back", got)
 	}
 }
 

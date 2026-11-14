@@ -123,6 +123,8 @@ sounds:
     - sauti/en/press-4
     - sauti/en/press-5
     - sauti/en/press-6
+    - sauti/en/role-transporter
+    - sauti/en/role-vht
     - sauti/en/specific_danger-acute_medical
     - sauti/en/specific_danger-acute_medical_child
     - sauti/en/specific_danger-no
@@ -251,6 +253,8 @@ sounds:
     - sauti/lg/press-4
     - sauti/lg/press-5
     - sauti/lg/press-6
+    - sauti/lg/role-transporter
+    - sauti/lg/role-vht
     - sauti/lg/specific_danger-acute_medical
     - sauti/lg/specific_danger-acute_medical_child
     - sauti/lg/specific_danger-no

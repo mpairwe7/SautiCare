@@ -1,6 +1,7 @@
 package ivr
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -389,7 +390,7 @@ const ringMargin = 10 * time.Second
 type coordinatorCall struct {
 	incident  uuid.UUID
 	seq       int64
-	reasons   []string // most urgent first
+	pairs     []pair // what the call announces, most urgent first
 	reference incident.Reference
 	plays     int
 	done      bool
@@ -463,7 +464,7 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for _, d := range due {
-		args := []string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reasonRanks(d.Reasons), string(d.Reference)}
+		args := []string{"escalation", d.IncidentID.String(), strconv.FormatInt(d.Seq, 10), reasonPairs(d.Reasons, d.Roles), string(d.Reference)}
 		// Tier 2: after BackupAfterCalls unanswered rings the backup rings
 		// too, from the next ring on (Calls counts the ring being placed). It
 		// takes none of the line's calls.
@@ -510,32 +511,57 @@ func (k *CoordinatorCalls) RunOnce(ctx context.Context) (int, error) {
 // backupArg marks a tier-2 call in its arguments.
 const backupArg = "backup"
 
-// reasonRanks carries the reasons in the call's arguments as their places in
-// the registry, most urgent first ("0.9"): short and free of any text. A
-// reason outside the registry is spoken as "other".
-func reasonRanks(reasons []string) string {
-	ranks := make([]int, 0, len(reasons))
-	for _, r := range reasons {
-		ranks = append(ranks, incident.ReasonRank(r))
+// pair is one thing a coordinator call announces: a reason and the role it
+// was recorded for ("" for none).
+type pair struct{ reason, role string }
+
+// roleCodes are the roles an escalation may carry (incident.ParseEscalated),
+// one character each in the call's arguments.
+var roleCodes = map[string]byte{"": '-', "vht": 'v', "transporter": 't'}
+
+// reasonPairs carries the claimed (reason, role) pairs in the call's
+// arguments, most urgent first: two characters each, the reason's place in
+// the registry (base 32) and the role, so every pair the registry allows
+// fits one argument. Free of any text; a reason outside the registry is
+// spoken as "other".
+func reasonPairs(reasons, roles []string) string {
+	type code struct{ rank, role int }
+	var codes []code
+	for i, r := range reasons {
+		role := ""
+		if i < len(roles) {
+			role = roles[i]
+		}
+		rc, ok := roleCodes[role]
+		if !ok {
+			rc = '-' // not a role an escalation may carry: the reason alone
+		}
+		codes = append(codes, code{incident.ReasonRank(r), strings.IndexByte("-vt", rc)})
 	}
-	slices.Sort(ranks)
-	parts := make([]string, 0, len(ranks))
-	for _, n := range slices.Compact(ranks) {
-		parts = append(parts, strconv.Itoa(n))
+	slices.SortFunc(codes, func(a, b code) int { return cmp.Or(cmp.Compare(a.rank, b.rank), cmp.Compare(a.role, b.role)) })
+	var b strings.Builder
+	for _, c := range slices.Compact(codes) {
+		b.WriteString(strconv.FormatInt(int64(c.rank), 32))
+		b.WriteByte("-vt"[c.role])
 	}
-	return strings.Join(parts, ".")
+	return b.String()
 }
 
-// reasonsOf reads reasonRanks back; anything else is spoken as "other".
-func reasonsOf(arg string) []string {
-	var out []string
-	for _, f := range strings.Split(arg, ".") {
-		r := "other"
-		if n, err := strconv.Atoi(f); err == nil && n >= 0 && n < len(incident.EscalationReasons) {
-			r = incident.EscalationReasons[n]
+// pairsOf reads reasonPairs back; anything else is spoken as "other".
+func pairsOf(arg string) []pair {
+	var out []pair
+	for i := 0; i+1 < len(arg); i += 2 {
+		p := pair{reason: "other"}
+		if n, err := strconv.ParseInt(arg[i:i+1], 32, 8); err == nil && int(n) < len(incident.EscalationReasons) {
+			p.reason = incident.EscalationReasons[n]
 		}
-		if !slices.Contains(out, r) {
-			out = append(out, r)
+		for role, c := range roleCodes {
+			if arg[i+1] == c {
+				p.role = role
+			}
+		}
+		if !slices.Contains(out, p) {
+			out = append(out, p)
 		}
 	}
 	return out
@@ -641,7 +667,7 @@ func (k *CoordinatorCalls) Handle(ctx context.Context, e Event) {
 			k.hangup(op, e.ChannelID)
 			return
 		}
-		st := &coordinatorCall{incident: inc, seq: seq, reasons: reasonsOf(e.Args[3]), reference: incident.Reference(e.Args[4])}
+		st := &coordinatorCall{incident: inc, seq: seq, pairs: pairsOf(e.Args[3]), reference: incident.Reference(e.Args[4])}
 		k.mu.Lock()
 		// Answered: the line is busy until the call ends, whether or not
 		// RunOnce has stored the call yet (CodeRabbit PR #11). The backup
@@ -717,8 +743,11 @@ func (k *CoordinatorCalls) hangUpOtherLegs(ctx context.Context, inc uuid.UUID, a
 func (k *CoordinatorCalls) sounds(st *coordinatorCall) []string {
 	b := "sauti/" + k.c.Language + "/"
 	out := append([]string{b + "escalation-intro"}, digits(st.reference)...)
-	for _, r := range st.reasons {
-		out = append(out, escalationReasonSound(k.c.Language, r))
+	for _, p := range st.pairs {
+		out = append(out, escalationReasonSound(k.c.Language, p.reason))
+		if p.role != "" {
+			out = append(out, b+"role-"+p.role) // which role nobody can reach
+		}
 	}
 	return append(out, b+"escalation-options")
 }
@@ -809,7 +838,8 @@ func OutboundSounds(copy config.Responder) []string {
 	for _, lang := range copy.Languages {
 		b := "sauti/" + lang + "/"
 		out = append(out, b+"forward-intro", b+"forward-options", b+"forward-acknowledged",
-			b+"escalation-intro", b+"escalation-options", b+"escalation-acknowledged", b+"escalation-reason-other")
+			b+"escalation-intro", b+"escalation-options", b+"escalation-acknowledged", b+"escalation-reason-other",
+			b+"role-vht", b+"role-transporter")
 		for _, r := range incident.EscalationReasons {
 			out = append(out, b+"escalation-reason-"+r)
 		}
