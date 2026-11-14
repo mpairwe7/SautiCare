@@ -82,6 +82,46 @@ func TestRetriedCallbackReturnsSameScreenNoSecondEvent(t *testing.T) {
 	}
 }
 
+// Africa's Talking retries a callback mid-flow (Scalable MVP Stack, §Edge
+// cases, row 4): the stored step keyed on this session and input replays the
+// same screen, and neither the event log nor the step store is written twice.
+func TestRetriedAnswerReturnsSameScreenNoSecondWrite(t *testing.T) {
+	c, e := newEnv(t)
+	svc := intakeService(t, c, e)
+	ctx := context.Background()
+	owner := c.Owner(t, pg.StoreOperational)
+	writes := func() (events, steps int) {
+		t.Helper()
+		if err := owner.QueryRow(ctx, "SELECT (SELECT count(*) FROM op.incident_events), (SELECT count(*) FROM op.ussd_steps)").
+			Scan(&events, &steps); err != nil {
+			t.Fatal(err)
+		}
+		return events, steps
+	}
+	req := firstCallback()
+	if _, err := svc.HandleUSSD(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	e0, s0 := writes()
+	req.Text = "1" // screen 1: English
+	a, err := svc.HandleUSSD(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1, s1 := writes()
+	b, err := svc.HandleUSSD(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, s2 := writes()
+	if e1 != e0+1 || s1 != s0+1 {
+		t.Fatalf("the answer wrote %d events and %d steps, want 1 and 1", e1-e0, s1-s0)
+	}
+	if a != b || e2 != e1 || s2 != s1 {
+		t.Fatalf("retry: screen %q (first %q), %d more events, %d more steps", b.Text, a.Text, e2-e1, s2-s1)
+	}
+}
+
 // Review focus 1: duplicate first callbacks arriving concurrently create one
 // incident, and every response carries the same reference.
 func TestConcurrentFirstCallbacksCreateOneIncident(t *testing.T) {
