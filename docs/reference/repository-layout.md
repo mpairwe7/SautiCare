@@ -4,7 +4,7 @@
 
 The reference architecture is the Scalable MVP Stack, §Repository structure. That document is confidential, so it is cited by title and section only ([ADR-0008](../adr/ADR-0008-interim-hosting-and-confidentiality.md)). Spec §5 records the same layout.
 
-In short, the reference is one monorepo holding a modular monolith: one Go module (`sautihealth.com/sauti`) with one binary per process under `cmd/`. Private domain modules sit under `internal/`, with their adapters in `internal/platform/`. Beside the code sit the console contracts and app, the triage rules, the per-store database files, telephony, analytics, deployment, tests and docs.
+In short, the reference keeps everything in one repository and one Go module (`sautihealth.com/sauti`), split into separately deployed programs, each with its own directory under `cmd/`. Private domain modules sit under `internal/`, with their adapters in `internal/platform/`. Beside the code sit the console contracts and app, the triage rules, the per-store database files, telephony, analytics, deployment, tests and docs.
 
 **Status values:**
 - **present:** the directory exists and holds what the reference puts there.
@@ -18,7 +18,7 @@ The test fails when a present or planned path is not a directory, or when a top-
 | Reference location | Repository path | Status | Notes |
 |---|---|---|---|
 | Console API contracts | `api/proto/sauti/v1/` | planned (M5) | Roadmap phase 6 |
-| `cmd/` intake gateway | `cmd/intake-gw/` | present | USSD and IVR callbacks, incident IDs, sessions |
+| `cmd/` intake gateway | `cmd/intake-gw/` | present | Receives the USSD and voice gateways' requests, opens sessions and assigns incident references |
 | `cmd/` dispatch worker | `cmd/dispatch-worker/` | present | Alert, re-dispatch and escalation workflows; follow-up timers arrive with M5 |
 | `cmd/` console API | `cmd/console-api/` | planned (M5) | Roadmap phase 6 |
 | `cmd/` IVR controller | `cmd/ivr-controller/` | present | Asterisk ARI: prompts and bridging. The reference also gives it consent recordings; here it cannot record by design ([ADR-0023](../adr/ADR-0023-ivr-through-in-house-ari-client.md)), and where consented interview audio is captured is not yet scheduled |
@@ -35,7 +35,7 @@ The test fails when a present or planned path is not a directory, or when a top-
 | `internal/` audit | `internal/audit/` | present | Hash-chained ledger and signed checkpoints ([ADR-0005](../adr/ADR-0005-audit-ledger-checkpoints.md)) |
 | `internal/` crypto | `internal/crypto/` | present | Envelope encryption ([ADR-0013](../adr/ADR-0013-envelope-encryption-and-dev-keys.md)) |
 | `internal/` platform adapters | `internal/platform/` | present | Database (`pg`), telemetry (`metrics`, `logging`), environment, telco and voice adapters; the authentication adapter (OIDC) arrives with M5 |
-| Triage rules | `triage-rules/` | present | Signed decision tables and clinical scenario tests. Gated by the amendment gate |
+| Triage rules | `triage-rules/` | present | The triage rule tables (signed) with the scenarios that test them. Gated by the amendment gate |
 | `db/` operational | `db/operational/` | present | Migrations and sqlc queries |
 | `db/` analytic | `db/analytic/` | present | Meant for the Principal Investigator in CODEOWNERS |
 | `db/` linkage | `db/linkage/` | present | Meant for the Principal Investigator in CODEOWNERS |
