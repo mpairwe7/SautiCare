@@ -357,6 +357,9 @@ func outboundTerm(events func(context.Context, func(ari.Event)) error, st *outbo
 			stop()
 			wg.Wait()
 			if err := lctx.Err(); err != nil {
+				if out.Alerts != nil {
+					out.Alerts.DisarmAll() // the term is over: the next leader owns the calls' timing
+				}
 				return err
 			}
 		}

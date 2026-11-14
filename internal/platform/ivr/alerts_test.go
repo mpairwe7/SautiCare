@@ -124,6 +124,7 @@ type alertStore struct {
 	accept   dispatch.AcceptResult
 	accepted int
 	declined map[uuid.UUID]string
+	failSave error // AcceptAlert and DeclineAlert fail (the store is down)
 }
 
 func (s *alertStore) DueVoiceAlerts(context.Context, time.Duration, int) ([]dispatch.VoiceAlert, error) {
@@ -158,10 +159,16 @@ func (s *alertStore) AlertForAttempt(context.Context, uuid.UUID) (dispatch.Respo
 	return s.alert, s.who, nil
 }
 func (s *alertStore) AcceptAlert(context.Context, uuid.UUID, uuid.UUID) (dispatch.AcceptOutcome, error) {
+	if s.failSave != nil {
+		return dispatch.AcceptOutcome{}, s.failSave
+	}
 	s.accepted++
 	return dispatch.AcceptOutcome{Result: s.accept}, nil
 }
 func (s *alertStore) DeclineAlert(_ context.Context, a, _ uuid.UUID, reason string) (string, error) {
+	if s.failSave != nil {
+		return "", s.failSave
+	}
 	s.declined[a] = reason
 	return dispatch.OutcomeDeclined, nil
 }
@@ -375,6 +382,38 @@ func TestAnUnansweredAlertCallRepeatsThenHangsUp(t *testing.T) {
 		synctest.Wait()
 		if len(a.played()) != 3 {
 			t.Fatalf("played on after closing: %v", a.played())
+		}
+	})
+}
+
+// PR #14 review: an answer the store refuses must not leave the answered
+// line open: the menu is heard again, so its no-input time (and then the
+// closing prompt) bounds the call.
+func TestARefusedAnswerReplaysTheMenu(t *testing.T) {
+	for _, digit := range []string{"1", "2"} {
+		c, a, st := alertRig(t, false)
+		st.failSave = errors.New("store down")
+		ch := answer(t, c, a, st)
+		c.Handle(context.Background(), Event{Type: EventDTMF, ChannelID: ch, Digit: digit})
+		if p := a.played(); len(p) != 2 || !slices.Equal(p[1], p[0]) {
+			t.Fatalf("key %s: plays %v, want the menu again", digit, p)
+		}
+	}
+}
+
+// PR #14 review: when the outbound leader's term ends, its calls' no-input
+// timers stop: a timer from the old term never plays or closes a call the
+// new leader may be serving.
+func TestTheLeaderTermEndStopsTheAlertTimers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, a, st := alertRig(t, false)
+		ch := answer(t, c, a, st)
+		a.finish(t, c, ch) // the menu heard: the no-input time runs
+		c.DisarmAll()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if p := a.played(); len(p) != 1 || a.hangups(ch) != 0 {
+			t.Fatalf("plays %d hangups %d after the term ended", len(p), a.hangups(ch))
 		}
 	})
 }

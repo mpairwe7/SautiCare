@@ -266,6 +266,19 @@ func (a *AlertCalls) Handle(ctx context.Context, e Event) {
 	}
 }
 
+// DisarmAll stops every call's no-input time; outboundTerm calls it when
+// the leader's term ends, so an old term's timer never plays or closes a
+// call the next leader may serve. The call itself stays up until it ends.
+func (a *AlertCalls) DisarmAll() {
+	a.run.Lock()
+	defer a.run.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, st := range a.calls {
+		a.disarm(st)
+	}
+}
+
 // arm starts the no-input time of a menu just heard.
 func (a *AlertCalls) arm(ctx context.Context, ch string, st *alertCall) {
 	a.disarm(st)
@@ -330,6 +343,7 @@ func (a *AlertCalls) key(ctx context.Context, ch string, st *alertCall, digit st
 		out, err := a.c.Store.AcceptAlert(ctx, st.alert.AlertID, st.responder)
 		if err != nil {
 			a.c.Log.Error("voice accept failed", "alert", st.alert.AlertID, "err", err)
+			a.menuAgain(ctx, ch, st)
 			return
 		}
 		name := map[dispatch.AcceptResult]string{dispatch.Accepted: "alert-accepted", dispatch.AlreadyTaken: "alert-already-taken",
@@ -360,6 +374,7 @@ func (a *AlertCalls) decline(ctx context.Context, ch string, st *alertCall, reas
 	out, err := a.c.Store.DeclineAlert(ctx, st.alert.AlertID, st.responder, reason)
 	if err != nil {
 		a.c.Log.Error("voice decline failed", "alert", st.alert.AlertID, "err", err)
+		a.menuAgain(ctx, ch, st)
 		return
 	}
 	name := "alert-declined"
@@ -367,6 +382,15 @@ func (a *AlertCalls) decline(ctx context.Context, ch string, st *alertCall, reas
 		name = "alert-no-longer-needed"
 	}
 	a.finish(ctx, ch, st, a.sound(name))
+}
+
+// menuAgain replays the alert after an answer the store refused: the key
+// cut the menu and stopped its wait, so without it the answered line would
+// stay open. Its end re-arms the no-input time, and the call closes as an
+// unanswered one does.
+func (a *AlertCalls) menuAgain(ctx context.Context, ch string, st *alertCall) {
+	st.reasons = false
+	a.play(ctx, ch, st, a.alertSounds(st.alert))
 }
 
 // finish plays the result and hangs up once it has been heard
