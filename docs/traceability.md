@@ -84,7 +84,7 @@ The demo (`cmd/demo`, a Hugging Face Space) runs the real services on synthetic 
 | No production, no provider credential, endpoint or store DSN; children get a fresh environment; SMS reaches only a loopback fake that the real adapter talks to | `cmd/demo/main_test.go::TestRefusesProductionAndRealProviders`, `::TestSinkSpeaksTheProviderContract` |
 | A typed phone number other than the demo's own is refused | `cmd/demo/main_test.go::TestRefusesRealLookingNumbers` |
 | The board masks any number in a payload | `cmd/demo/main_test.go::TestBoardMasksNumbers` |
-| The confidential documents never enter the image or the Space | `cmd/demo/main_test.go::TestDockerignoreKeepsConfidentialFilesOut`, `::TestStagedSpaceHoldsNoConfidentialFiles` |
+| The confidential documents never enter the image or the Space | `cmd/demo/main_test.go::TestDockerignoreKeepsConfidentialFilesOut`, `::TestStagedSpaceHoldsNoConfidentialFiles`, `::TestStagingReadsTheCommittedDockerignore` |
 
 ## Review focus (M0 plan)
 

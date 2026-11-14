@@ -575,4 +575,5 @@ threats:
       - cmd/demo/main_test.go::TestSinkSpeaksTheProviderContract
       - cmd/demo/main_test.go::TestDockerignoreKeepsConfidentialFilesOut
       - cmd/demo/main_test.go::TestStagedSpaceHoldsNoConfidentialFiles
+      - cmd/demo/main_test.go::TestStagingReadsTheCommittedDockerignore
       - internal/platform/devkeys/devkeys_test.go::TestDevkeysRefuseProduction
