@@ -542,10 +542,10 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 
 **Interfaces:**
 - Each file runs `SET LOCAL lock_timeout = '3s'` and `SET LOCAL statement_timeout = '60s'` first.
-- A `lock_not_available` error (55P03) is retried up to 5 times with doubling backoff from 1 s, then fails, naming the blocking pid.
+- A `lock_not_available` error (55P03) is retried up to 3 times, after 1, 2 and 4 s, then fails, naming the blocking pid. The worst case is 4 lock waits of 3 s plus 7 s of backoff: 19 s.
 - `-- migrate:no-transaction` is **not** added (no current need; deferred).
 
-- [ ] **Step 1:** Write `TestMigrationGivesUpOnALockInsteadOfQueueingWrites`. A second connection holds `BEGIN; SELECT … FROM op.incidents FOR SHARE`. A test migration ALTERs `op.incidents`. Assert that it fails in under 40 s, and that a third connection's insert into `op.incident_events` never waits more than 3 s. Run `go test -tags integration ./internal/platform/pg/migrate/ -run LockInstead -count=1`. Expected: FAIL (it blocks).
+- [ ] **Step 1:** Write `TestMigrationGivesUpOnALockInsteadOfQueueingWrites`. A second connection holds `BEGIN; SELECT … FROM op.incidents FOR SHARE`. A test migration ALTERs `op.incidents`. Assert that it fails in under 30 s, and that a third connection's insert into `op.incident_events` never waits more than 3 s. Run `go test -tags integration ./internal/platform/pg/migrate/ -run LockInstead -count=1`. Expected: FAIL (it blocks).
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `fix(migrate): lock and statement timeouts with bounded retries (UX-2 Task 4)`.
@@ -899,19 +899,22 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
   - `id uuid PK DEFAULT uuidv7()`, `incident_id uuid NOT NULL REFERENCES op.incidents`, `through_seq bigint NOT NULL`;
   - `line text NOT NULL CHECK (line IN ('primary','backup'))`;
   - `claimed_at timestamptz NOT NULL DEFAULT clock_timestamp()`, `answered_at timestamptz`, `ended_at timestamptz`;
-  - `result text CHECK (result IN ('acknowledged','no_key','no_answer','failed'))`.
+  - `result text CHECK (result IN ('acknowledged','no_key','no_answer','failed'))`;
+  - `payload_salt bytea NOT NULL DEFAULT uuid_send(gen_random_uuid())`, for the ledger record (0016's pattern).
 
   These are the attempts of an existing record, as `op.alert_attempts` holds alerts' attempts. The DPO is informed. The table holds no number.
 - `op.begin_coordinator_call_attempt(p_incident uuid, p_seq bigint, p_line text) RETURNS uuid` and `op.finish_coordinator_call_attempt(p_attempt uuid, p_result text, p_answered boolean) RETURNS boolean` (first end wins). Both are granted to `op_ivr`.
-- `op.acknowledge_coordinator_call(p_incident uuid, p_seq bigint)` keeps its signature (`CREATE OR REPLACE`). It also calls `op.enqueue_audit(uuidv7(), clock_timestamp(), 'escalation.acknowledged', p_incident, NULL, 'ux-0036', jsonb_build_object('through_seq', p_seq, 'line', <line of the newest answered attempt>))`. This is a ledger-only record: no incident event, so `op.append_event_core` is untouched. The staff ID is NULL until M5 binds the signed-in coordinator.
+- `op.acknowledge_coordinator_call` gains the attempt whose key was pressed: `DROP FUNCTION op.acknowledge_coordinator_call(uuid, bigint)`, then `CREATE op.acknowledge_coordinator_call(p_incident uuid, p_seq bigint, p_attempt uuid)`, with the grant to `op_ivr` restored and sqlc regenerated. In one transaction it acknowledges (0022's body), finishes `p_attempt` as `acknowledged` (first end wins), and writes the ledger record `escalation.acknowledged` with `{through_seq: p_seq, line: <p_attempt's line>}`. Both lines can be answered at once, so the line is the pressing attempt's, never the newest answered one.
+- The ledger record is written the way `op.log_control` writes one (0016): the attempt row carries a `payload_salt`, and the outbox entry's `event_id` is the attempt's ID. `op.enqueue_audit` cannot serve: it raises unless its ID names an incident event. This is a ledger-only record: no incident event, so `op.append_event_core` is untouched. The staff ID is NULL until M5 binds the signed-in coordinator.
 
-**Interfaces (Go):** `CoordinatorCalls.RunOnce` begins an attempt per originate. `Handle` marks it answered on `StasisStart`, and finishes it on acknowledgement, on hang-up with no key (`no_key`), on ring-out (`no_answer`) or on error (`failed`).
+**Interfaces (Go):** `CoordinatorCalls.RunOnce` begins an attempt per originate. `Handle` marks it answered on `StasisStart`, acknowledges through the attempt of the channel whose key was pressed, and finishes it on hang-up with no key (`no_key`), on ring-out (`no_answer`) or on error (`failed`).
 
 - [ ] **Step 1: Write the failing tests** (integration):
   - `TestThreeRingsThenAnAcknowledgementLeaveThreeAttemptsAndOneLedgerEntry`: 3 attempt rows (2 `no_answer`, 1 `acknowledged`) and one `escalation.acknowledged` outbox row whose payload carries `through_seq`.
   - `TestAcknowledgementLedgerEntryCarriesNoNumber`.
+  - `TestAcknowledgementRecordsTheLineThatPressedOne`: both lines are answered, the backup after the primary; the primary presses 1. The ledger payload's `line` is `primary`, and the backup attempt ends `no_key`.
   - `go test -tags integration ./cmd/sautictl/ -run VerifyLedger` then shows the entry.
-- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ThreeRings|AcknowledgementLedger' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ThreeRings|AcknowledgementLedger|AcknowledgementRecords' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Write the migration, generate (`bin/sqlc diff`: no output), and wire `outbound.go`.
 - [ ] **Step 4:** Run the same command, then `go test ./internal/platform/ivr/ -count=1`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(audit): coordinator call attempts and a ledger record of each acknowledgement (UX-5 Task 1)`.
@@ -946,8 +949,8 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 
 **Files:** Create `cmd/sautictl/coverage.go` and `cmd/sautictl/coverage_integration_test.go`. Modify `cmd/sautictl/main.go:61-74`.
 
-**Interfaces:** `sautictl verify-coverage --dsn <op_readonly DSN> --audit-dsn <audit reader DSN> [--older-than 5m]`. For every incident with events older than `--older-than`, it compares the count of `op.incident_events` per (incident, type) with the ledger entries per (incident, type). It prints `coverage OK` or one `missing incident=<id> type=<t> events=<n> ledger=<m>` line per mismatch, and exits 1 on any mismatch. Keying the ledger by event ID needs an audit-schema change and canonical encoding v2 (deferred).
-- [ ] **Step 1:** Write `TestVerifyCoverageReportsADeletedEvent`. As owner, disable the Task 5.2 trigger inside the test transaction, delete one relayed event, re-enable it, and assert exit 1 with its `missing` line. Also write `TestVerifyCoverageOKOnAHealthyStore`. Run `go test -tags integration ./cmd/sautictl/ -run VerifyCoverage -count=1`. Expected: FAIL.
+**Interfaces:** `sautictl verify-coverage --dsn <op_readonly DSN> --audit-dsn <audit reader DSN> [--older-than 5m]`. It reads one cutoff, the operational store's `clock_timestamp()` minus `--older-than`, and counts both sides up to it: `op.incident_events` with `recorded_at < cutoff`, and ledger entries with `occurred_at < cutoff`, per (incident, type). The ledger's `occurred_at` is the event's own `recorded_at` (`op.enqueue_audit`, 0005), so a row is on the same side of the cutoff in both stores, and an event still in the outbox is not counted until it is older than the cutoff. Relay lag longer than `--older-than` is reported as missing, which is true: the ledger is behind. Ledger-only types (UX-5's control and acknowledgement records) have no event to count and are skipped. It prints `coverage OK` or one `missing incident=<id> type=<t> events=<n> ledger=<m>` line per mismatch, and exits 1 on any mismatch. Keying the ledger by event ID needs an audit-schema change and canonical encoding v2 (deferred).
+- [ ] **Step 1:** Write `TestVerifyCoverageReportsADeletedEvent`. As owner, disable the Task 5.2 trigger inside the test transaction, delete one relayed event, re-enable it, and assert exit 1 with its `missing` line. Also write `TestVerifyCoverageOKOnAHealthyStore`, and `TestVerifyCoverageIgnoresEventsNewerThanTheCutoff`: an event recorded after the cutoff and not yet relayed gives `coverage OK`. Run `go test -tags integration ./cmd/sautictl/ -run VerifyCoverage -count=1`. Expected: FAIL.
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `feat(sautictl): verify-coverage reconciles events with the ledger (UX-5 Task 3)`.
