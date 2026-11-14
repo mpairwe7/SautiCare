@@ -132,3 +132,23 @@ func TestEscalationGaugesResetWhenTheTermEnds(t *testing.T) {
 		}
 	}
 }
+
+// PR #14 review: a read that fails leaves no value looking fresh. The leader
+// gauge drops to 0 until a read succeeds again, so the alert on it fires
+// while the age cannot be read.
+func TestAFailedReadMarksTheGaugesStale(t *testing.T) {
+	reg := metrics.NewRegistry()
+	g := newEscalationGauges(reg)
+	ok := escalationAgeFunc(func(context.Context) (float64, int, error) { return 30, 1, nil })
+	if err := g.update(context.Background(), ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.update(context.Background(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 0, 0, errors.New("db down") })); err == nil {
+		t.Fatal("the failed read was not reported")
+	}
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "sauti_escalation_gauges_leader 0") {
+		t.Fatalf("after a failed read:\n%s", rec.Body.String())
+	}
+}

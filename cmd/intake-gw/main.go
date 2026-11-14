@@ -218,8 +218,8 @@ type escalationAges interface {
 // escalationGauges are the dead-man signal: how many open incidents hold an
 // escalation no coordinator has acknowledged, and the oldest one's age. An
 // alert on the age pages the on-call engineer (P0 alerting).
-// Only the leader exports them; leader is 1 while it does, so the alert can
-// tell a fresh value from a former leader's (review R4).
+// Only the leader exports them; leader is 1 while its last read succeeded,
+// so the alert can tell a fresh value from a stale one (review R4).
 type escalationGauges struct{ count, oldest, leader *metrics.Gauge }
 
 func newEscalationGauges(reg *metrics.Registry) escalationGauges {
@@ -233,6 +233,7 @@ func newEscalationGauges(reg *metrics.Registry) escalationGauges {
 func (g escalationGauges) update(ctx context.Context, r escalationAges) error {
 	secs, n, err := r.OldestUnacknowledgedEscalation(ctx)
 	if err != nil {
+		g.leader.Set(0) // nothing fresh is exported until a read succeeds
 		return err
 	}
 	g.count.Set(float64(n))
