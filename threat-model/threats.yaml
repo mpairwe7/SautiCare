@@ -593,11 +593,14 @@ threats:
     hard_constraints: [11, 14]
     mitigations:
       - Ruleset 27260742 on main blocks deletion and force-push, and requires a PR, resolved threads and the nine CI checks (strict)
-      - tools/mergegate (ADR-0042) refuses on any unreadable answer, re-checks the ruleset, requires CodeRabbit's review of the head and a quiet window, settles each thread on CodeRabbit's visible last word or an explicit deferral to an open issue, and merges only the head it judged
-      - Until a second human can approve (owner decision O-1), the owner records the merge decision on each PR
+      - tools/mergegate (ADR-0042) refuses on any unreadable answer, re-checks the ruleset, requires every CI pipeline check on the head (any other check only warns; secrets are still blocked by the required gitleaks job), requires CodeRabbit's review of the head and a quiet window, settles each thread on CodeRabbit's visible last word or an explicit deferral to an open issue, posts the CodeRabbit resolve command only once every verdict is clean and verifies again after its approval, and merges only the head it judged
+      - No human review is required, by the owner's decision O-1 (2026-11-14); the owner stays code owner of every path and is notified of every PR. Accepted residual risk - no human reads a change before it merges
     verified_by:
       - governance/tests/test_mergegate.py::test_the_ec2_fault_cases_refuse
       - governance/tests/test_mergegate.py::test_a_weakened_ruleset_refuses
       - governance/tests/test_mergegate.py::test_a_concession_counts_only_as_codeRabbits_visible_word
       - governance/tests/test_mergegate.py::test_a_push_during_the_run_refuses
+      - governance/tests/test_mergegate.py::test_a_failing_or_pending_required_check_refuses
+      - governance/tests/test_mergegate.py::test_an_open_thread_never_gets_the_resolve_command
+      - governance/tests/test_mergegate.py::test_clean_verdicts_and_changes_requested_post_the_resolve_command_then_merge
       - governance/tests/test_mergegate.py::test_the_docs_name_no_enforced_codeowners_approval
