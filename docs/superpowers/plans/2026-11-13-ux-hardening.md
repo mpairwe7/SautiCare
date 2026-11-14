@@ -250,6 +250,7 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
   - Between tries it plays `sauti/fallback-hold`, and only when `DIALSTATUS` is `BUSY`, `NOANSWER`, `CHANUNAVAIL` or `CONGESTION`.
   - It then plays `sauti/fallback-closing` and hangs up.
   - Both inbound contexts gain `exten => _+X.` with the same priorities as `_X.`.
+  - A call that reaches the context on `STASISSTATUS=FAILED` records nothing. Nothing that is running can identify its incident: the look-up needs the phone keys held by Sauti's services. And escalation calls are placed by ivr-controller, the component that is down, so an event written here would not ring before it returns. The live dial is this call's only path. The outage is paged (P0, R-16), and the caller's open incident, if any, stays covered by intake-gw's sweeper, watchdog and dead-man gauge, which run without ivr-controller. `ivr-controller-down.md` says so.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestFallbackDialplanRetriesThenCloses`: parse the context. Assert a `DIALSTATUS` branch, a loop bounded by 3, and a `Playback(sauti/fallback-closing)` before `Hangup()`.
