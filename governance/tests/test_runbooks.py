@@ -26,10 +26,6 @@ class StaleEscalationPhrasesTest(unittest.TestCase):
         self.assertEqual(problems, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 SENTENCE = (
     "A call that reaches the fallback while ivr-controller is down is not recorded and not escalated; "
     "only the live dial reaches a coordinator, and the caller's open incident stays covered by "
@@ -48,3 +44,7 @@ class FallbackWhileDownTest(unittest.TestCase):
         self.assertIn(SENTENCE, impact)
         adr = (ROOT / "docs" / "adr" / "ADR-0034-every-failure-path-ends-with-a-person.md").read_text()
         self.assertIn(SENTENCE, adr)
+
+
+if __name__ == "__main__":
+    unittest.main()
