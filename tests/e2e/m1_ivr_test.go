@@ -15,6 +15,8 @@ import (
 
 	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/incident"
+	"sautihealth.com/sauti/internal/intake"
+	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/ari"
 	"sautihealth.com/sauti/internal/platform/ivr"
 	"sautihealth.com/sauti/internal/platform/logging"
@@ -43,8 +45,9 @@ func startIVR(t *testing.T, r *intakeRig) *sim.FakeARI {
 
 // ivrParts builds ivr-controller's parts as op_ivr against the rig's
 // database and a fake Asterisk: newCtrl makes a controller (call it twice
-// for a restart), sharing one store and one client.
-func ivrParts(t *testing.T, r *intakeRig) (newCtrl func() *ivr.Controller, client *ari.Client, fake *sim.FakeARI) {
+// for a restart), sharing one store and one client. wrap, if given, stands
+// between the controller and the real intake service.
+func ivrParts(t *testing.T, r *intakeRig, wrap ...func(ivr.Intake) ivr.Intake) (newCtrl func() *ivr.Controller, client *ari.Client, fake *sim.FakeARI) {
 	t.Helper()
 	ctx := context.Background()
 	cfg, err := config.Load(os.DirFS("../../config"))
@@ -82,8 +85,12 @@ func ivrParts(t *testing.T, r *intakeRig) (newCtrl func() *ivr.Controller, clien
 	if err != nil {
 		t.Fatal(err)
 	}
+	var in ivr.Intake = built.Service
+	for _, w := range wrap {
+		in = w(in)
+	}
 	return func() *ivr.Controller {
-		return ivr.New(client, built.Service, slog.New(logging.NewHandler(r.logs, slog.LevelDebug)), ivr.Options{NoInput: time.Minute, MaxReprompts: 1})
+		return ivr.New(client, in, slog.New(logging.NewHandler(r.logs, slog.LevelDebug)), ivr.Options{NoInput: time.Minute, MaxReprompts: 1})
 	}, client, fake
 }
 
@@ -115,6 +122,38 @@ func TestAnAdoptedCallIsEscalatedWhateverTheFallbackDialDoes(t *testing.T) {
 		AND type = 'incident.escalated' AND payload ->> 'reason' = 'voice_handed_over'`, inc.ID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("voice_handed_over escalations %d %v, want 1", n, err)
 	}
+}
+
+// PR #14 review (round 4): intake fails after the call's session opened (its
+// incident written, the reply lost to a timeout). The controller escalates
+// under the call ID, and op_ivr's real store appends the escalation to that
+// incident before the call goes to the fallback.
+func TestAStartThatFailsAfterItsSessionOpenedIsEscalated(t *testing.T) {
+	r := newIntakeRig(t)
+	newCtrl, _, fake := ivrParts(t, r, func(in ivr.Intake) ivr.Intake { return replyLost{in} })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctrl := newCtrl()
+	fake.StartCall("chan-7", "+256772123456")
+	ctrl.Handle(ctx, ivr.Event{Type: ivr.EventStasisStart, ChannelID: "chan-7", CallerNumber: "+256772123456"})
+	waitFor(t, "the hand-over", func() bool { return fake.Continued("chan-7") != "" })
+	inc := r.only(t)
+	var n int
+	if err := r.c.Owner(t, pg.StoreOperational).QueryRow(ctx, `SELECT count(*) FROM op.incident_events WHERE incident_id = $1
+		AND type = 'incident.escalated' AND payload ->> 'reason' = 'voice_handed_over'`, inc.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("voice_handed_over escalations %d %v, want 1", n, err)
+	}
+}
+
+// replyLost runs the real StartIVR, then reports a timeout: the session and
+// its incident are written, but the controller never learns them.
+type replyLost struct{ ivr.Intake }
+
+func (s replyLost) StartIVR(ctx context.Context, callID string, phone pii.Phone) (intake.IVRTurn, error) {
+	if _, err := s.Intake.StartIVR(ctx, callID, phone); err != nil {
+		return intake.IVRTurn{}, err
+	}
+	return intake.IVRTurn{}, context.DeadlineExceeded
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
