@@ -88,24 +88,32 @@ func (s *smsSink) inbox(e164 string) []sms {
 	return out
 }
 
+// reportAfter spaces a message's delivery reports. intake-gw answers 200 to
+// a report whether or not dispatch-worker has stored the message ID yet, and
+// drops it if not; a stored final report is never overwritten, so repeating
+// it is safe, and a few repeats cover a slow store.
+var reportAfter = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+
 // deliveryReporter posts a "Success" delivery report for a message to
-// intake-gw's delivery-report callback a moment after it is sent (after
-// dispatch-worker has stored the message ID), until ctx ends.
+// intake-gw's delivery-report callback, once after each reportAfter wait,
+// until ctx ends.
 func deliveryReporter(ctx context.Context, client *http.Client, callback string) func(string) {
 	return func(id string) {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Second):
-		}
-		form := url.Values{"id": {id}, "status": {"Success"}}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, callback, strings.NewReader(form.Encode()))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if resp, err := client.Do(req); err == nil {
-			_ = resp.Body.Close()
+		form := url.Values{"id": {id}, "status": {"Success"}}.Encode()
+		for _, wait := range reportAfter {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, callback, strings.NewReader(form))
+			if err != nil {
+				return
+			}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if resp, err := client.Do(req); err == nil {
+				_ = resp.Body.Close()
+			}
 		}
 	}
 }

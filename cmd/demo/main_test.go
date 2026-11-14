@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -232,5 +234,36 @@ func TestBootRetriesAFailedStart(t *testing.T) {
 			t.Errorf("%d failures: phase %s after %d starts, want %s after %d", c.fails, a.phase, calls, c.phase, c.calls)
 		}
 		a.close()
+	}
+}
+
+// CodeRabbit PR #15: intake-gw answers 200 to a delivery report whether or
+// not dispatch-worker has stored the message ID yet, and drops it if not;
+// so the fake provider repeats the report a bounded number of times, and a
+// report sent before the ID was stored still lands.
+func TestDeliveryReportLandsWhenTheIDIsStoredLate(t *testing.T) {
+	old := reportAfter
+	reportAfter = []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond}
+	t.Cleanup(func() { reportAfter = old })
+	var (
+		mu     sync.Mutex
+		posts  int
+		stored []string
+	)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		defer mu.Unlock()
+		posts++
+		if posts > 1 && r.PostForm.Get("status") == "Success" { // the ID is stored after the first report
+			stored = append(stored, r.PostForm.Get("id"))
+		}
+	}))
+	defer callback.Close()
+	deliveryReporter(context.Background(), callback.Client(), callback.URL)("ATXid_demo_1")
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != len(reportAfter) || len(stored) == 0 || stored[0] != "ATXid_demo_1" {
+		t.Fatalf("%d reports, stored %v; want %d reports and the report stored", posts, stored, len(reportAfter))
 	}
 }
