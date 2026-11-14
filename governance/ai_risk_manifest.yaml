@@ -44,6 +44,7 @@ risks:
     verified_by:
       - internal/config/config_test.go::TestFingerprintStableAndSensitive
       - internal/platform/pg/opstore/opstore_integration_test.go::TestProjectionMatchesFold
+      - internal/intake/service_test.go::TestAnOpenIncidentKeepsItsLogicVersion
   - id: AIR-003
     title: An adaptive model ranks responders or sets severity during the pilot
     nist_function: GOVERN
@@ -107,6 +108,7 @@ risks:
       - internal/platform/ivr/bridge_test.go::TestBridgeCallerNoAnswerGoesToACoordinator
       - internal/intake/sweeper_test.go::TestSweeperEscalatesALocatedYellowCallWithoutT2
       - internal/platform/pg/opstore/idle_integration_test.go::TestWatchdogEscalatesAnOverdueTimerAfterT3
+      - internal/dispatch/plan_test.go::TestAnIncidentWithNobodyFreeKeepsWaiting
   - id: AIR-007
     title: Learned dispatch introduced without approved data or ethics approval
     nist_function: GOVERN
