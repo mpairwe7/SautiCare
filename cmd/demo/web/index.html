@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sauti Dispatch demo</title>
+<meta name="description" content="Emergency medical dispatch from any phone: a demo with synthetic data only.">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#board-h">Skip to the dispatch board</a>
+<p class="banner" role="note"><strong>Demo — synthetic data only.</strong> Do not enter real names, phone numbers or health information. Everything is erased on restart.</p>
+
+<header class="top">
+  <div class="brand">
+    <h1>Sauti Dispatch</h1>
+    <p>Emergency medical dispatch from any phone — no data, no airtime. Kawempe Division, Kampala. MVP demo.</p>
+  </div>
+  <div class="actions">
+    <p id="status" class="status" role="status" aria-live="polite">Connecting…</p>
+    <button id="audit-btn" type="button" class="btn" disabled>Verify audit ledger</button>
+    <button id="reset-btn" type="button" class="btn btn-quiet" disabled>Reset demo</button>
+  </div>
+</header>
+
+<main class="grid">
+  <section class="panel" aria-labelledby="caller-h">
+    <h2 id="caller-h"><span class="step">1</span> Caller phone</h2>
+    <p class="hint">Dial <kbd>*384*1#</kbd> and answer each screen. Any basic phone can do this: USSD needs no data and no airtime.</p>
+    <div id="caller-tabs" class="tabs" role="tablist" aria-label="Caller SIM"></div>
+    <div id="caller-phone" role="tabpanel" aria-labelledby="caller-h"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="resp-h">
+    <h2 id="resp-h"><span class="step">2</span> Responder phones</h2>
+    <p class="hint">Village Health Team members and transporters get alerts by SMS. Dial <kbd>*384*2#</kbd> to accept or decline.</p>
+    <div id="resp-tabs" class="tabs" role="tablist" aria-label="Responder"></div>
+    <div id="resp-phone" role="tabpanel" aria-labelledby="resp-h"></div>
+  </section>
+
+  <section class="panel panel-board" aria-labelledby="board-h">
+    <h2 id="board-h" tabindex="-1"><span class="step">3</span> Dispatch board</h2>
+    <p class="hint">Live from the operational store, read with the read-only role. A caller's number is never shown.</p>
+    <div id="audit-result" class="audit" role="status" aria-live="polite" hidden></div>
+    <p id="suspended" class="warn" hidden>Dispatch is suspended: no responder is alerted and a coordinator handles every call.</p>
+    <div id="board" class="board"></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <p>Texts marked <code>PENDING</code> are placeholders awaiting the study's approved wording, shown exactly as the system sends them. SMS goes to a local simulator of the provider; voice calls are not part of this demo. Responders, numbers and places are synthetic.</p>
+</footer>
+</body>
+</html>

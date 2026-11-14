@@ -26,21 +26,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"sautihealth.com/sauti/db"
 	"sautihealth.com/sauti/internal/audit"
 	"sautihealth.com/sauti/internal/config"
-	"sautihealth.com/sauti/internal/crypto"
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/incident"
-	"sautihealth.com/sauti/internal/location"
-	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/africastalking"
 	"sautihealth.com/sauti/internal/platform/devkeys"
 	"sautihealth.com/sauti/internal/platform/env"
 	"sautihealth.com/sauti/internal/platform/pg"
 	"sautihealth.com/sauti/internal/platform/pg/auditstore"
-	"sautihealth.com/sauti/internal/platform/pg/bootstrap"
-	"sautihealth.com/sauti/internal/platform/pg/migrate"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
 	"sautihealth.com/sauti/internal/platform/sim"
 	"sautihealth.com/sauti/internal/platform/wiring"
@@ -88,7 +82,7 @@ const demoPhone = "+256772123456"
 func ledgerPhonePatterns() []string {
 	numbers := []string{demoPhone}
 	for _, d := range demoResponders {
-		numbers = append(numbers, d.phone)
+		numbers = append(numbers, d.Phone)
 	}
 	out := make([]string, 0, len(numbers))
 	for _, n := range numbers {
@@ -113,30 +107,15 @@ func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 }
 
 type runner struct {
-	o        Options
-	admin    *url.URL
-	password string
-	dbs      map[pg.Store]string
-	pools    []*pgxpool.Pool
+	o     Options
+	st    Stores
+	pools []*pgxpool.Pool
 }
 
 func (r *runner) say(format string, args ...any) { fmt.Fprintf(r.o.Out, format+"\n", args...) }
 
-func (r *runner) dsn(s pg.Store, role string) string {
-	u := *r.admin
-	u.User = url.UserPassword(role, r.password)
-	u.Path = "/" + r.dbs[s]
-	return u.String()
-}
-
-func (r *runner) superDSN(s pg.Store) string {
-	u := *r.admin
-	u.Path = "/" + r.dbs[s]
-	return u.String()
-}
-
 func (r *runner) pool(ctx context.Context, s pg.Store, role string) (*pgxpool.Pool, error) {
-	p, err := pg.Connect(ctx, r.dsn(s, role), "sauti-demo", 8)
+	p, err := pg.Connect(ctx, r.st.DSN(s, role), "sauti-demo", 8)
 	if err == nil {
 		r.pools = append(r.pools, p)
 	}
@@ -178,14 +157,13 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
-	admin, err := url.Parse(o.AdminDSN)
-	if err != nil || admin.Scheme == "" {
+	if admin, err := url.Parse(o.AdminDSN); err != nil || admin.Scheme == "" {
 		return rep, errors.New("demo: admin DSN must be a postgres:// URL")
 	}
 	if o.RolePassword == "" {
 		return rep, errors.New("demo: the server's role password is required (SAUTI_DEV_DB_PASSWORD)")
 	}
-	r := &runner{o: o, admin: admin, password: o.RolePassword}
+	r := &runner{o: o}
 	defer func() {
 		for _, p := range r.pools {
 			p.Close()
@@ -202,41 +180,24 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 		defer ccancel()
 		_ = adminConn.Close(cctx)
 	}()
-	suffix := make([]byte, 4)
-	_, _ = rand.Read(suffix)
-	r.dbs, err = bootstrap.Run(ctx, adminConn, bootstrap.Options{Suffix: "_demo" + hex.EncodeToString(suffix), Password: r.password, Env: senv})
-	if err != nil {
-		return rep, err
-	}
-	if !o.Keep {
+	r.st, err = Provision(ctx, adminConn, o.AdminDSN, senv, o.RolePassword, o.ConfigDir)
+	if r.st.DBs != nil && !o.Keep {
 		defer func() {
 			for _, p := range r.pools {
 				p.Close()
 			}
 			r.pools = nil
-			for _, name := range r.dbs {
+			for _, name := range r.st.DBs {
 				cctx, ccancel := cleanupContext(ctx)
 				_, _ = adminConn.Exec(cctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
 				ccancel()
 			}
 		}()
 	}
-	for _, s := range pg.Stores() {
-		fsys, err := db.Migrations(string(s))
-		if err != nil {
-			return rep, err
-		}
-		c, err := pgx.Connect(ctx, r.dsn(s, s.Owner()))
-		if err != nil {
-			return rep, err
-		}
-		_, err = migrate.Run(ctx, c, string(s), fsys)
-		_ = c.Close(ctx)
-		if err != nil {
-			return rep, err
-		}
+	if err != nil {
+		return rep, err
 	}
-	r.say("✓ setup: five stores bootstrapped and migrated (%s)", r.dbs[pg.StoreOperational])
+	r.say("✓ setup: five stores bootstrapped and migrated (%s)", r.st.DBs[pg.StoreOperational])
 
 	work, doneWork, err := r.workDir()
 	if err != nil {
@@ -277,23 +238,6 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	}
 
 	ops := opstore.New(intakePool)
-	gazRaw, err := os.ReadFile(filepath.Join(o.ConfigDir, "gated", "gazetteer.yaml"))
-	if err != nil {
-		return rep, err
-	}
-	gaz, err := location.ParseFile(gazRaw)
-	if err != nil {
-		return rep, err
-	}
-	ownerConn, err := pgx.Connect(ctx, r.dsn(pg.StoreOperational, pg.StoreOperational.Owner()))
-	if err != nil {
-		return rep, err
-	}
-	_, err = opstore.LoadGazetteer(ctx, ownerConn, gaz, gazRaw)
-	_ = ownerConn.Close(ctx)
-	if err != nil {
-		return rep, err
-	}
 	root := o.RulesRoot
 	if root == "" {
 		root = filepath.Dir(filepath.Clean(o.ConfigDir))
@@ -406,7 +350,7 @@ func RunM0(ctx context.Context, o Options) (rep Report, err error) {
 	if rep.LedgerEntries != int64(rep.Events) {
 		return rep, fmt.Errorf("step 4: ledger has %d entries for %d events", rep.LedgerEntries, rep.Events)
 	}
-	super, err := pgx.Connect(ctx, r.superDSN(pg.StoreAudit))
+	super, err := pgx.Connect(ctx, r.st.SuperDSN(pg.StoreAudit))
 	if err != nil {
 		return rep, err
 	}
@@ -556,13 +500,9 @@ ALTER TABLE audit.entries ENABLE TRIGGER entries_append_only;
 ALTER TABLE audit.checkpoints ENABLE TRIGGER checkpoints_append_only;`
 
 // demoResponders are synthetic (development only).
-var demoResponders = []struct {
-	role  responder.Role
-	phone string
-	stage string
-}{
-	{responder.RoleVHT, "+256772000201", "w01_stage_a"},
-	{responder.RoleTransporter, "+256772000202", "w01_stage_a"},
+var demoResponders = []Responder{
+	{Role: responder.RoleVHT, Label: "VHT 1", Phone: "+256772000201", Ward: "w01", Stage: "w01_stage_a"},
+	{Role: responder.RoleTransporter, Label: "Transporter 1", Phone: "+256772000202", Ward: "w01", Stage: "w01_stage_a"},
 }
 
 // dispatchDemo registers the demo responders (console), switches them on
@@ -582,30 +522,19 @@ func (r *runner) dispatchDemo(ctx context.Context, cfg config.Bundle, keys *devk
 	if err != nil {
 		return err
 	}
-	registry := responder.NewService(opstore.New(consolePool), crypto.Identifiers{Env: crypto.NewEnvelope(keys, rand.Reader)})
 	intake, dispatcher := opstore.New(intakePool), opstore.New(dispatchPool)
-	now := time.Now()
-	insured := now.AddDate(0, 0, 30)
-	for _, d := range demoResponders {
-		phone, err := pii.ParsePhone(d.phone)
-		if err != nil {
-			return err
-		}
-		reg, err := registry.Register(ctx, responder.RegisterCmd{Role: d.role, Name: pii.NewPersonName("Synthetic " + string(d.role)),
-			Phone: phone, Ward: "w01", Stage: d.stage, CertifiedAt: &now, InsuredUntil: &insured, KitOK: true})
-		if err != nil {
-			return err
-		}
-		if _, err := intake.SetAvailability(ctx, reg.ID, true, "ussd"); err != nil {
-			return err
-		}
-		alert, err := dispatcher.IssueAlert(ctx, dispatch.IssueParams{IncidentID: id, ResponderID: reg.ID, Role: d.role,
+	ids, err := RegisterResponders(ctx, opstore.New(consolePool), intake, keys, demoResponders)
+	if err != nil {
+		return err
+	}
+	for i, d := range demoResponders {
+		alert, err := dispatcher.IssueAlert(ctx, dispatch.IssueParams{IncidentID: id, ResponderID: ids[i], Role: d.Role,
 			Ring: 1, Wave: 1, LogicVersion: logic})
 		if err != nil {
-			return fmt.Errorf("alert %s: %w", d.role, err)
+			return fmt.Errorf("alert %s: %w", d.Role, err)
 		}
-		if res, err := intake.AcceptAlert(ctx, alert.AlertID, reg.ID); err != nil || res.Result != dispatch.Accepted {
-			return fmt.Errorf("accept %s: %v %w", d.role, res.Result, err)
+		if res, err := intake.AcceptAlert(ctx, alert.AlertID, ids[i]); err != nil || res.Result != dispatch.Accepted {
+			return fmt.Errorf("accept %s: %v %w", d.Role, res.Result, err)
 		}
 	}
 	return nil
