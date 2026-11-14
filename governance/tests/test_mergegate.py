@@ -135,7 +135,7 @@ def clean():
         "resolve": {"argv": ["api", "graphql", " resolveReviewThread("], **resolved_answer("resolveReviewThread")},
         "threads": {"argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(SETTLED))},
         "issue": {"argv": ["issue", "view", "16"], **ok({"number": 16, "state": "OPEN"})},
-        "merge": {"argv": ["pr", "merge"], "stdout": ""},
+        "merge": {"argv": ["pr", "merge", "--match-head-commit"], "stdout": ""},
     }
 
 
@@ -163,11 +163,21 @@ class Gate:
                 and not (name == "resolveReviewThread" and any("unresolveReviewThread(" in a for a in c))]
 
 
+def forbidden(call):
+    """A call that asks CodeRabbit for anything, comments, reviews, dismisses
+    a review, bypasses the rules, or writes through the REST API."""
+    return (call[:2] in (["pr", "comment"], ["pr", "review"], ["issue", "comment"])
+            or any(a in ("--admin", "--auto", "-X", "--method") or "dismissals" in a or "@coderabbitai" in a
+                   for a in call))
+
+
 class MergeGateTest(unittest.TestCase):
     def gate(self, overrides=None, *args, env=None):
         rules = clean()
         rules.update(overrides or {})
-        return Gate(rules, *args, env=env)
+        g = Gate(rules, *args, env=env)
+        self.assertEqual([c for c in g.calls if forbidden(c)], [], "the gate never asks for or dismisses a review")
+        return g
 
     def assertRefused(self, g, reason=""):
         self.assertEqual(g.code, 2, g.err + g.out)
@@ -491,6 +501,75 @@ class MergeGateTest(unittest.TestCase):
         for name, over in cases.items():
             with self.subTest(name):
                 self.assertRefused(self.gate(over))
+
+    # Task 1.3: the merge pins the head; no approval by command; a dry run;
+    # main's CI is verified on the merge commit.
+
+    def test_a_push_during_the_run_refuses(self):
+        g = self.gate({"pr": {"argv": ["pr", "view", "9999"], "times": 1, **ok(pr())},
+                       "pr-after-a-push": {"argv": ["pr", "view", "9999"], **ok(pr(head="e" * 40))}})
+        self.assertRefused(g, "the head moved during the run")
+        self.assertEqual(g.mutations("resolveReviewThread"), [], "nothing is written before the head is re-read")
+
+    def test_a_refused_merge_refuses(self):
+        g = self.gate({"merge": {"argv": ["pr", "merge", "--match-head-commit"], "exit": 1, "stderr": "Head branch was modified"}})
+        self.assertEqual(g.code, 2, g.err)
+        self.assertIn("Head branch was modified", g.err)
+
+    def test_dry_run_writes_nothing(self):
+        g = self.gate(None, "--dry-run")
+        self.assertEqual(g.code, 0, g.err)
+        self.assertIn("would merge #9999 at aaaaaaa", g.out)
+        self.assertEqual(g.merges(), [])
+        self.assertEqual([c for c in g.calls if any(a.startswith("query=mutation") for a in c)], [])
+        with self.subTest("an open, resolved thread is not reopened"):
+            objection = thread("PRRT_5", c(CR, FINDING, "2026-11-14T09:30:00Z", n=501), resolved=True)
+            g = self.gate(self.threads(objection), "--dry-run")
+            self.assertRefused(g, "discussion_r501")
+            self.assertEqual([c for c in g.calls if any(a.startswith("query=mutation") for a in c)], [])
+
+    def run_list(self, *answers):
+        rules = {}
+        for i, answer in enumerate(answers[:-1]):
+            rules[f"merge-run-{i}"] = {"argv": ["run", "list", "--commit", MERGED], "times": 1, **answer}
+        return {**rules, "merge-run": {"argv": ["run", "list", "--commit", MERGED], **answers[-1]}}
+
+    def test_main_is_verified_on_the_merge_commit(self):
+        def r(status, conclusion=""):
+            return ok([{"databaseId": 2, "headSha": MERGED, "status": status, "conclusion": conclusion}])
+        green = self.gate()
+        self.assertEqual(green.code, 0, green.err)
+        self.assertIn("main's CI passed on bbbbbbb", green.out)
+        self.assertEqual(self.gate(self.run_list(ok([]), r("in_progress"), r("completed", "success"))).code, 0)
+        cases = {
+            "failure": (self.run_list(r("completed", "failure")), {}, "failure"),
+            "cancelled": (self.run_list(r("completed", "cancelled")), {}, "cancelled"),
+            "never finishes": (self.run_list(r("in_progress")), {"MERGEGATE_WAIT": "0"}, "did not finish"),
+            "no run appears": (self.run_list(ok([])), {"MERGEGATE_WAIT": "0"}, "did not finish"),
+            "unreadable": (self.run_list({"exit": 1, "stderr": "HTTP 502"}), {}, "HTTP 502"),
+            "the PR is not merged": ({"pr-merged": {"argv": ["pr", "view", "mergeCommit"],
+                                                    **ok({"state": "OPEN", "mergeCommit": None})}}, {}, "OPEN"),
+        }
+        for name, (over, env, reason) in cases.items():
+            with self.subTest(name):
+                g = self.gate(over, env=env)
+                self.assertEqual(g.code, 3, g.err)
+                self.assertEqual(len(g.merges()), 1)
+                self.assertIn("mergegate: MERGED, BUT", g.err)
+                self.assertIn(reason, g.err)
+
+    def test_the_gate_never_asks_for_or_dismisses_a_review(self):
+        """Every run in this module is checked by gate(); these are the runs
+        where a command or dismissal would be most tempting."""
+        objection = thread("PRRT_5", c(CR, FINDING, "2026-11-14T09:30:00Z", n=501), resolved=True)
+        runs = [self.gate(),
+                self.gate(self.reviews(review(state="CHANGES_REQUESTED"))),
+                self.gate(self.threads(objection)),
+                self.gate(self.reviews(review(commit="c" * 40))),
+                self.gate(self.threads(SETTLED, DEFERRABLE), "--defer", "201=16"),
+                self.gate(None, "--dry-run")]
+        self.assertTrue(all(g.calls for g in runs))
+        self.assertTrue(forbidden(["pr", "comment", "9999", "--body", "@coderabbitai resolve"]))
 
 
 if __name__ == "__main__":

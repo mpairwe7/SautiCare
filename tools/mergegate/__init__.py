@@ -15,8 +15,14 @@ evaluation audit V-02).
   * every review thread is settled by its last word: CodeRabbit's, and a
     concession; or it is deferred explicitly (--defer) to an open issue,
     on CodeRabbit's own last word, and the merge commit records it.
+Then it re-reads the head, resolves the settled threads, merges with
+`--match-head-commit`, and waits for main's CI on the merge commit.
 Any gh error, timeout, empty or unreadable answer refuses: exit 2, with the
-reason on stderr. Exit 0 means it merged (or, with --dry-run, would merge).
+reason on stderr, and nothing merged. Exit 0: merged and main's CI passed on
+the merge commit (or, with --dry-run, every read passed and nothing was
+written). Exit 3: merged, but main's CI on the merge commit failed or could
+not be confirmed. It never comments, reviews, dismisses a review, or asks
+CodeRabbit for anything.
 """
 import argparse
 import json
@@ -25,6 +31,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -415,6 +422,31 @@ def check_threads(repo: str, pr: int, dry_run: bool, deferrals: dict[int, int]) 
     return to_resolve, records
 
 
+def verify_main(repo: str, pr: int) -> str:
+    """Wait for main's CI on the merge commit; its recorded conclusion must
+    be success. Returns the merge commit."""
+    what = f"PR #{pr} after the merge"
+    v = gh_json("pr", "view", str(pr), "--repo", repo, "--json", "state,mergeCommit")
+    if (state := get(v, "state", str, what)) != "MERGED":
+        raise Refused(f"PR #{pr} is {state} after the merge")
+    sha = get(get(v, "mergeCommit", dict, what), "oid", str, what)
+    if not SHA.match(sha):
+        raise Refused(f"the merge commit is unreadable ({sha!r})")
+    wait = float(os.environ.get("MERGEGATE_WAIT", "3600"))
+    deadline = time.monotonic() + wait
+    while True:
+        run = ci_run(repo, sha)
+        if run is not None and run["status"] == "completed":
+            if run.get("conclusion") != "success":
+                raise Refused(f"main's CI on the merge commit {sha[:7]} concluded {run.get('conclusion')} "
+                              f"(run {run.get('databaseId')})")
+            return sha
+        if time.monotonic() >= deadline:
+            raise Refused(f"main's CI on the merge commit {sha[:7]} did not finish within {wait:g} s; "
+                          "the next gate run checks main before it merges anything")
+        time.sleep(float(os.environ.get("MERGEGATE_POLL", "30")))
+
+
 def say(msg: str) -> None:
     print(f"mergegate: {msg}", flush=True)
 
@@ -458,6 +490,8 @@ def main(argv: list[str]) -> int:
             raise Refused("CodeRabbit's latest decisive review requests changes. Every thread verdict is clean, "
                           "so `@coderabbitai resolve` is now permitted (the gate never posts it); "
                           "re-run after the quiet window")
+        if check_pr(repo, pr)["head"] != head:
+            raise Refused("the head moved during the run; re-run")
         if args.dry_run:
             say(f"would merge #{pr} at {head[:7]}")
             return 0
@@ -469,7 +503,12 @@ def main(argv: list[str]) -> int:
         gh("pr", "merge", str(pr), "--repo", repo, "--merge", "--match-head-commit", head,
            "--subject", f"Merge PR #{pr}: {info['title']}", "--body", body)
         say(f"merged #{pr} at {head[:7]}")
-        return 0
     except Refused as e:
         print(f"mergegate: REFUSED: {e}", file=sys.stderr)
         return 2
+    try:
+        say(f"main's CI passed on {verify_main(repo, pr)[:7]}")
+        return 0
+    except Refused as e:
+        print(f"mergegate: MERGED, BUT: {e}", file=sys.stderr)
+        return 3
