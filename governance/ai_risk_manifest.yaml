@@ -94,7 +94,8 @@ risks:
       Fail safe to a human (rule 3.14): intake always answers and gives the
       voice line on error; every escalation rings the coordinator line until
       acknowledged, with every unacknowledged reason announced, a backup line
-      after three unanswered rings and a dead-man gauge from intake-gw; every
+      after three unanswered rings and a dead-man gauge from intake-gw, paged by
+      promtool-tested alert rules on its age and its staleness (V-01); every
       voice hand-over, unanswered bridge caller, undispatched located incident
       and overdue dispatch timer is escalated (ADR-0029, ADR-0034).
     verified_by:
@@ -107,6 +108,8 @@ risks:
       - internal/platform/ivr/bridge_test.go::TestBridgeCallerNoAnswerGoesToACoordinator
       - internal/intake/sweeper_test.go::TestSweeperEscalatesALocatedYellowCallWithoutT2
       - internal/platform/pg/opstore/idle_integration_test.go::TestWatchdogEscalatesAnOverdueTimerAfterT3
+      - cmd/intake-gw/main_test.go::TestTheLeaderTermExportsTheGauges
+      - governance/tests/test_runbooks.py::test_every_alert_is_tested_firing_and_quiet
   - id: AIR-007
     title: Learned dispatch introduced without approved data or ethics approval
     nist_function: GOVERN

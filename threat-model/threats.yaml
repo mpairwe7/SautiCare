@@ -490,6 +490,7 @@ threats:
       - SMS at 0 s, voice at 20 s, the responder menu at any time; the cascade moves on regardless of channel failures
       - Every escalation rings the coordinator line, retried every 2 minutes until a coordinator presses 1; one call announces every reason not yet acknowledged and its acknowledgement covers exactly those; after escalation.backup_after_calls unanswered rings the backup line rings too; intake-gw exports the age of the oldest unacknowledged escalation (ADR-0034)
       - "UX-1 (ADR-0034): every voice hand-over, an unanswered bridge caller, an incident with a ward but no T2 and an overdue dispatch timer record an escalation; a failed or lost prompt, a restart and a shutdown hand live calls over; an answered alert call times out; a merge carries an unacknowledged escalation; one failing incident never stops the sweeper or the watchdog; a caller already put through is never hung up (404/409 from Asterisk; one adoption at a time); each role is announced before an acknowledgement covers it; a hand-over escalation lost after 10 minutes of retries is counted (sauti_ivr_handover_escalation_lost_total) and recorded again by sautictl incident escalate-handover under the same key; a former leader resets the dead-man gauges"
+      - "EV-2 (V-01): promtool-tested alert rules page on the dead-man age (SautiEscalationUnacknowledged) and on its staleness, absent or leaderless (SautiEscalationSignalStale), on no dispatch leader or two (SautiDispatchLeaderMissing) and on an unreadable overdue age (SautiDispatchOverdueUnreadable); the leader term's gauge loop is tested through /metrics. Routing the pages and the Watchdog to a dead man's switch is P0 (R-16)"
       - An incident's messages go out as soon as it is planned; a later incident's slow or failing plan never holds them back
       - A coordinator line is held only while its call lasts; an early answer keeps it, an answered call with no key is hung up after the no-input time, and each new term frees lines whose channel Asterisk reports gone (never one it cannot be asked about)
       - A closed or merged incident's forward is neither texted nor called (the claim is ordered against the closure)
@@ -523,6 +524,11 @@ threats:
       - internal/platform/pg/opstore/idle_integration_test.go::TestListIdleRelistsWhatTheSweeperWouldEscalate
       - internal/platform/ivr/controller_test.go::TestALongClosingPromptIsNotCutOff
       - cmd/intake-gw/main_test.go::TestEscalationGaugesResetWhenTheTermEnds
+      - cmd/intake-gw/main_test.go::TestTheLeaderTermExportsTheGauges
+      - cmd/dispatch-worker/main_test.go::TestTheLeaderGaugeFollowsTheTerm
+      - cmd/dispatch-worker/main_test.go::TestAFailedOverdueReadIsVisible
+      - governance/tests/test_runbooks.py::test_every_alert_is_tested_firing_and_quiet
+      - governance/tests/test_runbooks.py::test_every_alert_names_a_runbook_that_exists
       - internal/platform/ivr/outbound_test.go::TestAnAnsweredBackupCallKeepsTheLineFree
       - internal/platform/ivr/outbound_test.go::TestAcknowledgementCoversOnlyAnnouncedRoles
       - tests/e2e/m1_ivr_test.go::TestAnAdoptedCallIsEscalatedWhateverTheFallbackDialDoes
