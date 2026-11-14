@@ -72,7 +72,7 @@ Settles: F-02, F-29, F-33, F-36; constrains F-82.
 
 ### 3. Every failure path ends with a person
 
-An automated step that errors, times out or exhausts its retries hands over to a coordinator and records an `incident.escalated` event, so the coordinator line keeps ringing even when the hand-over itself fails. This covers:
+An automated step that errors, times out or exhausts its retries hands over to a coordinator and records an `incident.escalated` event on the call's incident, so the coordinator line keeps ringing even when the hand-over itself fails. A call with no incident (an unknown number on the bridge, or a voice call whose intake failed before an incident was opened) is handed over live and records nothing: an escalation needs an incident, and opening one outside Tool 1, or keeping a separate record, is the PI's and the DPO's decision. This covers:
 - an intake error or timeout, an unplayable or failed prompt, the no-match limit, and silence after the caller engaged;
 - a fallback dial nobody answers (a bounded retry, then a closing message, while the escalation rings);
 - a caller's bridge call that is not answered, or that finds an incident with no helper yet;
@@ -90,6 +90,13 @@ Settles: F-02, F-03, F-04, F-05, F-07, F-28.
 ### 4. Read-back of critical input
 
 The place (ward and landmark) and a typed call-back number are critical: an error in either sends help to the wrong place or loses the only contact. Each is shown or spoken back before the closing message, in the caller's language; a spoken number is read in groups. Read-back never delays T2: dispatch starts at the trigger screen as today. Read-back changes Tool 1, so it ships behind `place_readback` and the call-back read-back flag **(flag)**.
+
+A wrong place is corrected by a person, never by re-entry. Once T2 is recorded the projection refuses a second ward or landmark answer (`db/operational/migrations/0006_tool1_projection.sql`), and responders may already be on the way, so an automatic change could send them to a third place unannounced. Behind `place_readback`, the place is read back after the landmark answer with `1` right and `2` wrong:
+- `2` keeps the recorded place, flags the incident `needs_location_callback` and escalates `place_disputed`, so the coordinator line rings (rule 3). On voice the call is also handed over at once, with that reason.
+- The coordinator confirms the place with the caller, corrects the incident and tells the assigned responders through M5's relocation tool. Until M5, the runbook step reads "Not possible before M5:" with the interim action (R-3).
+- `1`, or no answer, continues as today.
+
+The keys, the reason and the copy are PENDING the PI.
 
 Source: NENA-STA-020.2-2026 §5.2.1 (a verified location is repeated or confirmed back; a different call-back number is asked again).
 
@@ -109,7 +116,7 @@ Settles: F-35, F-36, F-37, F-56.
 - Every text that announces a call names that number through a placeholder filled from configuration (`{sauti_number}`, `{bridge}`), never typed into copy. The responder code is `{code}`.
 - SMS go out under one registered sender ID, required in production.
 - No text carries a link or asks for personal details.
-- A coordinator taking a handed-over call sees "SAUTI" and the reference, never the caller's number (rule 5).
+- A coordinator taking a handed-over call sees "SAUTI" and the reference, never the caller's number (rule 5). The fallback dialplan sets both before every dial, on every path into it, so no failed request can show the caller's number.
 
 Sources: UK NCSC, Business communications: SMS and telephone best practice (publicise your numbers and sender IDs; keep them few): https://www.ncsc.gov.uk/guidance/business-communications-sms-and-telephone-best-practice · Build Prompt §10.4, §10.5.
 

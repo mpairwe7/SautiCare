@@ -29,7 +29,7 @@
 3. **Deterministic.** No model and no heuristic touches severity. Escalation reasons are fixed codes.
 4. **Server-side time.** Every time that is recorded, compared or escalated on comes from `clock_timestamp()`: timer overdue checks, ring counts, escalation ages and attempt times. Go's `time.Now()` is used only for local timers and latency metrics.
 5. **Never reveal the caller's number.**
-   - A hand-over sets the caller ID that the coordinator sees to "SAUTI" plus the reference, with Sauti's number (F-12).
+   - The fallback dialplan sets the caller ID that the coordinator sees to Sauti's number and "SAUTI" plus the reference, before every dial, whatever path reached it (F-12). No Go call can fail open into showing the caller's number.
    - No metric label, log line, ledger payload or CLI output carries a number. `sautictl escalations` prints references, never numbers.
 6. **No patient data on messaging apps.** No new SMS content beyond placeholders for public Sauti numbers and codes (F-34). No messaging integration.
 7. **No coordinator override.** Tier 2 and the escalation list inform a person; they never dispatch.
@@ -185,14 +185,18 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
   - `func (c *ari.Client) ListChannels(ctx context.Context) ([]ari.Channel, error)` with `type Channel struct { ID, App string }`. It reads `GET /ari/channels` and keeps `dialplan.app_name`, or `stasis` where Asterisk reports it.
   - `Options.PromptMax time.Duration` (default 30 s, as `BridgeConfig`).
   - `func (c *Controller) Adopt(ctx context.Context) error`: hands every `sauti-ivr` channel with no worker to `FallbackContext`. Called on every (re)connect, before events are handled.
+    - The channel ID is the call ID (`StartIVR` opens the session with it), so `Adopt` hands over `IVRCall{CallID: <channel ID>}` through `handOver`: the escalation comes before `Continue`, as on the live path, and its key `handover:<CallID>` is the live path's, so a call handed over before the restart escalates once.
+    - `HandOver` finds the incident from that call ID (Task 1.3). A channel with no session (intake never committed) has nothing to escalate and is handed over live.
   - On `ctx.Done()`, `run` calls `handOver` under `context.WithoutCancel` and a 5 s budget for each call not yet ended.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestALostEndOfPromptStillRepromptsWithinTheBackstop` (synctest): play, drop the `PlaybackFinished`, advance `PromptMax+NoInput`. Assert a second `Play` of the same sounds.
   - `TestReconnectHandsOverOrphanedChannels`: FakeARI lists `ch9` in `sauti-ivr`, with no worker. `Adopt` gives `continues == ["ch9 sauti-ivr-fallback,s,1"]`.
   - `TestReconnectLeavesOwnedChannelsAlone`: `ch1` has a worker, so there is no continue for it.
+  - `TestAdoptEscalatesBeforeItHandsOver`: `Adopt` on `ch9` calls `HandOver(IVRCall{CallID: "ch9"}, voice_handed_over)` before the continue.
+  - `TestAdoptEscalatesWhenTheFallbackFails`: FakeARI `Continue` fails. `HandOver` was still called for `ch9`, then a hangup.
   - `TestShutdownHandsOverLiveCalls`: cancel ctx mid-screen. Assert `Continue(ch1, FallbackContext, "s", 1)` once.
-- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ -run 'Backstop|Reconnect|Shutdown' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ -run 'Backstop|Reconnect|Shutdown|Adopt' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Implement. `play` arms the timer at `PromptMax+NoInput` when it requests a prompt, and `PlaybackFinished` re-arms it at `NoInput`, as the bridge does. `Run` calls `Adopt` after `Events` connects. Each worker's exit path hands over unless `st.ended`.
 - [ ] **Step 4:** Run the same command. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(ivr): a backstop for lost prompt events; hand over orphaned and live calls on reconnect and shutdown (UX-1 Task 2)`.
@@ -200,15 +204,16 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 ### Task 1.3: No-match limit, silence hand-over, and an escalation on every hand-over (F-02: CV-1, CV-2, CU-14; F-12)
 
 **Files:**
-- Modify: `internal/platform/ivr/controller.go:279-382`, `internal/intake/ivr.go` (add `HandOver`), `internal/platform/ari/client.go:231` (add `SetCallerName`)
+- Modify: `internal/platform/ivr/controller.go:279-382`, `internal/intake/ivr.go` (add `HandOver`), `internal/platform/ari/client.go:231` (add `SetReference`), `db/operational/queries/incidents.sql` (`IVRCallIncident`), `internal/platform/pg/opstore/`
 - Test: `internal/platform/ivr/controller_test.go`, `internal/intake/ivr_test.go`
 
 **Interfaces:**
 - Produces:
   - `func (s *intake.Service) HandOver(ctx context.Context, call IVRCall, reason string) error`. It appends `incident.escalated {reason}` with the key `incident.EscalationKey(reason, "")`, scoped to the call: `handover:<CallID>`. A terminal incident is a no-op.
+    - With a zero `IncidentID`, it finds the incident from the call's IVR session: `IVRCallIncident` reads `op.sessions` where `channel = 'ivr'` and `provider_session_id = CallID` (`op_ivr` reads `op.sessions` since 0012, so no migration). No session: nothing to escalate.
   - `call.invalid int`: consecutive no-matches on one question. It is reset by a valid answer and by a new question.
   - `Options.MaxNoMatch int`, default 3.
-  - `func (c *ari.Client) SetCallerName(ctx context.Context, channelID, name string) error`.
+  - `func (c *ari.Client) SetReference(ctx context.Context, channelID, ref string) error`: sets the channel variable `SAUTI_REF` (digits and spaces only), which the fallback dialplan puts in the caller name (Task 1.4).
 - Consumes: `incident.ReasonVoiceHandedOver` (Task 1.1).
 
 - [ ] **Step 1: Write the failing tests.**
@@ -216,15 +221,19 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
   - `TestSilenceAfterAnAnswerHandsOver`: answer the language screen, then fire no-input `MaxReprompts+1` times. Assert one continue and no hangup.
   - `TestSilenceFromTheFirstPromptHangsUp`: no key at all. Assert a hangup and no continue (a pocket dial).
   - `TestHandOverRecordsAnEscalationEvenWhenContinueFails`: FakeARI `Continue` returns an error. Assert `HandOver` was called with `voice_handed_over`, then a hangup.
-  - `TestHandOverShowsSautiAndTheReference`: before `Continue`, assert `SetCallerID(ch1, <SAUTI_ARI_CALLER_ID>)` and `SetCallerName(ch1, "SAUTI 123 456 7890")`.
+  - `TestHandOverShowsSautiAndTheReference`: the requests are exactly `SetReference(ch1, "123 456 7890")`, then `Continue`. No `SetCallerID` or caller-name request: the dialplan masks the caller (Task 1.4).
+  - `TestHandOverGoesAheadWhenTheReferenceCannotBeSet`: FakeARI fails `SetReference`. `Continue` is still called once (the dialplan then shows "SAUTI" alone).
+  - `TestAFailedHandOverEscalationIsRetried` (synctest): `HandOver` fails twice, then succeeds. `Continue` is called at once; `HandOver` is called 3 times in 10 s with the same call, then never again.
+  - `TestHandOverFindsTheIncidentByCallID` (intake): `IVRCall{CallID: "ch9"}` with a session for `ch9` appends one escalation on its incident; with no session, nothing is appended and nil is returned.
+  - `TestIVRCallIncident` (integration, opstore): the call ID of a voice session returns its incident; a USSD session with the same provider ID does not.
   - `TestHandOverEscalatesOncePerCall` (intake): two `HandOver` calls append one event.
   - Rename `TestControllerNoInputRepromptsThenHangsUp` to `TestSilenceFromTheFirstPromptHangsUp`.
-- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ ./internal/intake/ -run 'NoMatch|Silence|HandOver' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ ./internal/intake/ -run 'NoMatch|Silence|HandOver' -count=1`, then `go test -tags integration ./internal/platform/pg/opstore/ -run IVRCallIncident -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
   - `answer` compares the returned prompt's `Notice` and `Kind` with the shown kind to count no-matches.
   - `noInput` hands over when `st.turn.Call.Shown != intake.KindLanguage` or any answer was given.
-  - `handOver` calls `HandOver` first, under its own op budget; a failure is logged, never fatal. Then it sets the caller ID and name, then `Continue`.
-  - `Controller` gains a `callerID string` option, read from `SAUTI_ARI_CALLER_ID` in `cmd/ivr-controller/main.go`.
+  - `handOver` calls `HandOver` first, under its own op budget. A failure never delays the call: a goroutine under `context.WithoutCancel` retries the same `HandOver` every 5 s for up to 10 minutes (the `handover:<CallID>` key makes retries idempotent), then logs `ivr hand-over escalation lost` at error with the incident ID only. A durable retry is not possible: the store that failed is the only place it could be written, and a database outage pages through P0 alerting.
+  - Then it sets `SAUTI_REF` (a failure is logged), then `Continue`. It sets no caller ID or name: masking is the dialplan's (Task 1.4), so a failed ARI request can never show the caller's number. `Controller` needs no `callerID` option.
 - [ ] **Step 4:** Run the same command. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(ivr): three no-matches or engaged silence reach a coordinator; every hand-over escalates (UX-1 Task 3)`.
 
@@ -236,6 +245,7 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 
 **Interfaces:**
 - Produces: the `sauti-ivr-fallback` context.
+  - Its first priorities, before `Answer` and every `Dial`, set `CALLERID(num)` to the global `SAUTI_CALLER_ID` and `CALLERID(name)` to `SAUTI ${SAUTI_REF}`. They run on every path into the context: an IVR hand-over, the bridge's `toCoordinator`, and `STASISSTATUS=FAILED`, where no Go code runs. `[globals]` gains `SAUTI_CALLER_ID=`, empty until P0 sets it to the value of `SAUTI_ARI_CALLER_ID`; empty presents no number, never the caller's.
   - It tries `Dial(${SAUTI_COORDINATOR_DIAL},30)` up to 3 times.
   - Between tries it plays `sauti/fallback-hold`, and only when `DIALSTATUS` is `BUSY`, `NOANSWER`, `CHANUNAVAIL` or `CONGESTION`.
   - It then plays `sauti/fallback-closing` and hangs up.
@@ -244,9 +254,10 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 - [ ] **Step 1: Write the failing tests.**
   - `TestFallbackDialplanRetriesThenCloses`: parse the context. Assert a `DIALSTATUS` branch, a loop bounded by 3, and a `Playback(sauti/fallback-closing)` before `Hangup()`.
   - `TestInboundContextsMatchPlusPrefixedDIDs`: both contexts.
+  - `TestFallbackMasksTheCallerBeforeAnyDial`: in `sauti-ivr-fallback`, `Set(CALLERID(num)=${SAUTI_CALLER_ID})` and `Set(CALLERID(name)=SAUTI ${SAUTI_REF})` come before the first `Answer` and `Dial`, nothing after them writes `CALLERID`, and `[globals]` defines `SAUTI_CALLER_ID`.
   - `TestBridgeInboundFallsBackOnStasisFailure`: CV-29's missing case.
 - [ ] **Step 2:** Run `go test ./telephony/... -run 'Fallback|Inbound|BridgeInbound' -count=1`. Expected: FAIL.
-- [ ] **Step 3:** Edit the dialplan. The escalation from Task 1.3 is what guarantees a person; the closing message tells the caller that a coordinator will call back. Its copy is PENDING.
+- [ ] **Step 3:** Edit the dialplan. The escalation from Task 1.3 is what guarantees a person. The closing message promises no call-back: before M5 a coordinator sees "SAUTI" and the reference, never the caller's number, and only M5's audited reveal can return a call (R-3). What it says instead is PENDING the PI with R-3. Neither the dialplan comments nor the runbooks say that a coordinator will call back.
 - [ ] **Step 4:** Run the same command. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(dialplan): bounded coordinator retries, a closing message, '+' DIDs (UX-1 Task 4)`.
 
@@ -281,19 +292,18 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 **Interfaces:**
 - Produces:
   - `BridgeStore.OpenIncidentForCaller(ctx, macs [][]byte) (uuid.UUID, bool, error)`: an open incident with a session from these numbers, assigned or not.
-  - `BridgeStore.Escalate(ctx, incidentID uuid.UUID, reason string) error`: appends `incident.escalated` through `op.dispatch_escalate`, which `op_ivr` may already call. If the grant is missing, migration 0033 adds it.
+  - `BridgeStore.Escalate(ctx, incidentID uuid.UUID, reason, scope string, every time.Duration) error`: appends `incident.escalated` once per scope (and, with `every > 0`, once per window of that length on the database clock) through `op.dispatch_escalate`, which `op_ivr` may already call. If the grant is missing, migration 0033 adds it.
 - Behaviour:
   - A caller (`by == caller`) whose other leg rings out or is destroyed unanswered goes to `toCoordinator`, and `bridge_unanswered` is escalated.
-  - A caller with an open but unassigned incident goes to `toCoordinator`, and `bridge_unanswered` is escalated.
-  - An unknown number hears `bridge-no-assignment`; "press 0" then takes it to `toCoordinator` (ADR-0029 rule 1). This is rate-limited by the existing three-tries rule.
+  - An unknown number hears `bridge-no-assignment`; "press 0" then takes it to `toCoordinator` (ADR-0029 rule 1). This is rate-limited by the existing three-tries rule. It has no incident, so nothing is escalated: the live dial is its only path, and a failed `Continue` hangs up as today (ADR-0029 rule 3). A number whose open report has nobody assigned hears exactly the same prompt, and its incident is escalated `bridge_unanswered` quietly, off the call's path, at most once per 10 minutes on the database clock.
   - A responder's no-answer is unchanged.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestBridgeCallerNoAnswerGoesToACoordinator`: assert `continued == ["in-1→sauti-ivr-fallback"]` and one `Escalate(…, "bridge_unanswered")`.
-  - `TestBridgeCallerWithAnUnassignedIncidentGoesToACoordinator`.
+  - `TestBridgeOpenIncidentIsIndistinguishableFromAnUnknownNumber`: the same prompt and keys as an unknown number, and one quiet `bridge_unanswered`.
   - `TestBridgeUnknownNumberCanPressZeroForACoordinator`.
   - `TestBridgeUnknownNumber` stays green: nothing is revealed and no escalation is written.
-- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ -run 'BridgeCaller|BridgeUnknown' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test ./internal/platform/ivr/ -run 'BridgeCaller|BridgeUnknown|BridgeOpen' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Implement. Add the query and run `bin/sqlc generate && bin/sqlc diff` (expected: no output).
 - [ ] **Step 4:** Run the same command, then `go test -tags integration ./internal/platform/pg/opstore/ -run Bridge -count=1`. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(bridge): a caller who reaches nobody reaches a coordinator (UX-1 Task 6)`.
@@ -330,11 +340,10 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 **Interfaces:**
 - Produces, in migration 0033:
   - `DROP FUNCTION op.claim_coordinator_calls(interval, int)`, then `CREATE` it with the same arguments returning `(incident_id uuid, seq bigint, reasons text[], roles text[], reference text, calls int, severity text)`.
-  - `reasons` is every distinct `incident.escalated` reason with `seq > acked_seq`, ordered by `seq`. `seq` is the newest of them.
-  - `roles[i]` is `payload->>'role'` of `reasons[i]`'s newest event, or `''`. UX-3 speaks it, and returning it now avoids a second `DROP`.
+  - `reasons[i]` and `roles[i]` are the distinct (reason, role) pairs of the `incident.escalated` events with `seq > acked_seq` (`DISTINCT ON (reason, coalesce(payload->>'role', ''))`), ordered by the newest `seq` of each pair. A reason recorded for two roles appears twice, once per role. `seq` is the newest of all. UX-3 speaks the role, and returning it now avoids a second `DROP`.
   - Grants are restored to `op_ivr`. The 0022 body is otherwise unchanged.
 - Produces, in Go:
-  - `CoordinatorCall.Reasons []string`, played in `incident.ReasonRank` order.
+  - `CoordinatorCall.Reasons []string`, played in `incident.ReasonRank` order. Until UX-3 speaks roles, a reason that appears for two roles is spoken once.
   - `CoordinatorCallsConfig.BackupEndpoint string` and `BackupAfterCalls int`, from `config/gated/dispatch.yaml` `escalation: {backup_after_calls: 3}` (PENDING the PI).
   - When `calls >= BackupAfterCalls` and `BackupEndpoint != ""`, `RunOnce` originates to both endpoints. The first press of 1 on either acknowledges, and the other leg is hung up.
   - A call answered and never keyed counts as a ring (it already increments `calls`).
@@ -345,6 +354,8 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 - [ ] **Step 1: Write the failing tests.**
   - `TestClaimAnnouncesEveryUnacknowledgedReason` (integration): record `triage_rule_error` (seq a), then `no_eligible_responder` (seq b). One claim returns both, with `seq = b`. After acknowledging b, nothing is claimed.
   - `TestAReasonAfterTheClaimRingsAgain` (integration): claim, record `dispatch_stalled`, acknowledge the claimed seq. The next claim returns `dispatch_stalled`.
+  - `TestClaimReturnsEachRoleOfAReason` (integration): `no_eligible_responder {role: vht}`, then `{role: transporter}`. One claim returns reasons `[no_eligible_responder, no_eligible_responder]` and roles `[vht, transporter]`, with `seq` the second. A third `{role: vht}` still gives two pairs, roles `[transporter, vht]`.
+  - `TestCoordinatorCallSpeaksARepeatedReasonOnce`: reasons `[no_eligible_responder, no_eligible_responder]` play its sound once.
   - `TestCoordinatorCallSpeaksReasonsInPriorityOrder`: reasons `[no_eligible_responder, triage_rule_error]` play the triage-rule-error sound first.
   - `TestBackupLineRingsAfterThreeUnansweredCalls` (synctest): the fake store returns `Calls: 3`. Assert originates to both endpoints. With `Calls: 2`, assert the primary only.
   - `TestOldestUnacknowledgedEscalationGauge` (integration).
@@ -430,12 +441,12 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 
 **Interfaces:**
 - Produces: `sautictl escalations --dsn <op_readonly DSN> [--json]`. With no `--dsn`, it reads `SAUTI_DSN`; UX-5 Task 5.5 extends this to every command.
-  - One row per open incident with unacknowledged escalations: grouped reference, severity, reasons in rank order with their roles, age of the oldest, rings, last ring.
+  - One row per open incident with unacknowledged escalations: grouped reference, severity, each (reason, role) pair in rank order (as the claim, Task 1.8), age of the oldest, rings, last ring.
   - Sorted by severity (unknown counts as red), then age.
   - A second section, `tasks`, lists open incidents flagged `needs_location_callback`.
   - No number and no free text. Exit 0.
 
-- [ ] **Step 1: Write the failing test.** `TestEscalationsListsOnlyUnacknowledged`: one acknowledged and one unacknowledged escalation, and one `needs_location_callback` incident. The text output holds the second reference and its severity, and not the first. `--json` parses into `{escalations: [...], tasks: [...]}`.
+- [ ] **Step 1: Write the failing test.** `TestEscalationsListsOnlyUnacknowledged`: one acknowledged and one unacknowledged escalation, and one `needs_location_callback` incident. The text output holds the second reference and its severity, and not the first. `--json` parses into `{escalations: [...], tasks: [...]}`. Also `TestEscalationsListsEachRoleOfAReason`: `no_eligible_responder` for `vht` and for `transporter` print as two pairs.
 - [ ] **Step 2:** Run `go test -tags integration ./cmd/sautictl/ -run Escalations -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Implement as one SQL statement each, readable by `op_readonly`.
 - [ ] **Step 4:** Run the same command. Expected: PASS.
@@ -451,7 +462,7 @@ Then poll `gh pr checks <PR>` until nothing fails or is pending, resolve every C
 - Test: create `tools/freshness/` docs-phrase check (or `governance/tests/test_runbooks.py`): `test_no_stale_escalation_phrases`.
 
 **ADR-0034 (MADR 4.0, the four mandatory sections plus Decision Drivers and Considered Options) decides:**
-- every hand-over escalates (`voice_handed_over`);
+- every hand-over of a call with an incident escalates (`voice_handed_over`); a call with no incident is handed over live and records nothing;
 - three no-matches, and engaged silence, hand over;
 - the bridge sends a caller who reaches nobody to a coordinator;
 - the sweeper escalates any located incident without T2;
@@ -469,7 +480,7 @@ Its Confirmation lists the tests of Tasks 1.2 to 1.12.
 - The gazetteer runbook restarts ivr-controller too.
 - Add the reason rows from Task 1.1.
 
-- [ ] **Step 1:** Write `test_no_stale_escalation_phrases`. It fails on the three phrases, and on "call the caller back" in a step without "M5". Run `python3 -m pytest governance/tests -k stale -q`. Expected: FAIL.
+- [ ] **Step 1:** Write `test_no_stale_escalation_phrases`. It fails on the three phrases, and on "call the caller back" or "will call back" in a line without "M5". Run `python3 -m pytest governance/tests -k stale -q`. Expected: FAIL.
 - [ ] **Step 2:** Write the docs. Fix `docs/reference/ussd-at-adapter.md:40` to `internal/intake/machine_test.go::TestEveryRenderedScreenFitsLimitAndGSM7`.
 - [ ] **Step 3:** Run the gates. Expected: `freshness: OK`, both governance checks OK, and the docs test passes.
 - [ ] **Step 4:** Commit `docs: ADR-0034, runbooks, reference and traceability for UX-1 (UX-1 Task 13)`. Push and open the PR against `main`. Poll `gh pr checks` until nothing fails or is pending, resolve every CodeRabbit finding, and **ask the user before merging**. In the PR, flag for the PI: the reason order, `backup_after_calls`, `dispatch_not_started` versus ward-level dispatch, and the out-of-area flag.
@@ -531,10 +542,10 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 
 **Interfaces:**
 - Each file runs `SET LOCAL lock_timeout = '3s'` and `SET LOCAL statement_timeout = '60s'` first.
-- A `lock_not_available` error (55P03) is retried up to 5 times with doubling backoff from 1 s, then fails, naming the blocking pid.
+- A `lock_not_available` error (55P03) is retried up to 3 times, after 1, 2 and 4 s, then fails, naming the blocking pid. The worst case is 4 lock waits of 3 s plus 7 s of backoff: 19 s.
 - `-- migrate:no-transaction` is **not** added (no current need; deferred).
 
-- [ ] **Step 1:** Write `TestMigrationGivesUpOnALockInsteadOfQueueingWrites`. A second connection holds `BEGIN; SELECT … FROM op.incidents FOR SHARE`. A test migration ALTERs `op.incidents`. Assert that it fails in under 40 s, and that a third connection's insert into `op.incident_events` never waits more than 3 s. Run `go test -tags integration ./internal/platform/pg/migrate/ -run LockInstead -count=1`. Expected: FAIL (it blocks).
+- [ ] **Step 1:** Write `TestMigrationGivesUpOnALockInsteadOfQueueingWrites`. A second connection holds `BEGIN; SELECT … FROM op.incidents FOR SHARE`. A test migration ALTERs `op.incidents`. Assert that it fails in under 30 s, and that a third connection's insert into `op.incident_events` never waits more than 3 s. Run `go test -tags integration ./internal/platform/pg/migrate/ -run LockInstead -count=1`. Expected: FAIL (it blocks).
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `fix(migrate): lock and statement timeouts with bounded retries (UX-2 Task 4)`.
@@ -652,7 +663,7 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 
 **Interfaces:**
 - `CoordinatorCalls.Handle` loads `MessageFacts` for the incident, through the existing `op_ivr` grant used for forwards.
-- `sounds` becomes: intro, then the grouped reference (Task 4.7 adds the pauses), then `alert-colour-<sev>`, `alert-category-<cat>`, then the ward and landmark (`whereToGo`; a free-text landmark speaks the ward only), then, for each reason in rank order, the reason followed by `escalation-role-<role>` when the role is set, then the options.
+- `sounds` becomes: intro, then the grouped reference (Task 4.7 adds the pauses), then `alert-colour-<sev>`, `alert-category-<cat>`, then the ward and landmark (`whereToGo`; a free-text landmark speaks the ward only), then, for each (reason, role) pair in rank order, the reason followed by `escalation-role-<role>` when the role is set, then the options. A reason claimed for two roles is spoken with each.
 - `ForwardCalls.sounds` adds the ward and landmark after the category.
 - The role comes from `claim_coordinator_calls`' `roles` (0033), passed as Stasis arguments after the reasons.
 
@@ -888,19 +899,22 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
   - `id uuid PK DEFAULT uuidv7()`, `incident_id uuid NOT NULL REFERENCES op.incidents`, `through_seq bigint NOT NULL`;
   - `line text NOT NULL CHECK (line IN ('primary','backup'))`;
   - `claimed_at timestamptz NOT NULL DEFAULT clock_timestamp()`, `answered_at timestamptz`, `ended_at timestamptz`;
-  - `result text CHECK (result IN ('acknowledged','no_key','no_answer','failed'))`.
+  - `result text CHECK (result IN ('acknowledged','no_key','no_answer','failed'))`;
+  - `payload_salt bytea NOT NULL DEFAULT uuid_send(gen_random_uuid())`, for the ledger record (0016's pattern).
 
   These are the attempts of an existing record, as `op.alert_attempts` holds alerts' attempts. The DPO is informed. The table holds no number.
 - `op.begin_coordinator_call_attempt(p_incident uuid, p_seq bigint, p_line text) RETURNS uuid` and `op.finish_coordinator_call_attempt(p_attempt uuid, p_result text, p_answered boolean) RETURNS boolean` (first end wins). Both are granted to `op_ivr`.
-- `op.acknowledge_coordinator_call(p_incident uuid, p_seq bigint)` keeps its signature (`CREATE OR REPLACE`). It also calls `op.enqueue_audit(uuidv7(), clock_timestamp(), 'escalation.acknowledged', p_incident, NULL, 'ux-0036', jsonb_build_object('through_seq', p_seq, 'line', <line of the newest answered attempt>))`. This is a ledger-only record: no incident event, so `op.append_event_core` is untouched. The staff ID is NULL until M5 binds the signed-in coordinator.
+- `op.acknowledge_coordinator_call` gains the attempt whose key was pressed: `DROP FUNCTION op.acknowledge_coordinator_call(uuid, bigint)`, then `CREATE op.acknowledge_coordinator_call(p_incident uuid, p_seq bigint, p_attempt uuid)`, with the grant to `op_ivr` restored and sqlc regenerated. In one transaction it acknowledges (0022's body), finishes `p_attempt` as `acknowledged` (first end wins), and writes the ledger record `escalation.acknowledged` with `{through_seq: p_seq, line: <p_attempt's line>}`. Both lines can be answered at once, so the line is the pressing attempt's, never the newest answered one.
+- The ledger record is written the way `op.log_control` writes one (0016): the attempt row carries a `payload_salt`, and the outbox entry's `event_id` is the attempt's ID. `op.enqueue_audit` cannot serve: it raises unless its ID names an incident event. This is a ledger-only record: no incident event, so `op.append_event_core` is untouched. The staff ID is NULL until M5 binds the signed-in coordinator.
 
-**Interfaces (Go):** `CoordinatorCalls.RunOnce` begins an attempt per originate. `Handle` marks it answered on `StasisStart`, and finishes it on acknowledgement, on hang-up with no key (`no_key`), on ring-out (`no_answer`) or on error (`failed`).
+**Interfaces (Go):** `CoordinatorCalls.RunOnce` begins an attempt per originate. `Handle` marks it answered on `StasisStart`, acknowledges through the attempt of the channel whose key was pressed, and finishes it on hang-up with no key (`no_key`), on ring-out (`no_answer`) or on error (`failed`).
 
 - [ ] **Step 1: Write the failing tests** (integration):
   - `TestThreeRingsThenAnAcknowledgementLeaveThreeAttemptsAndOneLedgerEntry`: 3 attempt rows (2 `no_answer`, 1 `acknowledged`) and one `escalation.acknowledged` outbox row whose payload carries `through_seq`.
   - `TestAcknowledgementLedgerEntryCarriesNoNumber`.
+  - `TestAcknowledgementRecordsTheLineThatPressedOne`: both lines are answered, the backup after the primary; the primary presses 1. The ledger payload's `line` is `primary`, and the backup attempt ends `no_key`.
   - `go test -tags integration ./cmd/sautictl/ -run VerifyLedger` then shows the entry.
-- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ThreeRings|AcknowledgementLedger' -count=1`. Expected: FAIL.
+- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ThreeRings|AcknowledgementLedger|AcknowledgementRecords' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Write the migration, generate (`bin/sqlc diff`: no output), and wire `outbound.go`.
 - [ ] **Step 4:** Run the same command, then `go test ./internal/platform/ivr/ -count=1`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(audit): coordinator call attempts and a ledger record of each acknowledgement (UX-5 Task 1)`.
@@ -917,15 +931,16 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
   - the gazetteer load (`gazetteer.loaded`, with the version);
   - `op.finish_bridge_call` (`bridge.call_ended`, with the incident, the result and who began it).
 
-  Each payload holds IDs and codes only, hashed by `op.enqueue_audit`'s salt (0005).
-- A trigger `incident_events_append_only` on `op.incident_events` (row-level, every role) refuses `UPDATE` and `DELETE`. Partitions are still dropped by the partition runbook, so M6 retention is unaffected.
-- A trigger `outbox_append_only` on `op.outbox` refuses `DELETE`, and refuses any `UPDATE` that changes a column other than `delivered_at`, or that sets `delivered_at` back to NULL.
+  Each payload holds IDs and codes only, salted and hashed as `op.log_control` does (0016). `op.enqueue_audit` cannot serve here: it raises unless its ID names an incident event.
+- A trigger `incident_events_append_only` on `op.incident_events` (row-level, every role) refuses `UPDATE` and `DELETE`, and a statement trigger refuses `TRUNCATE`, as 0016 does. Partitions are still dropped by the partition runbook, so M6 retention is unaffected.
+- A trigger `outbox_append_only` on `op.outbox` refuses `DELETE` and `TRUNCATE`, and every `UPDATE` except the relay's own: `delivered_at` from NULL to a time, with every other column unchanged (`op.mark_outbox_delivered`, 0002). No job deletes from `op.outbox` on `main`; M6's retention (F-87) relaxes the trigger for delivered rows only.
 
 - [ ] **Step 1: Write the failing tests** (integration):
   - `TestEveryStateChangingControlFunctionWritesOneLedgerEntry`. The function list is generated from `pg_proc`: `SECURITY DEFINER` in schema `op`, granted to `op_console` or the owner, not `STABLE`, minus an allow-list of read helpers. A new function without a ledger entry fails the test.
   - `TestIncidentEventsRefuseUpdateAndDeleteEvenForTheOwner`.
-  - `TestOutboxRefusesDeleteAndPayloadRewrite`.
-- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ControlFunction|RefuseUpdate|OutboxRefuses' -count=1`. Expected: FAIL.
+  - `TestOutboxRefusesDeleteAndPayloadRewrite`: `DELETE`, `TRUNCATE`, a payload change, `delivered_at` back to NULL, and a second `delivered_at` on a delivered row are each refused.
+  - `TestOutboxRelayStillMarksDelivered`: `op.mark_outbox_delivered` on a pending row returns 1, and `op.claim_outbox` no longer returns it.
+- [ ] **Step 2:** Run `go test -tags integration ./internal/platform/pg/opstore/ -run 'ControlFunction|RefuseUpdate|OutboxRefuses|OutboxRelay' -count=1`. Expected: FAIL.
 - [ ] **Step 3:** Write the migration. Check that the partition-maintenance runbook's commands still work (`DROP`/`DETACH`, not `DELETE`).
 - [ ] **Step 4:** Run the same command, then `scripts/ci/integration.sh`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(audit): control changes reach the ledger; events and outbox are append-only (UX-5 Task 2)`.
@@ -934,8 +949,8 @@ The black-hole takeover proof needs a dropped route, not a userland proxy, becau
 
 **Files:** Create `cmd/sautictl/coverage.go` and `cmd/sautictl/coverage_integration_test.go`. Modify `cmd/sautictl/main.go:61-74`.
 
-**Interfaces:** `sautictl verify-coverage --dsn <op_readonly DSN> --audit-dsn <audit reader DSN> [--older-than 5m]`. For every incident with events older than `--older-than`, it compares the count of `op.incident_events` per (incident, type) with the ledger entries per (incident, type). It prints `coverage OK` or one `missing incident=<id> type=<t> events=<n> ledger=<m>` line per mismatch, and exits 1 on any mismatch. Keying the ledger by event ID needs an audit-schema change and canonical encoding v2 (deferred).
-- [ ] **Step 1:** Write `TestVerifyCoverageReportsADeletedEvent`. As owner, disable the Task 5.2 trigger inside the test transaction, delete one relayed event, re-enable it, and assert exit 1 with its `missing` line. Also write `TestVerifyCoverageOKOnAHealthyStore`. Run `go test -tags integration ./cmd/sautictl/ -run VerifyCoverage -count=1`. Expected: FAIL.
+**Interfaces:** `sautictl verify-coverage --dsn <op_readonly DSN> --audit-dsn <audit reader DSN> [--older-than 5m]`. It reads one cutoff, the operational store's `clock_timestamp()` minus `--older-than`, and counts both sides up to it: `op.incident_events` with `recorded_at < cutoff`, and ledger entries with `occurred_at < cutoff`, per (incident, type). The ledger's `occurred_at` is the event's own `recorded_at` (`op.enqueue_audit`, 0005), so a row is on the same side of the cutoff in both stores, and an event still in the outbox is not counted until it is older than the cutoff. Relay lag longer than `--older-than` is reported as missing, which is true: the ledger is behind. Ledger-only types (UX-5's control and acknowledgement records) have no event to count and are skipped. It prints `coverage OK` or one `missing incident=<id> type=<t> events=<n> ledger=<m>` line per mismatch, and exits 1 on any mismatch. Keying the ledger by event ID needs an audit-schema change and canonical encoding v2 (deferred).
+- [ ] **Step 1:** Write `TestVerifyCoverageReportsADeletedEvent`. As owner, disable the Task 5.2 trigger inside the test transaction, delete one relayed event, re-enable it, and assert exit 1 with its `missing` line. Also write `TestVerifyCoverageOKOnAHealthyStore`, and `TestVerifyCoverageIgnoresEventsNewerThanTheCutoff`: an event recorded after the cutoff and not yet relayed gives `coverage OK`. Run `go test -tags integration ./cmd/sautictl/ -run VerifyCoverage -count=1`. Expected: FAIL.
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `feat(sautictl): verify-coverage reconciles events with the ledger (UX-5 Task 3)`.
@@ -1029,12 +1044,16 @@ Every task here ships its flag `false`. With the flags off, every screen, prompt
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `feat(intake): optional confirmation before out-of-area, flag off (UX-6 Task 2)`.
 
-### Task 6.3: Closing and opening texts: the place, first aid while suspended, what happens next, the voice line (F-51, F-57, F-58, F-59)
+### Task 6.3: Closing and opening texts: the place and its correction, first aid while suspended, what happens next, the voice line (F-51, F-57, F-58, F-59)
 
 **Files:** Modify `internal/intake/machine.go:200-212` (closing renders), `internal/config/tool1.go:240-260` (allowed placeholders), `config/gated/tool1.yaml` (`help_coming_readback`, `dispatch_suspended_first_aid`, `next_step_line`, `language.prompt_with_voice_line`: PENDING-UX and PENDING-MD-PI), and `internal/platform/ivr/sounds.go`. Test `machine_test.go` and `service_test.go`.
 
 **Interfaces:**
 - `place_readback` on: the screen-8 prompt and the closing text carry `{place}`, which is the landmark name and the ward name, or the ward name only for a free-text or unmatched landmark. The IVR speaks the `ward-*` and `landmark-*` recordings.
+- `place_readback` on, the correction (ADR-0029 rule 4): after the landmark answer, a read-back step offers `1` right and `2` wrong. T2 is already recorded and is never delayed.
+  - `2` changes no ward or landmark answer and re-dispatches nothing. It appends `flagged{needs_location_callback}` and `escalated{place_disputed}` (key `incident.EscalationKey("place_disputed", "")`), then goes on to screen 8. On voice, the controller hands the call over with that reason instead.
+  - `place_disputed` joins the registry (Task 1.1) with PENDING recordings, a runbook row whose responder step reads "Not possible before M5:" (the M5 relocation tool tells the assigned responders), and a line in `docs/reference/events.md`.
+  - `1`, or no answer, goes on to screen 8 with nothing written.
 - `suspended_first_aid` on: `dispatch_suspended` may carry `{first_aid}`, and `Validate` requires it.
 - `closing_next_step` on: one reserved PENDING line in `help_coming`.
 - `voice_line_on_screen1` on: `language.prompt` carries `{voice_line}`, filled from configuration (P0 number).
@@ -1046,6 +1065,8 @@ All four must pass the screen gate with the longest values.
   - `TestSuspendedClosingCarriesFirstAidWhenFlagged`.
   - `TestNextStepLineWhenFlagged`.
   - `TestScreenOneNamesTheVoiceLineWhenFlagged`.
+  - `TestAWrongPlaceEscalatesAndKeepsThePlace` (service): with the flag on, `2` gives one `needs_location_callback` flag and one `place_disputed` escalation; ward, landmark and T2 are unchanged; a retried callback adds nothing.
+  - `TestAWrongPlaceOnVoiceHandsOver` (controller): `2` gives `HandOver(…, "place_disputed")`, then `Continue`.
   - `TestClosingTextsFlagsOffEqualMain`.
 
   Run them. Expected: FAIL.
