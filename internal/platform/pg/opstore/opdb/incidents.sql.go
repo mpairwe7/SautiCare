@@ -318,13 +318,16 @@ func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentR
 }
 
 const iVRCallIncident = `-- name: IVRCallIncident :many
-SELECT s.incident_id::uuid AS incident_id FROM op.sessions s
+SELECT coalesce(i.merged_into, i.id)::uuid AS incident_id FROM op.sessions s
+JOIN op.incidents i ON i.id = s.incident_id
 WHERE s.channel = 'ivr' AND s.provider_session_id = $1::text
 LIMIT 1
 `
 
 // The incident of a voice call, from its call ID (the IVR session's provider
 // ID): ivr-controller escalates a call it adopted after a restart (op_ivr).
+// A call merged into another incident resolves to its survivor, the
+// incident that takes escalations.
 func (q *Queries) IVRCallIncident(ctx context.Context, callID string) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, iVRCallIncident, callID)
 	if err != nil {

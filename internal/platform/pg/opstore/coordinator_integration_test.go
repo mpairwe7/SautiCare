@@ -180,4 +180,12 @@ func TestIVRCallIncident(t *testing.T) {
 	if _, ok, err := r.ivr.IVRCallIncident(ctx, "ch-ussd-1"); err != nil || ok {
 		t.Fatalf("a USSD session taken for a voice call: %v %v", ok, err)
 	}
+	// Merged into another incident, the call resolves to its survivor, the
+	// incident that takes escalations (PR #14 review).
+	appendEv(t, r.intake, o.IncidentID, incident.EvClassified, `{"severity":"red"}`, "tool1-test+sha256:000000000000")
+	appendEv(t, r.intake, o.IncidentID, incident.EvDispatchReady, `{"zone":{"col":902,"row":84},"location_quality":"landmark"}`, "")
+	absorb(t, r.intake, incident.Opened{IncidentID: r.incident}, o)
+	if id, ok, err := r.ivr.IVRCallIncident(ctx, "ch-ivr-1"); err != nil || !ok || id != r.incident {
+		t.Fatalf("merged voice call: %v %v %v, want the survivor %s", id, ok, err, r.incident)
+	}
 }

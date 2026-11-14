@@ -74,6 +74,10 @@ func (s *Service) HandOver(ctx context.Context, call IVRCall, reason string) err
 		call.IncidentID = id
 	}
 	p, err := s.d.Reader.Projection(ctx, call.IncidentID)
+	if err == nil && p.MergedInto != nil {
+		// A merged incident takes no escalation: its survivor does.
+		p, err = s.d.Reader.Projection(ctx, *p.MergedInto)
+	}
 	if err != nil || p.State.Terminal() {
 		return err
 	}
