@@ -183,12 +183,11 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 	}
 
 	// Ports, and a fresh token and key for this run.
-	ports := map[string]string{}
-	for _, k := range []string{"intake", "intake-admin", "dispatch-admin", "relay"} {
-		if ports[k], err = freePort(); err != nil {
-			return st, err
-		}
+	picked, err := freePorts(4)
+	if err != nil {
+		return st, err
 	}
+	ports := map[string]string{"intake": picked[0], "intake-admin": picked[1], "dispatch-admin": picked[2], "relay": picked[3]}
 	pathToken, deliveryToken, apiKey := secret(), secret(), secret()
 	intakeURL := "http://127.0.0.1:" + ports["intake"]
 	local := egress.NewClient([]string{"127.0.0.1"}, 5*time.Second)

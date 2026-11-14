@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/dispatch"
+	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/africastalking"
 	"sautihealth.com/sauti/internal/platform/egress"
@@ -190,4 +192,45 @@ func TestStagedSpaceHoldsNoConfidentialFiles(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// CodeRabbit PR #15: the ports of one run are distinct by construction,
+// never two closed-and-reused picks.
+func TestFreePortsAreDistinct(t *testing.T) {
+	ports, err := freePorts(64)
+	if err != nil || len(ports) != 64 {
+		t.Fatalf("ports = %v, %v", ports, err)
+	}
+	seen := map[string]bool{}
+	for _, p := range ports {
+		if seen[p] {
+			t.Fatalf("port %s picked twice in one run", p)
+		}
+		seen[p] = true
+	}
+}
+
+// CodeRabbit PR #15: a start that fails (a port taken by another process
+// between the pick and the bind) is retried a bounded number of times.
+func TestBootRetriesAFailedStart(t *testing.T) {
+	for _, c := range []struct {
+		fails, calls int
+		phase        string
+	}{{2, 3, phaseReady}, {99, startAttempts, phaseFailed}} {
+		a := newApp(context.Background(), options{}, slog.New(slog.NewTextHandler(io.Discard, nil)), config.Bundle{}, location.File{})
+		calls := 0
+		a.start = func(context.Context, options, io.Writer) (*stack, error) {
+			calls++
+			if calls <= c.fails {
+				return nil, errors.New("listen tcp 127.0.0.1:41000: bind: address already in use")
+			}
+			return &stack{dir: t.TempDir(), cancel: func() {}}, nil
+		}
+		a.boot()
+		a.wg.Wait()
+		if a.phase != c.phase || calls != c.calls {
+			t.Errorf("%d failures: phase %s after %d starts, want %s after %d", c.fails, a.phase, calls, c.phase, c.calls)
+		}
+		a.close()
+	}
 }

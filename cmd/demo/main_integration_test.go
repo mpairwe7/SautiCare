@@ -145,10 +145,11 @@ func TestDemoScenario1OverHTTP(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	port, err := freePort()
+	ports, err := freePorts(1)
 	if err != nil {
 		t.Fatal(err)
 	}
+	port := ports[0]
 	data := t.TempDir()
 	var logs bytes.Buffer
 	runner := exec.Command(filepath.Join(bin, "demo"), "--pg-bin", pg, "--data", data, "--addr", "127.0.0.1:"+port,

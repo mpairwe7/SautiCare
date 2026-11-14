@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"log/slog"
 	"mime"
@@ -22,6 +23,9 @@ import (
 
 //go:embed web
 var webFS embed.FS
+
+// startAttempts bounds the retries of a failed start.
+const startAttempts = 3
 
 // Phases of the app.
 const (
@@ -44,16 +48,29 @@ type app struct {
 	st    *stack
 	phase string
 	wg    sync.WaitGroup
+
+	start func(context.Context, options, io.Writer) (*stack, error) // startStack; a seam for tests
 }
 
 func newApp(ctx context.Context, o options, log *slog.Logger, cfg config.Bundle, gaz location.File) *app {
-	return &app{ctx: ctx, o: o, log: log, cfg: cfg, gaz: gaz, phase: phaseStarting}
+	return &app{ctx: ctx, o: o, log: log, cfg: cfg, gaz: gaz, phase: phaseStarting, start: startStack}
 }
 
-// boot starts a stack in the background (phase starting or resetting).
+// boot starts a stack in the background (phase starting or resetting),
+// retrying a failed start up to startAttempts times: a port picked free can
+// be taken by another process before its service binds it.
 func (a *app) boot() {
 	a.wg.Go(func() {
-		st, err := startStack(a.ctx, a.o, os.Stderr)
+		var (
+			st  *stack
+			err error
+		)
+		for n := 1; ; n++ {
+			if st, err = a.start(a.ctx, a.o, os.Stderr); err == nil || n == startAttempts || a.ctx.Err() != nil {
+				break
+			}
+			a.log.Warn("demo: start failed; retrying", "attempt", n, "err", err)
+		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		switch {

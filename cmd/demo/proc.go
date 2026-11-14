@@ -93,13 +93,19 @@ func waitReady(ctx context.Context, p *proc, healthURL string) error {
 	}
 }
 
-func freePort() (string, error) {
-	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", err
+// freePorts picks n distinct free loopback ports: every listener stays open
+// until all n are picked, so no port is handed out twice in one run.
+func freePorts(n int) ([]string, error) {
+	var ports []string
+	for range n {
+		l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = l.Close() }()
+		ports = append(ports, strconv.Itoa(l.Addr().(*net.TCPAddr).Port))
 	}
-	defer func() { _ = l.Close() }()
-	return strconv.Itoa(l.Addr().(*net.TCPAddr).Port), nil
+	return ports, nil
 }
 
 // secret is a fresh random value: every password, token and key of a run.
@@ -129,10 +135,11 @@ func startPostgres(ctx context.Context, bin, dir string, log io.Writer) (*proc, 
 	if err != nil {
 		return nil, "", fmt.Errorf("demo: initdb: %w", err)
 	}
-	port, err := freePort()
+	ports, err := freePorts(1)
 	if err != nil {
 		return nil, "", err
 	}
+	port := ports[0]
 	p, err := startProc("postgres", filepath.Join(bin, "postgres"), []string{"-D", data, "-p", port,
 		"-c", "listen_addresses=127.0.0.1", "-c", "unix_socket_directories=",
 		"-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"}, childEnv(nil), log)
