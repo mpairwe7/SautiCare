@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -123,7 +124,7 @@ func TestEscalationGaugesResetWhenTheTermEnds(t *testing.T) {
 		reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 		return rec.Body.String()
 	}
-	if body := scrape(); !strings.Contains(body, "sauti_escalation_gauges_leader 1") {
+	if body := scrape(); !hasSample(body, "sauti_escalation_gauges_leader 1") {
 		t.Fatalf("leading:\n%s", body)
 	}
 	g.reset()
@@ -134,6 +135,10 @@ func TestEscalationGaugesResetWhenTheTermEnds(t *testing.T) {
 		}
 	}
 }
+
+// hasSample reports whether the exposition holds this exact sample line; the
+// leader gauge's HELP text begins with "1 while", so a substring would match it.
+func hasSample(body, line string) bool { return slices.Contains(strings.Split(body, "\n"), line) }
 
 // V-01 (EO-1): tier 3 is the leader term's gauge loop. Its test reads what
 // /metrics serves: the audit's mutant M3 (the update call removed), a loop
@@ -167,7 +172,7 @@ func TestTheLeaderTermExportsTheGauges(t *testing.T) {
 		body := scrape()
 		for _, want := range []string{"sauti_escalation_gauges_leader 1", "sauti_escalations_unacknowledged 2",
 			"sauti_escalation_oldest_unacknowledged_seconds 700"} {
-			if !strings.Contains(body, want) {
+			if !hasSample(body, want) {
 				t.Fatalf("leading, %q missing:\n%s", want, body)
 			}
 		}
@@ -176,7 +181,7 @@ func TestTheLeaderTermExportsTheGauges(t *testing.T) {
 		}
 		time.Sleep(sweepEvery)
 		synctest.Wait()
-		if body := scrape(); !strings.Contains(body, "sauti_escalation_oldest_unacknowledged_seconds 715") {
+		if body := scrape(); !hasSample(body, "sauti_escalation_oldest_unacknowledged_seconds 715") {
 			t.Fatalf("after one tick the age is not read again (a frozen signal):\n%s", body)
 		}
 		cancel()
@@ -184,7 +189,7 @@ func TestTheLeaderTermExportsTheGauges(t *testing.T) {
 			t.Fatalf("the term returned %v, want the sweeper's result", err)
 		}
 		synctest.Wait()
-		if body := scrape(); !strings.Contains(body, "sauti_escalation_gauges_leader 0") {
+		if body := scrape(); !hasSample(body, "sauti_escalation_gauges_leader 0") {
 			t.Fatalf("after the term:\n%s", body)
 		}
 	})
