@@ -5,7 +5,7 @@
 | Owner | Field Coordinator (content) with the technical operator (load) |
 | Severity | SEV-3 (planned change) |
 | Alert / trigger | new or corrected ward and landmark lists; intake-gw refusing to start with `opstore: no gazetteer loaded` |
-| Last reviewed: | 2026-11-13 |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -35,7 +35,7 @@ No dispatch-path impact while the version in force stays loaded. A wrong landmar
     WHERE r.status = 'active' AND NOT EXISTS (
           SELECT 1 FROM op.stages s WHERE s.version = '<new version>' AND s.id = r.stage AND s.ward_id = r.ward);
    ```
-6. Restart intake-gw and dispatch-worker so they take the new snapshot. In production both refuse a gazetteer whose status is not `approved`.
+6. Restart intake-gw, ivr-controller and dispatch-worker so they take the new snapshot (ivr-controller runs Tool 1 on the voice line and speaks wards and landmarks on alert calls). In production each refuses a gazetteer whose status is not `approved`. ivr-controller hands its live calls to the coordinators as it stops.
 
 ## Escalation
 Field Coordinator and PI for any correction during the window (deviation record).

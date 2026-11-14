@@ -35,11 +35,13 @@ sounds:
     - sauti/en/alert-colour-yellow
     - sauti/en/alert-declined
     - sauti/en/alert-intro
+    - sauti/en/alert-no-input-closing
     - sauti/en/alert-no-longer-needed
     - sauti/en/alert-options
     - sauti/en/bridge-choose-role
     - sauti/en/bridge-choose-side
     - sauti/en/bridge-connecting
+    - sauti/en/bridge-coordinator-option
     - sauti/en/bridge-last-four
     - sauti/en/bridge-last-four-again
     - sauti/en/bridge-no-answer
@@ -66,7 +68,9 @@ sounds:
     - sauti/en/escalation-reason-abandoned_after_danger_yes
     - sauti/en/escalation-reason-abandoned_red_before_dispatch
     - sauti/en/escalation-reason-assigned_follow_up
+    - sauti/en/escalation-reason-bridge_unanswered
     - sauti/en/escalation-reason-dispatch_error
+    - sauti/en/escalation-reason-dispatch_not_started
     - sauti/en/escalation-reason-dispatch_stalled
     - sauti/en/escalation-reason-dispatch_suspended
     - sauti/en/escalation-reason-forwarded_to_facility
@@ -75,8 +79,10 @@ sounds:
     - sauti/en/escalation-reason-no_facility_acknowledged
     - sauti/en/escalation-reason-no_responder_nearby
     - sauti/en/escalation-reason-other
+    - sauti/en/escalation-reason-out_of_area_after_danger
     - sauti/en/escalation-reason-red_no_acceptance
     - sauti/en/escalation-reason-triage_rule_error
+    - sauti/en/escalation-reason-voice_handed_over
     - sauti/en/first_aid-acute_medical
     - sauti/en/first_aid-obstetric
     - sauti/en/first_aid-other
@@ -117,6 +123,8 @@ sounds:
     - sauti/en/press-4
     - sauti/en/press-5
     - sauti/en/press-6
+    - sauti/en/role-transporter
+    - sauti/en/role-vht
     - sauti/en/specific_danger-acute_medical
     - sauti/en/specific_danger-acute_medical_child
     - sauti/en/specific_danger-no
@@ -133,6 +141,8 @@ sounds:
     - sauti/en/ward-w03
     - sauti/en/ward-w04
     - sauti/fallback
+    - sauti/fallback-closing
+    - sauti/fallback-hold
     - sauti/invalid
     - sauti/language
     - sauti/lg/age_band
@@ -155,11 +165,13 @@ sounds:
     - sauti/lg/alert-colour-yellow
     - sauti/lg/alert-declined
     - sauti/lg/alert-intro
+    - sauti/lg/alert-no-input-closing
     - sauti/lg/alert-no-longer-needed
     - sauti/lg/alert-options
     - sauti/lg/bridge-choose-role
     - sauti/lg/bridge-choose-side
     - sauti/lg/bridge-connecting
+    - sauti/lg/bridge-coordinator-option
     - sauti/lg/bridge-last-four
     - sauti/lg/bridge-last-four-again
     - sauti/lg/bridge-no-answer
@@ -186,7 +198,9 @@ sounds:
     - sauti/lg/escalation-reason-abandoned_after_danger_yes
     - sauti/lg/escalation-reason-abandoned_red_before_dispatch
     - sauti/lg/escalation-reason-assigned_follow_up
+    - sauti/lg/escalation-reason-bridge_unanswered
     - sauti/lg/escalation-reason-dispatch_error
+    - sauti/lg/escalation-reason-dispatch_not_started
     - sauti/lg/escalation-reason-dispatch_stalled
     - sauti/lg/escalation-reason-dispatch_suspended
     - sauti/lg/escalation-reason-forwarded_to_facility
@@ -195,8 +209,10 @@ sounds:
     - sauti/lg/escalation-reason-no_facility_acknowledged
     - sauti/lg/escalation-reason-no_responder_nearby
     - sauti/lg/escalation-reason-other
+    - sauti/lg/escalation-reason-out_of_area_after_danger
     - sauti/lg/escalation-reason-red_no_acceptance
     - sauti/lg/escalation-reason-triage_rule_error
+    - sauti/lg/escalation-reason-voice_handed_over
     - sauti/lg/first_aid-acute_medical
     - sauti/lg/first_aid-obstetric
     - sauti/lg/first_aid-other
@@ -237,6 +253,8 @@ sounds:
     - sauti/lg/press-4
     - sauti/lg/press-5
     - sauti/lg/press-6
+    - sauti/lg/role-transporter
+    - sauti/lg/role-vht
     - sauti/lg/specific_danger-acute_medical
     - sauti/lg/specific_danger-acute_medical_child
     - sauti/lg/specific_danger-no

@@ -163,14 +163,32 @@ func run(log *slog.Logger) error {
 	go func() { errc <- adminSrv.ListenAndServe() }()
 	// One abandonment sweeper across all intake-gw instances (leadership by
 	// advisory lock); it never blocks the request path.
-	sweeper := intake.NewSweeper(store, built.Incidents, cfg.Intake.AbandonAfter.Duration)
+	sweeper := intake.NewSweeper(store, built.Incidents, svc, cfg.Intake.AbandonAfter.Duration)
 	// The dispatch watchdog (review I8) runs here, apart from dispatch-worker:
 	// an incident dispatch has not touched two minutes after T2 is escalated.
 	watchdog := intake.NewWatchdog(store, built.Incidents, intake.DispatchWatchdogAfter)
+	// Tier 3 (ADR-0029 rule 8): the dead-man gauges, exported from here
+	// because intake-gw survives an ivr-controller outage.
+	gauges := newEscalationGauges(reg)
 	go func() {
 		_ = pg.RunAsLeader(ctx, pool, sweeperLeaderKey, 5*time.Second, func(lctx context.Context) error {
 			go func() {
 				_ = watchdog.Run(lctx, sweepEvery, func(err error) { log.Error("dispatch watchdog failed", "err", err) })
+			}()
+			go func() {
+				t := time.NewTicker(sweepEvery)
+				defer t.Stop()
+				defer gauges.reset()
+				for {
+					if err := gauges.update(lctx, store); err != nil && lctx.Err() == nil {
+						log.Error("escalation gauges not updated", "err", err)
+					}
+					select {
+					case <-lctx.Done():
+						return
+					case <-t.C:
+					}
+				}
 			}()
 			return sweeper.Run(lctx, sweepEvery, func(err error) { log.Error("abandonment sweep failed", "err", err) })
 		})
@@ -190,6 +208,45 @@ func run(log *slog.Logger) error {
 	_ = public.Shutdown(sctx)
 	_ = adminSrv.Shutdown(sctx)
 	return nil
+}
+
+// escalationAges reads the dead-man signal (the operational store, op_intake).
+type escalationAges interface {
+	OldestUnacknowledgedEscalation(ctx context.Context) (seconds float64, incidents int, err error)
+}
+
+// escalationGauges are the dead-man signal: how many open incidents hold an
+// escalation no coordinator has acknowledged, and the oldest one's age. An
+// alert on the age pages the on-call engineer (P0 alerting).
+// Only the leader exports them; leader is 1 while its last read succeeded,
+// so the alert can tell a fresh value from a stale one (review R4).
+type escalationGauges struct{ count, oldest, leader *metrics.Gauge }
+
+func newEscalationGauges(reg *metrics.Registry) escalationGauges {
+	return escalationGauges{
+		count:  reg.Gauge("sauti_escalations_unacknowledged", "Open incidents with an escalation no coordinator has acknowledged."),
+		oldest: reg.Gauge("sauti_escalation_oldest_unacknowledged_seconds", "Age of the oldest unacknowledged escalation (0 when none)."),
+		leader: reg.Gauge("sauti_escalation_gauges_leader", "1 while this instance leads and exports the escalation gauges."),
+	}
+}
+
+func (g escalationGauges) update(ctx context.Context, r escalationAges) error {
+	secs, n, err := r.OldestUnacknowledgedEscalation(ctx)
+	if err != nil {
+		g.leader.Set(0) // nothing fresh is exported until a read succeeds
+		return err
+	}
+	g.count.Set(float64(n))
+	g.oldest.Set(secs)
+	g.leader.Set(1)
+	return nil
+}
+
+// reset clears the gauges when the leader term ends.
+func (g escalationGauges) reset() {
+	g.count.Set(0)
+	g.oldest.Set(0)
+	g.leader.Set(0)
 }
 
 // deliveryRecorder stores delivery reports (the operational store, op_intake).

@@ -125,8 +125,9 @@ func (s *Store) DispatchOrMerge(ctx context.Context, r intake.DispatchRequest) (
 // merge records, in the caller's transaction, the call's merge into
 // survivor: merged on the call, merge_absorbed on the survivor, and what the
 // call carries to it (intake.Consequences): severity_raised if the call is
-// more urgent, an escalation if the call was escalated and the survivor is
-// not. A merge never leaves the dispatch less urgent than a call it absorbed.
+// more urgent, an escalation if the call holds one no coordinator has
+// acknowledged. A merge never leaves the dispatch less urgent than a call it
+// absorbed.
 func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor intake.Candidate) error {
 	into, err := json.Marshal(map[string]string{"into": survivor.ID.String()})
 	if err != nil {
@@ -136,7 +137,11 @@ func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor in
 	if err != nil {
 		return err
 	}
-	cons, err := intake.Consequences(r.Call(), survivor)
+	unacked, err := s.UnacknowledgedEscalations(ctx, r.IncidentID)
+	if err != nil {
+		return err
+	}
+	cons, err := intake.Consequences(r.Call(), survivor, unacked)
 	if err != nil {
 		return err
 	}
@@ -149,9 +154,13 @@ func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor in
 		events = append(events, incident.AppendParams{IncidentID: survivor.ID, Type: incident.EvSeverityRaised, Payload: cons.Raise,
 			IdemKey: "dedup:raise:" + from})
 	}
-	if cons.Escalate != nil {
-		events = append(events, incident.AppendParams{IncidentID: survivor.ID, Type: incident.EvEscalated, Payload: cons.Escalate,
-			IdemKey: "dedup:escalate:" + from})
+	for _, p := range cons.Escalate {
+		payload, err := p.Payload()
+		if err != nil {
+			return err
+		}
+		events = append(events, incident.AppendParams{IncidentID: survivor.ID, Type: incident.EvEscalated, Payload: payload,
+			IdemKey: intake.MergeEscalationKey(r.IncidentID, p)})
 	}
 	for _, e := range events {
 		e.ActorKind = incident.ActorSystem
@@ -160,6 +169,20 @@ func (s *Store) merge(ctx context.Context, r intake.DispatchRequest, survivor in
 		}
 	}
 	return nil
+}
+
+// UnacknowledgedEscalations lists the incident's escalations no coordinator
+// has acknowledged, one per (reason, role), oldest first (op_intake, op_ivr).
+func (s *Store) UnacknowledgedEscalations(ctx context.Context, id uuid.UUID) ([]intake.EscalationPair, error) {
+	rows, err := s.q.UnacknowledgedEscalation(ctx, pgID(id))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	var out []intake.EscalationPair
+	for _, r := range rows {
+		out = append(out, intake.EscalationPair{Reason: r.Reason, Role: r.Role})
+	}
+	return out, nil
 }
 
 // SplitIncident splits a wrongly merged call off its survivor (coordinator

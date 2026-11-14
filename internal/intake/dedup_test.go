@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"slices"
 	"testing"
 	"time"
 	"uuid"
@@ -91,5 +92,24 @@ func TestNoMergeAtWardLevel(t *testing.T) {
 	fuzzy.LocationQuality = incident.QualityFuzzy
 	if _, ok := rule.Survivor(fuzzy, []Candidate{cand("trauma", here, base, base)}); !ok {
 		t.Fatal("a matched typed landmark did not merge")
+	}
+}
+
+// F-06: a merge never silences an unacknowledged escalation. The survivor
+// was escalated and that escalation acknowledged; the absorbed call holds a
+// triage rule error nobody has acknowledged. The survivor rings again.
+func TestMergedUnacknowledgedEscalationRingsOnTheSurvivor(t *testing.T) {
+	survivor := cand("trauma", here, base, base.Add(time.Minute))
+	survivor.Escalated = true
+	// PR #14 review: every unacknowledged (reason, role) pair is carried,
+	// as it was recorded, so the survivor's call announces each of them.
+	pairs := []EscalationPair{{Reason: incident.ReasonTriageRuleError}, {Reason: incident.ReasonNoEligibleResponder, Role: "vht"}}
+	got, err := Consequences(call("trauma", here, base.Add(2*time.Minute)), survivor, pairs)
+	if err != nil || !slices.Equal(got.Escalate, pairs) {
+		t.Fatalf("escalate %v %v", got.Escalate, err)
+	}
+	// An absorbed call whose escalations were all acknowledged adds none.
+	if got, _ := Consequences(call("trauma", here, base.Add(2*time.Minute)), survivor, nil); got.Escalate != nil {
+		t.Fatalf("escalated for an acknowledged call: %v", got.Escalate)
 	}
 }

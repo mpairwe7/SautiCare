@@ -72,7 +72,7 @@ Settles: F-02, F-29, F-33, F-36; constrains F-82.
 
 ### 3. Every failure path ends with a person
 
-An automated step that errors, times out or exhausts its retries hands over to a coordinator and records an `incident.escalated` event on the call's incident, so the coordinator line keeps ringing even when the hand-over itself fails. A call with no incident (an unknown number on the bridge, or a voice call whose intake failed before an incident was opened) is handed over live and records nothing, as is a call that reaches the fallback while ivr-controller is down, when nothing running can identify its incident: an escalation needs an incident, and opening one outside Tool 1, or keeping a separate record, is the PI's and the DPO's decision. This covers:
+An automated step that errors, times out or exhausts its retries hands over to a coordinator and records an `incident.escalated` event on the call's incident, so the coordinator line keeps ringing even when the hand-over itself fails. That guarantee holds only for a call with an incident: for a call with none, a failed hand-over (`continue`) ends in a hang-up with no escalation, and only the live dial reaches a person. A call with no incident (an unknown number on the bridge, or a voice call whose intake failed before an incident was opened) is handed over live and records nothing, as is a call that reaches the fallback while ivr-controller is down, when nothing running can identify its incident: an escalation needs an incident, and opening one outside Tool 1, or keeping a separate record, is the PI's and the DPO's decision. This covers:
 - an intake error or timeout, an unplayable or failed prompt, the no-match limit, and silence after the caller engaged;
 - a fallback dial nobody answers (a bounded retry, then a closing message, while the escalation rings);
 - a caller's bridge call that is not answered, or that finds an incident with no helper yet;
@@ -94,7 +94,7 @@ The place (ward and landmark) and a typed call-back number are critical: an erro
 A wrong place is corrected by a person, never by re-entry. Once T2 is recorded the projection refuses a second ward or landmark answer (`db/operational/migrations/0006_tool1_projection.sql`), and responders may already be on the way, so an automatic change could send them to a third place unannounced. Behind `place_readback`, the place is read back after the landmark answer with `1` right and `2` wrong:
 - `2` keeps the recorded place, flags the incident `needs_location_callback` and escalates `place_disputed`, so the coordinator line rings (rule 3). On voice the same flag and escalation are written, and then the call is handed over at once.
 - The coordinator confirms the place with the caller, corrects the incident and tells the assigned responders through M5's relocation tool. Until M5, the runbook step reads "Not possible before M5:" with the interim action (R-3).
-- `place_readback` stays off until M5's relocation tool exists or the PI sets the interim action (R-3). Before then a dispute would ring a coordinator who cannot pass a corrected place to the responders.
+- `place_readback` stays off until M5's relocation tool exists: that tool is a hard prerequisite for turning it on. Before then a dispute would ring a coordinator who cannot pass a corrected place to the responders. Any interim action the PI would put in its place (R-3) first needs a protocol amendment and a plan task of its own; until both exist, the flag stays off.
 - `1`, or no answer, continues as today.
 
 The keys, the reason and the copy are PENDING the PI.
@@ -152,7 +152,7 @@ Settles: F-01, F-06, F-25, F-29; constrains F-77.
 
 ### Consequences
 
-* Good: a caller, a responder or a coordinator learns a key once. Every failure path, on every channel, reaches a person, and the escalation event keeps ringing when a hand-over fails.
+* Good: a caller, a responder or a coordinator learns a key once. Every failure path, on every channel, reaches a person. For a call with an incident, the escalation event keeps ringing when a hand-over fails. A call with no incident is the exception: if its hand-over fails it is hung up with no escalation, and only the live dial could have reached a person (rule 3).
 * Good: M3's new flows inherit the rules instead of inventing their own.
 * Bad: back is `*` on voice and `0` on USSD. That is forced by USSD's use of `*`, and the menus say which key to press.
 * Bad: the hand-over on silence and the third no-match add coordinator load; tier 2 needs a second person on call. Both need the PI's agreement on the rota (R-1).

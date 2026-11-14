@@ -69,7 +69,8 @@ var commands = map[string]command{
 	"gazetteer":          {"load --file <gazetteer.yaml> --dsn <operational owner DSN>", cmdGazetteer},
 	"dispatch":           {"status --dsn <DSN> | suspend|resume --dsn <op_console DSN> --reason <code> --staff <UUID> [--config D]", cmdDispatch},
 	"responder":          {"add --dsn <op_console DSN> --devkeys-dir D --role R --name N --phone P --ward W --stage S | available --dsn <DSN> --id <id> [--off]", cmdResponder},
-	"incident":           {"split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff UUID>", cmdIncident},
+	"incident":           {"split --dsn <op_console DSN> --survivor <id> --member <id> --staff <staff UUID> | escalate-handover --dsn <op_ivr DSN> --call <call ID>", cmdIncident},
+	"escalations":        {"[--dsn <op_readonly DSN>] [--json] (default $SAUTI_DSN)", cmdEscalations},
 	"triage":             {"keygen --out <file> --key-id dev-<name> | sign --key <file> --key-id <id> --rules <bundle>", cmdTriage},
 }
 
@@ -498,8 +499,11 @@ func cmdTriage(_ context.Context, args []string, out io.Writer) error {
 // "split" separates a wrongly merged call from its survivor (Build Prompt
 // §10.3), logged with the coordinator's identity-provider subject.
 func cmdIncident(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "escalate-handover" {
+		return cmdEscalateHandover(ctx, args[1:], out)
+	}
 	if len(args) == 0 || args[0] != "split" {
-		return errors.New("usage: sautictl incident split --dsn <op_console DSN> --survivor <id> --member <id> --staff <UUID>")
+		return errors.New("usage: sautictl incident split --dsn <op_console DSN> --survivor <id> --member <id> --staff <UUID> | escalate-handover --dsn <op_ivr DSN> --call <call ID>")
 	}
 	fs := flags("incident split")
 	dsn := fs.String("dsn", "", "operational store DSN as op_console")

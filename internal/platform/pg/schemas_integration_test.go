@@ -53,7 +53,7 @@ func TestAllStoresMigrateFromZero(t *testing.T) {
 			"0020_responder_menu", "0021_voice_alerts",
 			"0022_forward_and_coordinator_calls", "0023_review_pr10_coderabbit",
 			"0024_alert_needs_an_eligible_responder", "0025_masked_bridge", "0026_surge", "0027_review_pr3_coderabbit",
-			"0028_review_pr6_coderabbit"},
+			"0028_review_pr6_coderabbit", "0033_escalation_continuity"},
 		pg.StoreAudit:    {"0000_schema", "0001_ledger", "0002_default_privileges", "0003_hash_at"},
 		pg.StoreAnalytic: {"0000_schema", "0001_meds", "0002_default_privileges"},
 		pg.StoreLinkage:  {"0000_schema", "0001_vault", "0002_default_privileges"},

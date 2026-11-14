@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -198,6 +199,28 @@ type bridgeStore struct {
 	begun      []string                           // initiated_by
 	answered   int
 	finished   map[uuid.UUID]string
+	open       map[string]uuid.UUID // MAC sum → the open incident reported from it
+	escalated  []string             // "<incident> <reason> <scope>"
+}
+
+func (s *bridgeStore) OpenIncidentForCaller(_ context.Context, macs []crypto.MAC) (uuid.UUID, bool, error) {
+	id, ok := s.open[string(macs[0].Sum)]
+	return id, ok, nil
+}
+func (s *bridgeStore) Escalate(_ context.Context, id uuid.UUID, reason, scope string, every time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := id.String() + " " + reason + " " + scope
+	if every > 0 {
+		e += " every " + every.String()
+	}
+	s.escalated = append(s.escalated, e)
+	return nil
+}
+func (s *bridgeStore) escalations() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.escalated)
 }
 
 func (s *bridgeStore) ResponderByPhone(_ context.Context, macs []crypto.MAC) (uuid.UUID, bool, error) {
@@ -310,7 +333,7 @@ func TestBridgeResponderToCaller(t *testing.T) {
 	b, a, logs := bridgeRig(t, st, 30*time.Second)
 	dialIn(b, "in-1", responderNum)
 	if len(a.endpoints) != 1 || a.endpoints[0] != "PJSIP/"+callerNum+"@sauti-trunk" || a.callerIDs[0] != sautiNum ||
-		a.args[0][0] != "bridge-leg" || slices.ContainsFunc(a.args[0], func(s string) bool { return strings.Contains(s, "772") }) {
+		a.args[0][0] != "bridge-leg" || slices.ContainsFunc(a.args[0], func(s string) bool { return strings.Contains(s, "772000") }) {
 		t.Fatalf("dialled %v as %v with %v", a.endpoints, a.callerIDs, a.args)
 	}
 	if !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-connecting") || !slices.Contains(a.lastSounds("in-1"), ari.RingbackTone) ||
@@ -385,19 +408,104 @@ func TestBridgeCallerCallsBack(t *testing.T) {
 	noNumbers(t, logs)
 }
 
-// A number with no open assignment or incident hears so and is hung up
-// once the prompt has played; nothing is dialled or logged.
+// A number with no open assignment or incident hears so, with the key for a
+// coordinator; nothing is dialled, logged or escalated, and a key other than
+// 0 is not taken.
 func TestBridgeUnknownNumber(t *testing.T) {
-	b, a, logs := bridgeRig(t, &bridgeStore{}, 30*time.Second)
+	st := &bridgeStore{}
+	b, a, logs := bridgeRig(t, st, 30*time.Second)
 	dialIn(b, "in-1", "+256772000999")
 	if len(a.endpoints) != 0 || !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-no-assignment") || a.wasHungUp("in-1") {
 		t.Fatalf("unknown number: %v %v hung up %v", a.endpoints, a.plays, a.hungUp)
 	}
 	b.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: "in-1", PlaybackID: a.lastPlayback("in-1")})
-	if !a.wasHungUp("in-1") {
-		t.Fatal("not hung up after the prompt")
+	press(b, "in-1", "1")
+	if len(a.handedOver()) != 0 || len(st.escalations()) != 0 || len(st.begun) != 0 {
+		t.Fatalf("handed over %v escalated %v begun %v", a.handedOver(), st.escalated, st.begun)
 	}
 	noNumbers(t, logs)
+}
+
+// ADR-0029 rule 1: 0 reaches a person. A number Sauti does not recognise
+// (a caller on a borrowed phone) can press 0 for a coordinator; nothing is
+// escalated, as there is no incident to escalate.
+func TestBridgeUnknownNumberCanPressZeroForACoordinator(t *testing.T) {
+	st := &bridgeStore{}
+	b, a, _ := bridgeRig(t, st, 30*time.Second)
+	dialIn(b, "in-1", "+256772000999")
+	if !slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-coordinator-option") {
+		t.Fatalf("the coordinator option is not offered: %v", a.plays)
+	}
+	press(b, "in-1", "0")
+	if !slices.Equal(a.handedOver(), []string{"in-1→" + FallbackContext}) || len(st.escalations()) != 0 {
+		t.Fatalf("handed over %v escalated %v", a.handedOver(), st.escalated)
+	}
+}
+
+// ADR-0028: the bridge never reveals whether a number has reported an
+// emergency. A caller whose report is open with nobody assigned yet hears
+// exactly what an unknown number hears (the same prompts, keys, timing and
+// hand-over on 0); the incident is escalated quietly, at most once per
+// incident in a server-side window, so the coordinator line rings.
+func TestBridgeOpenIncidentIsIndistinguishableFromAnUnknownNumber(t *testing.T) {
+	type seen struct {
+		plays                    [][]string
+		pbs, stops, cont, hungUp []string
+		begun, dialled           int
+	}
+	run := func(st *bridgeStore) seen {
+		b, a, logs := bridgeRig(t, st, 30*time.Second)
+		dialIn(b, "in-1", callerNum)
+		b.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: "in-1", PlaybackID: a.lastPlayback("in-1")})
+		press(b, "in-1", "1") // not offered: ignored
+		press(b, "in-1", "0")
+		noNumbers(t, logs)
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return seen{plays: slices.Clone(a.plays["in-1"]), pbs: slices.Clone(a.pbs["in-1"]), stops: slices.Clone(a.stopped),
+			cont: slices.Clone(a.continued), hungUp: slices.Clone(a.hungUp), begun: len(st.begun), dialled: len(a.endpoints)}
+	}
+	inc := uuid.NewV7()
+	open := &bridgeStore{open: map[string]uuid.UUID{callerNum: inc}}
+	unknown := &bridgeStore{}
+	got, want := run(open), run(unknown)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("an open report is distinguishable:\n open    %+v\n unknown %+v", got, want)
+	}
+	if !slices.Contains(want.plays[0], "sauti/en/bridge-coordinator-option") || !slices.Equal(want.cont, []string{"in-1→" + FallbackContext}) {
+		t.Fatalf("the shared sequence: %+v", want)
+	}
+	waitFor(t, "the quiet escalation", func() bool { return len(open.escalations()) == 1 })
+	if e := open.escalations(); e[0] != inc.String()+" bridge_unanswered bridge-open every 10m0s" || len(unknown.escalations()) != 0 {
+		t.Fatalf("escalations: open %v unknown %v", e, unknown.escalations())
+	}
+}
+
+// A caller whose responder does not answer, or whose phone is unreachable,
+// reached nobody: a coordinator takes the call and the incident is
+// escalated. A responder's unanswered call is unchanged (it hears so).
+func TestBridgeCallerNoAnswerGoesToACoordinator(t *testing.T) {
+	for _, how := range []string{"rings out", "unreachable"} {
+		t.Run(how, func(t *testing.T) {
+			vht := target("1234567894", responder.RoleVHT)
+			st := &bridgeStore{byCaller: map[string][]dispatch.BridgeTarget{callerNum: {vht}}}
+			ring := 30 * time.Second
+			if how == "rings out" {
+				ring = 10 * time.Millisecond
+			}
+			b, a, _ := bridgeRig(t, st, ring)
+			dialIn(b, "in-1", callerNum)
+			if how == "unreachable" {
+				b.Handle(context.Background(), Event{Type: EventChannelDestroyed, ChannelID: "leg-1"})
+			}
+			waitFor(t, "the hand-over", func() bool { return len(a.handedOver()) == 1 })
+			if !slices.Equal(a.handedOver(), []string{"in-1→" + FallbackContext}) || !slices.Equal(st.results(), []string{dispatch.BridgeNoAnswer}) ||
+				!slices.Equal(st.escalations(), []string{vht.IncidentID.String() + " bridge_unanswered bridge:in-1"}) ||
+				slices.Contains(a.lastSounds("in-1"), "sauti/en/bridge-no-answer") {
+				t.Fatalf("handed over %v results %v escalated %v plays %v", a.handedOver(), st.results(), st.escalated, a.plays)
+			}
+		})
+	}
 }
 
 // The other party does not answer within the ring time: the leg is ended,
@@ -624,9 +732,13 @@ func TestBridgeChoiceWithNoKeyGoesToACoordinator(t *testing.T) {
 			t.Fatalf("a call that ended was still served: handed over %v plays %v", a3.handedOver(), a3.plays)
 		}
 
-		// A closing prompt whose end never arrives: hung up all the same.
-		b4, a4, _ := bridgeRig(t, &bridgeStore{}, 30*time.Second)
-		dialIn(b4, "in-4", "+256772000999")
+		// A closing prompt whose end never arrives (a responder told the
+		// other phone is unreachable): hung up all the same.
+		resp := uuid.NewV7()
+		b4, a4, _ := bridgeRig(t, &bridgeStore{responders: map[string]uuid.UUID{responderNum: resp},
+			byResp: map[uuid.UUID][]dispatch.BridgeTarget{resp: {target("1234567894", responder.RoleVHT)}}}, 30*time.Second)
+		dialIn(b4, "in-4", responderNum)
+		b4.Handle(context.Background(), Event{Type: EventChannelDestroyed, ChannelID: "leg-1"})
 		time.Sleep(46 * time.Second)
 		synctest.Wait()
 		if !a4.wasHungUp("in-4") {
@@ -732,4 +844,15 @@ func TestBridgeIsDestroyedAfterASlowLogWrite(t *testing.T) {
 		t.Fatalf("logs %s hung up %v", logs.String(), a.hungUp)
 	}
 	noNumbers(t, logs)
+}
+
+// A bridge choice whose recording failed to play leaves the caller without
+// instructions: a coordinator takes the call at once (F-03).
+func TestAFailedBridgePromptGoesToACoordinator(t *testing.T) {
+	b, a, logs := bridgeRig(t, twoAssignments(), 30*time.Second)
+	dialIn(b, "in-1", responderNum)
+	b.Handle(context.Background(), Event{Type: EventPlaybackFinished, ChannelID: "in-1", PlaybackID: a.lastPlayback("in-1"), PlaybackState: ari.PlaybackFailed})
+	if !slices.Equal(a.handedOver(), []string{"in-1→" + FallbackContext}) || !strings.Contains(logs.String(), "bridge prompt not played; to a coordinator") {
+		t.Fatalf("handed over %v, logs %s", a.handedOver(), logs.String())
+	}
 }

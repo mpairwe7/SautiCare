@@ -152,3 +152,93 @@ func TestIVRRepeatedInputIsIdempotent(t *testing.T) {
 		t.Fatalf("events %d → %d on a repeated answer", n, len(r.inc.allEvents()))
 	}
 }
+
+// A voice hand-over records one escalation for the call, however often the
+// controller asks (a retry after a failed Continue), so the coordinator line
+// rings even if the dialplan's transfer fails. The call carries the
+// reference the coordinator is shown.
+func TestHandOverEscalatesOncePerCall(t *testing.T) {
+	r := newRig(t, nil, nil)
+	v := r.callIVR(t, "call-1", "+256772123456")
+	v.press("1")
+	if _, err := incident.ParseReference(string(v.call.Reference)); err != nil {
+		t.Fatalf("call reference %q: %v", v.call.Reference, err)
+	}
+	for range 2 {
+		if err := r.svc.HandOver(context.Background(), v.call, incident.ReasonVoiceHandedOver); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var reasons []string
+	for _, e := range r.inc.allEvents() {
+		if e.Type == incident.EvEscalated {
+			reasons = append(reasons, string(e.Payload))
+		}
+	}
+	if !slices.Equal(reasons, []string{`{"reason":"voice_handed_over"}`}) {
+		t.Fatalf("escalations %v", reasons)
+	}
+	if !v.projection().Escalated {
+		t.Fatal("incident not escalated")
+	}
+	// A call with no incident (intake never opened one) has nothing to escalate.
+	if err := r.svc.HandOver(context.Background(), IVRCall{CallID: "call-2"}, incident.ReasonVoiceHandedOver); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Task 1.2 amendment: a call adopted after a restart carries only its call
+// ID (the channel). HandOver finds its incident from the call's voice
+// session; a call with no session has nothing to escalate.
+func TestHandOverFindsTheIncidentByCallID(t *testing.T) {
+	r := newRig(t, nil, nil)
+	v := r.callIVR(t, "ch9", "+256772123456")
+	if err := r.svc.HandOver(context.Background(), IVRCall{CallID: "ch9"}, incident.ReasonVoiceHandedOver); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.svc.HandOver(context.Background(), IVRCall{CallID: "nobody"}, incident.ReasonVoiceHandedOver); err != nil {
+		t.Fatal(err)
+	}
+	var on []string
+	for _, e := range r.inc.allEvents() {
+		if e.Type == incident.EvEscalated {
+			on = append(on, e.IncidentID.String())
+		}
+	}
+	if !slices.Equal(on, []string{v.call.IncidentID.String()}) {
+		t.Fatalf("escalations on %v, want one on %s", on, v.call.IncidentID)
+	}
+}
+
+// PR #14 review: a call merged into another incident has nothing to ring on
+// its own (a merged incident takes no escalation); its hand-over escalates
+// the survivor, where the emergency is now handled.
+func TestHandOverEscalatesTheSurvivorOfAMergedCall(t *testing.T) {
+	r := newRig(t, nil, nil)
+	a := r.dial(t, "S1", "0772123456")
+	a.send("")
+	for _, in := range []string{"1", "2", "1", "3", "2", "1", "1"} {
+		a.send(in)
+	}
+	r.inc.now = r.inc.now.Add(time.Minute)
+	b := r.dial(t, "S2", "0772000111")
+	b.send("")
+	for _, in := range []string{"1", "2", "1", "3", "2", "1", "1"} {
+		b.send(in)
+	}
+	if b.projection().State != incident.StateMerged {
+		t.Fatalf("not merged: %+v", b.projection())
+	}
+	if err := r.svc.HandOver(context.Background(), IVRCall{CallID: "x", IncidentID: b.incidentID()}, incident.ReasonVoiceHandedOver); err != nil {
+		t.Fatal(err)
+	}
+	var on []string
+	for _, e := range r.inc.allEvents() {
+		if e.Type == incident.EvEscalated {
+			on = append(on, e.IncidentID.String())
+		}
+	}
+	if !slices.Equal(on, []string{a.incidentID().String()}) {
+		t.Fatalf("escalations on %v, want one on the survivor %s", on, a.incidentID())
+	}
+}

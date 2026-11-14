@@ -33,6 +33,7 @@ type FakeARI struct {
 	srv        *httptest.Server
 	user, pass string
 	mu         sync.Mutex
+	emitMu     sync.Mutex // orders writes to the event streams
 	requests   []string
 	plays      map[string][][]string
 	hungUp     map[string]bool
@@ -47,14 +48,16 @@ type FakeARI struct {
 	bridgeQ    map[string]url.Values
 	destroyed  map[string]bool
 	callerIDs  map[string]string
-	live       map[string]bool // channels that exist: placed or started, not yet ended
+	refs       map[string]string // channel → SAUTI_REF
+	live       map[string]bool   // channels that exist: placed or started, not yet ended
+	apps       map[string]string // channel → the Stasis application it is parked in
 }
 
 // NewFakeARI starts the fake.
 func NewFakeARI(user, pass string) *FakeARI {
 	f := &FakeARI{user: user, pass: pass, plays: map[string][][]string{}, hungUp: map[string]bool{}, continued: map[string]string{},
 		connected: make(chan struct{}, 16), active: map[string]string{}, queued: map[string][]string{}, playbackCh: map[string]string{},
-		bridges: map[string][]string{}, bridgeQ: map[string]url.Values{}, destroyed: map[string]bool{}, callerIDs: map[string]string{}, live: map[string]bool{}}
+		bridges: map[string][]string{}, bridgeQ: map[string]url.Values{}, destroyed: map[string]bool{}, callerIDs: map[string]string{}, refs: map[string]string{}, live: map[string]bool{}, apps: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	return f
 }
@@ -164,11 +167,33 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.originated = append(f.originated, r.URL.Query())
 		id := fmt.Sprintf("out-%d", len(f.originated))
-		f.live[id] = true
+		f.live[id], f.apps[id] = true, r.URL.Query().Get("app")
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"id":%q}`, id)
 		return
+	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "channels":
+		type dialplan struct {
+			AppName string `json:"app_name"`
+			AppData string `json:"app_data"`
+		}
+		type channel struct {
+			ID       string   `json:"id"`
+			Dialplan dialplan `json:"dialplan"`
+		}
+		f.mu.Lock()
+		list := []channel{}
+		for id := range f.live {
+			ch := channel{ID: id}
+			if app := f.apps[id]; app != "" {
+				ch.Dialplan = dialplan{AppName: "Stasis", AppData: app}
+			}
+			list = append(list, ch)
+		}
+		f.mu.Unlock()
+		slices.SortFunc(list, func(a, b channel) int { return strings.Compare(a.ID, b.ID) })
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(list)
 	case r.Method == http.MethodGet && len(parts) == 3 && parts[1] == "channels":
 		f.mu.Lock()
 		live := f.live[parts[2]]
@@ -185,6 +210,7 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		f.mu.Lock()
 		f.continued[parts[2]] = q.Get("context") + "," + q.Get("extension") + "," + q.Get("priority")
+		delete(f.apps, parts[2]) // still live, now in the dialplan, not the application
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 		f.Emit(event{"type": "StasisEnd", "channel": map[string]any{"id": parts[2]}})
@@ -217,9 +243,14 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		f.emitAll(evs)
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "channels" && parts[3] == "variable":
-		if r.URL.Query().Get("variable") == "CALLERID(all)" {
+		switch r.URL.Query().Get("variable") {
+		case "CALLERID(all)":
 			f.mu.Lock()
 			f.callerIDs[parts[2]] = r.URL.Query().Get("value")
+			f.mu.Unlock()
+		case "SAUTI_REF":
+			f.mu.Lock()
+			f.refs[parts[2]] = r.URL.Query().Get("value")
 			f.mu.Unlock()
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -267,6 +298,12 @@ func (f *FakeARI) serve(w http.ResponseWriter, r *http.Request) {
 
 // Emit sends one event to every connected client.
 func (f *FakeARI) Emit(ev map[string]any) {
+	f.emitMu.Lock()
+	defer f.emitMu.Unlock()
+	f.emitLocked(ev)
+}
+
+func (f *FakeARI) emitLocked(ev map[string]any) {
 	b, _ := json.Marshal(ev)
 	f.mu.Lock()
 	conns := append([]*websocket.Conn(nil), f.conns...)
@@ -283,18 +320,25 @@ func (f *FakeARI) CallIn(channelID, callerNumber string, args ...string) {
 		"channel": map[string]any{"id": channelID, "state": "Ring", "caller": map[string]string{"number": callerNumber}}})
 }
 
-// StartCall delivers a call into the Stasis application. An empty caller
-// number is a withheld number.
+// StartCall delivers a call into the IVR's Stasis application (sauti-ivr).
+// An empty caller number is a withheld number.
 func (f *FakeARI) StartCall(channelID, callerNumber string) {
 	f.setLive(channelID, true)
+	f.mu.Lock()
+	f.apps[channelID] = "sauti-ivr"
+	f.mu.Unlock()
 	f.Emit(event{"type": "StasisStart", "args": []string{},
 		"channel": map[string]any{"id": channelID, "state": "Ring", "caller": map[string]string{"number": callerNumber}}})
 }
 
-// Press sends DTMF digits, one event each.
+// Press sends DTMF digits, one event each, back to back: no event the
+// controller's requests cause comes between them, as on a handset whose
+// keys arrive faster than a prompt can start.
 func (f *FakeARI) Press(channelID, digits string) {
+	f.emitMu.Lock()
+	defer f.emitMu.Unlock()
 	for _, d := range digits {
-		f.Emit(event{"type": "ChannelDtmfReceived", "digit": string(d), "channel": map[string]any{"id": channelID}})
+		f.emitLocked(event{"type": "ChannelDtmfReceived", "digit": string(d), "channel": map[string]any{"id": channelID}})
 	}
 }
 
@@ -341,6 +385,13 @@ func (f *FakeARI) CallerID(channelID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.callerIDs[channelID]
+}
+
+// Reference returns the SAUTI_REF Sauti set on a channel ("" if none).
+func (f *FakeARI) Reference(channelID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.refs[channelID]
 }
 
 // Bridged returns the channels added to a bridge, in order.

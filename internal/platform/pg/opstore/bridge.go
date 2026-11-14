@@ -2,7 +2,10 @@ package opstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -51,6 +54,47 @@ func (s *Store) BridgeTargetsForCaller(ctx context.Context, macs []crypto.MAC) (
 func bridgeTarget(inc pgtype.UUID, ref, role string, resp pgtype.UUID) dispatch.BridgeTarget {
 	return dispatch.BridgeTarget{IncidentID: uuid.UUID(inc.Bytes), Reference: incident.Reference(ref), Role: responder.Role(role),
 		ResponderID: uuid.UUID(resp.Bytes)}
+}
+
+// OpenIncidentForCaller finds the newest open incident reported from a
+// number (its lookup MACs), assigned or not.
+func (s *Store) OpenIncidentForCaller(ctx context.Context, macs []crypto.MAC) (uuid.UUID, bool, error) {
+	sums := make([][]byte, len(macs))
+	for i, m := range macs {
+		sums[i] = m.Sum
+	}
+	ids, err := s.q.OpenIncidentForCaller(ctx, sums)
+	if err != nil || len(ids) == 0 {
+		return uuid.UUID{}, false, mapErr(err)
+	}
+	return uuid.UUID(ids[0].Bytes), true, nil
+}
+
+// Escalate records an incident.escalated event for reason through the
+// single write path, once per scope (a bridge call) and, with every > 0,
+// once per window of that length on the database's clock.
+func (s *Store) Escalate(ctx context.Context, incidentID uuid.UUID, reason, scope string, every time.Duration) error {
+	payload, err := json.Marshal(map[string]string{"reason": reason})
+	if err != nil {
+		return err
+	}
+	if every > 0 {
+		secs, err := i32(int(every / time.Second))
+		if err != nil {
+			return err
+		}
+		if secs < 1 {
+			return fmt.Errorf("opstore: escalation window %v is under a second", every)
+		}
+		n, err := s.q.ClockWindow(ctx, secs)
+		if err != nil {
+			return mapErr(err)
+		}
+		scope += ":" + strconv.FormatInt(n, 10)
+	}
+	_, err = s.Append(ctx, incident.AppendParams{IncidentID: incidentID, Type: incident.EvEscalated, Payload: payload,
+		ActorKind: incident.ActorSystem, IdemKey: incident.EscalationKey(reason, "") + ":" + scope})
+	return err
 }
 
 // BeginBridgeCall logs a bridge call's start (an open assignment is needed).

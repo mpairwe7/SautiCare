@@ -146,15 +146,19 @@ type ForwardCall struct {
 	FacilityID string
 }
 
-// CoordinatorCall is an escalation to ring the coordinator line about: the
-// incident's latest unacknowledged escalation; Calls counts the rings since
-// the last acknowledgement.
+// CoordinatorCall is an incident to ring the coordinator line about: every
+// distinct reason of its escalations not yet acknowledged (Roles[i] is the
+// role of Reasons[i]'s newest escalation, or ""), Seq the newest of them,
+// which an acknowledgement covers; Calls counts the rings since the last
+// acknowledgement.
 type CoordinatorCall struct {
 	IncidentID uuid.UUID
 	Seq        int64
-	Reason     string
+	Reasons    []string
+	Roles      []string
 	Reference  incident.Reference
 	Calls      int
+	Severity   string // "" before classification
 }
 
 // BridgeTarget is an open assignment the masked bridge can connect: the

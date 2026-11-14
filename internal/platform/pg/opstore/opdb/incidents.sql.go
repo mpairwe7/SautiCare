@@ -96,6 +96,19 @@ func (q *Queries) ClaimOutbox(ctx context.Context, arg ClaimOutboxParams) ([]Cla
 	return items, nil
 }
 
+const clockWindow = `-- name: ClockWindow :one
+SELECT floor(extract(epoch FROM clock_timestamp()) / $1::int)::bigint AS bucket
+`
+
+// Which window of the given length (seconds) the database's clock is in: an
+// idempotency key that carries it repeats only within the window.
+func (q *Queries) ClockWindow(ctx context.Context, seconds int32) (int64, error) {
+	row := q.db.QueryRow(ctx, clockWindow, seconds)
+	var bucket int64
+	err := row.Scan(&bucket)
+	return bucket, err
+}
+
 const dedupCandidates = `-- name: DedupCandidates :many
 SELECT c.id::uuid AS id, c.category::text AS category, c.zone_col::int AS zone_col, c.zone_row::int AS zone_row,
        coalesce(c.location_quality, '')::text AS location_quality, coalesce(c.severity, '')::text AS severity,
@@ -304,6 +317,37 @@ func (q *Queries) GetIncident(ctx context.Context, id pgtype.UUID) (GetIncidentR
 	return i, err
 }
 
+const iVRCallIncident = `-- name: IVRCallIncident :many
+SELECT coalesce(i.merged_into, i.id)::uuid AS incident_id FROM op.sessions s
+JOIN op.incidents i ON i.id = s.incident_id
+WHERE s.channel = 'ivr' AND s.provider_session_id = $1::text
+LIMIT 1
+`
+
+// The incident of a voice call, from its call ID (the IVR session's provider
+// ID): ivr-controller escalates a call it adopted after a restart (op_ivr).
+// A call merged into another incident resolves to its survivor, the
+// incident that takes escalations.
+func (q *Queries) IVRCallIncident(ctx context.Context, callID string) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, iVRCallIncident, callID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var incident_id pgtype.UUID
+		if err := rows.Scan(&incident_id); err != nil {
+			return nil, err
+		}
+		items = append(items, incident_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const latestUSSDStep = `-- name: LatestUSSDStep :many
 SELECT response, end_session, consumed_len, input_mac, mac_key_id, incident_id, prompt_kind, matched_landmark FROM op.ussd_steps
 WHERE provider = $1::text AND provider_session_id = $2::text
@@ -408,11 +452,12 @@ func (q *Queries) ListEvents(ctx context.Context, incidentID pgtype.UUID) ([]Lis
 }
 
 const listIdle = `-- name: ListIdle :many
-SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched FROM op.incidents
+SELECT id, danger, category, severity, (t2 IS NOT NULL)::boolean AS dispatched, ward FROM op.incidents
 WHERE state NOT IN ('closed', 'merged') AND (last_screen < 8 OR t2 IS NULL)
   AND updated_at < clock_timestamp() - $1::int * interval '1 second'
   AND (NOT ('abandoned' = ANY (flags))
-       OR (NOT escalated AND t2 IS NULL AND (danger = 'yes' OR severity = 'red')))
+       OR (NOT escalated AND t2 IS NULL AND ward IS DISTINCT FROM 'elsewhere'
+           AND (danger = 'yes' OR severity = 'red' OR ward IS NOT NULL)))
 ORDER BY updated_at
 LIMIT 500
 `
@@ -423,13 +468,16 @@ type ListIdleRow struct {
 	Category   *string
 	Severity   *string
 	Dispatched bool
+	Ward       *string
 }
 
 // An idle incident is listed until the sweeper flags it abandoned, and again
 // while an abandonment owes its escalation: a caller who resumed an
-// abandoned incident, answered danger yes (or was classified red) and
-// dropped again before T2. The flag is never cleared, and escalated is
-// sticky. The second condition is intake.escalation's rule.
+// abandoned incident, answered danger yes, was classified red or gave a ward
+// other than "somewhere else", and dropped again before T2. The flag is
+// never cleared, and escalated is sticky. The second condition is
+// intake.AbandonmentEscalation's rule; an integration test holds the two
+// together.
 func (q *Queries) ListIdle(ctx context.Context, idleSeconds int32) ([]ListIdleRow, error) {
 	rows, err := q.db.Query(ctx, listIdle, idleSeconds)
 	if err != nil {
@@ -445,6 +493,7 @@ func (q *Queries) ListIdle(ctx context.Context, idleSeconds int32) ([]ListIdleRo
 			&i.Category,
 			&i.Severity,
 			&i.Dispatched,
+			&i.Ward,
 		); err != nil {
 			return nil, err
 		}
@@ -473,6 +522,158 @@ func (q *Queries) ListIncidentIDs(ctx context.Context) ([]pgtype.UUID, error) {
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLocationCallbacks = `-- name: ListLocationCallbacks :many
+SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
+       extract(epoch FROM clock_timestamp() - i.t1)::float8 AS age_seconds
+FROM op.incidents i
+WHERE i.state NOT IN ('closed', 'merged') AND 'needs_location_callback' = ANY (i.flags)
+ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, i.t1
+`
+
+type ListLocationCallbacksRow struct {
+	Reference  string
+	Severity   string
+	AgeSeconds float64
+}
+
+// sautictl escalations, tasks (op_readonly): open incidents located only to
+// their ward, which a coordinator must call back for the place (M5 makes the
+// call), most severe first, then oldest.
+func (q *Queries) ListLocationCallbacks(ctx context.Context) ([]ListLocationCallbacksRow, error) {
+	rows, err := q.db.Query(ctx, listLocationCallbacks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLocationCallbacksRow
+	for rows.Next() {
+		var i ListLocationCallbacksRow
+		if err := rows.Scan(&i.Reference, &i.Severity, &i.AgeSeconds); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenEscalations = `-- name: ListOpenEscalations :many
+SELECT i.reference::text AS reference, coalesce(i.severity, '')::text AS severity,
+       u.reasons::text[] AS reasons, u.roles::text[] AS roles,
+       extract(epoch FROM clock_timestamp() - u.oldest)::float8 AS oldest_seconds,
+       coalesce(c.calls, 0)::int AS rings,
+       coalesce(extract(epoch FROM clock_timestamp() - c.last_call_at), -1)::float8 AS last_ring_seconds
+FROM op.incidents i
+LEFT JOIN op.coordinator_calls c ON c.incident_id = i.id
+CROSS JOIN LATERAL (
+    SELECT min(d.first_at) AS oldest, array_agg(d.reason ORDER BY d.seq) AS reasons, array_agg(d.role ORDER BY d.seq) AS roles
+      FROM (SELECT DISTINCT ON (e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''))
+                   e.payload ->> 'reason' AS reason, coalesce(e.payload ->> 'role', '') AS role, e.seq,
+                   min(e.recorded_at) OVER (PARTITION BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', '')) AS first_at
+              FROM op.incident_events e
+             WHERE e.incident_id = i.id AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+             ORDER BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''), e.seq DESC) d) u
+WHERE i.state NOT IN ('closed', 'merged') AND u.reasons IS NOT NULL
+ORDER BY CASE i.severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 0 END, u.oldest
+`
+
+type ListOpenEscalationsRow struct {
+	Reference       string
+	Severity        string
+	Reasons         []string
+	Roles           []string
+	OldestSeconds   float64
+	Rings           int32
+	LastRingSeconds float64
+}
+
+// sautictl escalations (op_readonly; F-08): every open incident with an
+// escalation no coordinator has acknowledged — each distinct (reason, role)
+// pair, as the claim, the age of the oldest, the rings since the last
+// acknowledgement and the last ring's age, on the database's clock (-1:
+// never rung) — most severe first (unclassified counts as red), then oldest.
+func (q *Queries) ListOpenEscalations(ctx context.Context) ([]ListOpenEscalationsRow, error) {
+	rows, err := q.db.Query(ctx, listOpenEscalations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOpenEscalationsRow
+	for rows.Next() {
+		var i ListOpenEscalationsRow
+		if err := rows.Scan(
+			&i.Reference,
+			&i.Severity,
+			&i.Reasons,
+			&i.Roles,
+			&i.OldestSeconds,
+			&i.Rings,
+			&i.LastRingSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOverdueDispatch = `-- name: ListOverdueDispatch :many
+SELECT t.incident_id::uuid AS id, t.due_at::timestamptz AS due_at FROM op.dispatch_timers t
+JOIN op.incidents i ON i.id = t.incident_id
+WHERE i.state = 'dispatching' AND t.due_at < clock_timestamp() - $1::interval
+  AND (t.lease_until IS NULL OR t.lease_until < clock_timestamp())
+  AND (t.due_at, t.incident_id) > ($2::timestamptz, $3::uuid)
+ORDER BY t.due_at, t.incident_id
+LIMIT $4::int
+`
+
+type ListOverdueDispatchParams struct {
+	After   pgtype.Interval
+	FromDue pgtype.Timestamptz
+	FromID  pgtype.UUID
+	MaxRows int32
+}
+
+type ListOverdueDispatchRow struct {
+	ID    pgtype.UUID
+	DueAt pgtype.Timestamptz
+}
+
+// Dispatch watchdog, F-05: a dispatching incident whose dispatch timer is
+// overdue by after and not leased (no worker is processing it), T3 or not:
+// dispatch-worker died or is stuck after the first alert. Read by
+// intake-gw's leader (op_intake), a page at a time after (from_due, from_id),
+// so no overdue timer hides behind the first page.
+func (q *Queries) ListOverdueDispatch(ctx context.Context, arg ListOverdueDispatchParams) ([]ListOverdueDispatchRow, error) {
+	rows, err := q.db.Query(ctx, listOverdueDispatch,
+		arg.After,
+		arg.FromDue,
+		arg.FromID,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOverdueDispatchRow
+	for rows.Next() {
+		var i ListOverdueDispatchRow
+		if err := rows.Scan(&i.ID, &i.DueAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -687,6 +888,39 @@ func (q *Queries) OpenIncident(ctx context.Context, arg OpenIncidentParams) (Ope
 		&i.Created,
 	)
 	return i, err
+}
+
+const openIncidentForCaller = `-- name: OpenIncidentForCaller :many
+SELECT i.id FROM op.incidents i
+WHERE i.state NOT IN ('closed', 'merged')
+  AND EXISTS (SELECT 1 FROM op.sessions x JOIN op.incidents m ON m.id = x.incident_id
+               WHERE x.phone_mac = ANY ($1::bytea[]) AND (m.id = i.id OR m.merged_into = i.id))
+ORDER BY i.updated_at DESC
+LIMIT 1
+`
+
+// The masked bridge (op_ivr): the newest open incident reported from these
+// numbers (its own, or the incident it was merged into), assigned or not. A
+// caller who reaches nobody on the bridge is handed to a coordinator with it
+// escalated (bridge_unanswered).
+func (q *Queries) OpenIncidentForCaller(ctx context.Context, macs [][]byte) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, openIncidentForCaller, macs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const registerResponder = `-- name: RegisterResponder :exec
@@ -940,4 +1174,43 @@ func (q *Queries) StoreIdentifier(ctx context.Context, arg StoreIdentifierParams
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const unacknowledgedEscalation = `-- name: UnacknowledgedEscalation :many
+SELECT d.reason::text AS reason, d.role::text AS role FROM (
+    SELECT DISTINCT ON (e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''))
+           coalesce(e.payload ->> 'reason', '') AS reason, coalesce(e.payload ->> 'role', '') AS role, e.seq
+      FROM op.incident_events e
+      LEFT JOIN op.coordinator_calls c ON c.incident_id = e.incident_id
+     WHERE e.incident_id = $1::uuid AND e.type = 'incident.escalated' AND e.seq > coalesce(c.acked_seq, 0)
+     ORDER BY e.payload ->> 'reason', coalesce(e.payload ->> 'role', ''), e.seq) d
+ORDER BY d.seq
+`
+
+type UnacknowledgedEscalationRow struct {
+	Reason string
+	Role   string
+}
+
+// An incident's escalations no coordinator has acknowledged
+// (op.acknowledge_coordinator_call), one row per (reason, role), oldest
+// first: a merge carries each to the survivor as it was recorded (F-06).
+func (q *Queries) UnacknowledgedEscalation(ctx context.Context, id pgtype.UUID) ([]UnacknowledgedEscalationRow, error) {
+	rows, err := q.db.Query(ctx, unacknowledgedEscalation, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UnacknowledgedEscalationRow
+	for rows.Next() {
+		var i UnacknowledgedEscalationRow
+		if err := rows.Scan(&i.Reason, &i.Role); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

@@ -5,7 +5,7 @@
 | Owner | technical operator on call |
 | Severity | SEV-2 (voice and the USSD menu still reach responders); SEV-1 if voice is down too |
 | Alert / trigger | alert attempts with `channel = 'sms'` settling `unknown` or `failed`; final delivery reports `Failed`/`Rejected`/`Expired` rising; `dispatch-worker` log "simulated delivery" in production (never expected) |
-| Last reviewed: | 2026-11-13 |
+| Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -46,7 +46,7 @@ dispatch-worker sends alerts, stand-downs, caller notices, facility SMS and expi
      | 100, 101, 102 | Processed, Sent, Queued | `sent` | none: the delivery report follows |
      | 401 | RiskHold | `failed` | Africa's Talking holds the message for risk review: contact their support. **Not** a credential problem |
      | 402 | InvalidSenderId | `failed` | `SAUTI_AT_SENDER_ID` is not approved for this account: correct it, or unset it until it is registered |
-     | 403 | InvalidPhoneNumber | `failed` | the stored number is not a valid mobile number: the coordinators check the responder's registration or call the caller back (numbers are seen only on the console) |
+     | 403 | InvalidPhoneNumber | `failed` | the stored number is not a valid mobile number: the coordinators check the responder's registration or call the caller back through the console (M5; numbers are seen only there) |
      | 404 | UnsupportedNumberType | `failed` | the number's type cannot receive this SMS: contact support |
      | 405 | InsufficientBalance | `failed` | top up (Mitigation step 2) |
      | 406 | UserInBlacklist | `failed` | the recipient blocked the sender: coordinators reach them by phone |

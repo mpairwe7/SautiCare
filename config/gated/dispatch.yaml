@@ -23,6 +23,11 @@ follow_up_after: 20m
 # red incident with no acceptance before its closure or its escalation for
 # lack of one. Resuming needs a logged staff action.
 stopping_rule: {window: 30, max_failure_rate: 0.15}
+# Escalation tiers (ADR-0029 rule 8; ADR-0034): after this many unanswered
+# rings of one escalation (about 6 minutes at the 2-minute retry), the
+# backup line (SAUTI_COORDINATOR_BACKUP_DIAL) rings as well. PENDING the PI,
+# who with the Medical Director names who stands in each tier.
+escalation: {backup_after_calls: 3}
 # Decision 4 is OPEN (PI and co-investigators): safe default order.
 ranking_order: [zone_distance, response_history, least_recently_dispatched]
 ranking_version: default-2026-11-12

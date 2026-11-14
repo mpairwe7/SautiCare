@@ -6,12 +6,15 @@ package ivr
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/intake"
 	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/ari"
@@ -21,12 +24,14 @@ import (
 type Event = ari.Event
 
 const (
-	EventStasisStart      = ari.EventStasisStart
-	EventDTMF             = ari.EventDTMF
-	EventPlaybackStarted  = ari.EventPlaybackStarted
-	EventPlaybackFinished = ari.EventPlaybackFinished
-	EventStasisEnd        = ari.EventStasisEnd
-	EventHangupRequest    = ari.EventHangupRequest
+	EventStasisStart        = ari.EventStasisStart
+	EventDTMF               = ari.EventDTMF
+	EventPlaybackStarted    = ari.EventPlaybackStarted
+	EventPlaybackFinished   = ari.EventPlaybackFinished
+	EventPlaybackContinuing = ari.EventPlaybackContinuing
+	EventStasisEnd          = ari.EventStasisEnd
+	EventHangupRequest      = ari.EventHangupRequest
+	playbackFailed          = ari.PlaybackFailed
 )
 
 // ARI is the subset of the Asterisk client the controller uses.
@@ -36,12 +41,15 @@ type ARI interface {
 	StopPlayback(ctx context.Context, playbackID string) error
 	Continue(ctx context.Context, channelID, dialContext, extension string, priority int) error
 	Hangup(ctx context.Context, channelID string) error
+	ListChannels(ctx context.Context) ([]ari.Channel, error)
+	SetReference(ctx context.Context, channelID, ref string) error
 }
 
 // Intake is the voice side of intake.Service.
 type Intake interface {
 	StartIVR(ctx context.Context, callID string, phone pii.Phone) (intake.IVRTurn, error)
 	AnswerIVR(ctx context.Context, call intake.IVRCall, input string) (intake.IVRTurn, error)
+	HandOver(ctx context.Context, call intake.IVRCall, reason string) error
 }
 
 // FallbackContext is the dialplan context that takes a call Sauti cannot
@@ -52,14 +60,29 @@ const FallbackContext = "sauti-ivr-fallback"
 // Options tune the call behaviour.
 type Options struct {
 	// NoInput is how long silence lasts, counted from the end of a prompt,
-	// before the prompt is played again; after MaxReprompts the call ends
-	// (resume brings the caller back).
+	// before the prompt is played again. After MaxReprompts a caller who
+	// has answered a screen (or resumed past the first) goes to a
+	// coordinator; a call silent from the first prompt ends, as a pocket
+	// dial (ADR-0029 rule 2; resume brings the caller back).
 	NoInput      time.Duration
 	MaxReprompts int
+	// MaxNoMatch is how many invalid answers in a row to one question hand
+	// the caller to a coordinator (default 3).
+	MaxNoMatch int
 	// OpTimeout bounds each intake or ARI operation of a call (default
 	// 3 s). A call whose operation runs out of time is handed to a
 	// coordinator; other calls are not affected.
 	OpTimeout time.Duration
+	// PromptMax is the longest a prompt plays (default 30 s): a prompt
+	// whose end is never reported is re-played PromptMax + NoInput after it
+	// was requested.
+	PromptMax time.Duration
+	// App is the Stasis application the controller serves (default
+	// sauti-ivr): Adopt hands over the calls parked in it.
+	App string
+	// OnEscalationLost is called when a hand-over escalation is still
+	// refused after 10 minutes of retries (the lost-escalation metric).
+	OnEscalationLost func()
 }
 
 // maxCallbackDigits bounds a typed callback number (E.164 is at most 15).
@@ -86,10 +109,12 @@ type call struct {
 	playing   bool   // current is playing: a key stops it (barge-in)
 	hangupOn  string // playback after which to hang up
 	reprompts int
+	invalid   int // invalid answers in a row to the question shown
 	timer     *time.Timer
 	timerGen  int
 	begun     bool
 	ended     bool
+	pending   *pendingEscalation // its escalation, registered before its hand-over began (adoption)
 }
 
 // worker runs one call: its events in order, one at a time, on its own
@@ -135,9 +160,21 @@ type Controller struct {
 	in      Intake
 	log     *slog.Logger
 	opt     Options
-	mu      sync.Mutex // guards workers only: no call's work runs under it
+	mu      sync.Mutex // guards workers and adopted only: no call's work runs under it
 	workers map[string]*worker
-	pending atomic.Int64 // events queued and not yet handled
+	adopted map[string]bool // channels Adopt handed over that the last list still showed
+	adoptMu sync.Mutex      // one Adopt at a time
+	// discoverMu is held by Adopt from its channel list through its
+	// orphans' registration, and by FlushLost: a flush either reports the
+	// orphans being discovered or runs first, and Adopt then reports them.
+	discoverMu sync.Mutex
+	pending    atomic.Int64   // events queued and not yet handled
+	running    sync.WaitGroup // workers, so Run returns after their hand-overs
+	retries    sync.WaitGroup // hand-over escalations being retried
+	pendingMu  sync.Mutex
+	escalating map[string]*pendingEscalation // per call ID, the one recorder of its escalation not yet recorded
+	flushed    bool                          // FlushLost ran: the process is exiting
+	readopting atomic.Bool                   // a re-adoption is scheduled
 }
 
 // New builds a controller.
@@ -151,12 +188,257 @@ func New(a ARI, in Intake, log *slog.Logger, opt Options) *Controller {
 	if opt.OpTimeout <= 0 {
 		opt.OpTimeout = 3 * time.Second
 	}
-	return &Controller{ari: a, in: in, log: log, opt: opt, workers: map[string]*worker{}}
+	if opt.MaxNoMatch <= 0 {
+		opt.MaxNoMatch = 3
+	}
+	if opt.PromptMax <= 0 {
+		opt.PromptMax = 30 * time.Second
+	}
+	if opt.App == "" {
+		opt.App = "sauti-ivr"
+	}
+	return &Controller{ari: a, in: in, log: log, opt: opt, workers: map[string]*worker{}, adopted: map[string]bool{},
+		escalating: map[string]*pendingEscalation{}}
 }
 
-// Run streams ARI events into the controller until ctx ends.
+// escalate records the hand-over's escalation. It is registered before the
+// first attempt, so a shutdown deadline passing during it is reported
+// (FlushLost); after the flush no attempt starts, and the call's escalation
+// is reported lost at once. A refused attempt is retried in the background.
+func (c *Controller) escalate(ctx context.Context, st *call) {
+	c.pendingMu.Lock()
+	p := st.pending
+	if p == nil {
+		var fresh bool
+		if p, fresh = c.registerLocked(st); !fresh {
+			c.pendingMu.Unlock()
+			return // the call's recorder is still at work (an earlier hand-over of it)
+		}
+	}
+	if c.flushed {
+		c.lostLocked(p, errStopping)
+		c.settledLocked(p)
+		c.pendingMu.Unlock()
+		return
+	}
+	c.pendingMu.Unlock()
+	hctx, cancel := c.op(ctx)
+	err := c.in.HandOver(hctx, p.call, incident.ReasonVoiceHandedOver)
+	cancel()
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	switch {
+	case err == nil:
+		c.settledLocked(p)
+	case c.flushed: // the process is exiting: no retry would outlive it
+		c.lostLocked(p, err)
+		c.settledLocked(p)
+	default:
+		c.log.Error("ivr hand-over escalation failed; retrying", "channel", st.ch, "err", err)
+		c.retries.Go(func() { c.retryHandOver(ctx, p) })
+	}
+}
+
+// registerLocked registers a call's escalation as not yet recorded, so
+// FlushLost reports it, and reports whether it is new: a call keeps one
+// recorder (its first attempt, then its retries) until the escalation is
+// recorded or reported lost, however often it is handed over meanwhile.
+// Under pendingMu.
+func (c *Controller) registerLocked(st *call) (*pendingEscalation, bool) {
+	if p := c.escalating[st.ch]; p != nil {
+		return p, false
+	}
+	p := &pendingEscalation{ch: st.ch, call: st.turn.Call}
+	c.escalating[st.ch] = p
+	return p, true
+}
+
+// settledLocked ends p's registration: recorded, or reported lost. Under
+// pendingMu.
+func (c *Controller) settledLocked(p *pendingEscalation) {
+	if c.escalating[p.ch] == p {
+		delete(c.escalating, p.ch)
+	}
+}
+
+// errStopping is the loss reported for an escalation the flush stopped.
+var errStopping = errors.New("ivr-controller stopped before the escalation was recorded")
+
+// pendingEscalation is a hand-over escalation being retried.
+type pendingEscalation struct {
+	ch       string
+	call     intake.IVRCall
+	reported bool // its loss is logged and counted (once)
+}
+
+// FlushLost reports every hand-over escalation not yet recorded (an
+// adoption's orphan still queued, a first attempt in flight or a retry) as
+// lost, at once: logged with its call and incident IDs and counted. main
+// calls it when the shutdown deadline passes before the retries end, then
+// returns, so an exit never drops one silently. From then on no escalation
+// starts: a later hand-over is reported lost instead. An attempt that
+// succeeds later is not counted again; recovering it is a no-op.
+func (c *Controller) FlushLost() {
+	c.discoverMu.Lock() // waits for orphans being discovered to be registered (bounded: one list request)
+	defer c.discoverMu.Unlock()
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	c.flushed = true // from now on no hand-over escalation starts
+	for _, p := range c.escalating {
+		c.lostLocked(p, errStopping)
+	}
+}
+
+// lostLocked reports p lost once; c.pendingMu is held.
+func (c *Controller) lostLocked(p *pendingEscalation, err error) {
+	if p.reported {
+		return
+	}
+	p.reported = true
+	// IDs only: the runbook recovers it from the call ID.
+	c.log.Error("ivr hand-over escalation lost", "call", p.ch, "incident", p.call.IncidentID, "err", err)
+	if c.opt.OnEscalationLost != nil {
+		c.opt.OnEscalationLost()
+	}
+}
+
+// Wait returns once every call's worker, and every hand-over escalation
+// still being retried, has finished.
+func (c *Controller) Wait() {
+	c.running.Wait()
+	c.retries.Wait()
+}
+
+// adoptGrace is how long after a (re)connect Adopt runs: a call whose
+// StasisStart is already on the new stream gets its worker first and is
+// served, not handed over.
+const adoptGrace = time.Second
+
+// readoptAfter is how long after a failed hand-over (the transfer and the
+// hang-up both refused) the controller adopts again: the call is still in
+// the application with no worker, and the stream may never drop to trigger
+// an adoption.
+const readoptAfter = 5 * time.Second
+
+// Run streams ARI events into the controller until ctx ends. After every
+// (re)connect it adopts the calls it lost; when ctx ends it waits for the
+// live calls to be handed over.
 func (c *Controller) Run(ctx context.Context, client *ari.Client) error {
-	return client.Events(ctx, func(e ari.Event) { c.Handle(ctx, e) })
+	defer c.Wait()
+	return client.Stream(ctx, func() {
+		c.running.Go(func() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(adoptGrace):
+			}
+			if err := c.Adopt(ctx); err != nil {
+				c.log.Error("ivr adopt after (re)connect failed", "err", err)
+			}
+		})
+	}, func(e ari.Event) { c.Handle(ctx, e) })
+}
+
+// readopt schedules one adoption readoptAfter from now, however many
+// hand-overs fail meanwhile; it runs one at a time with the others (adoptMu)
+// and is scheduled again while hand-overs keep failing. It stops with ctx:
+// after shutdown nothing is retried, and FlushLost reports any escalation
+// the last adoption left unrecorded.
+func (c *Controller) readopt(ctx context.Context) {
+	if !c.readopting.CompareAndSwap(false, true) {
+		return
+	}
+	c.running.Go(func() {
+		t := time.NewTimer(readoptAfter)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			c.readopting.Store(false)
+			return
+		case <-t.C:
+		}
+		c.readopting.Store(false)
+		if err := c.Adopt(ctx); err != nil {
+			c.log.Error("ivr re-adoption failed; trying again", "err", err)
+			c.readopt(ctx)
+		}
+	})
+}
+
+// Adopt hands every call parked in the controller's application with no
+// worker to the fallback. Such a call lost its worker in a restart, or its
+// events while the stream was down, and would otherwise hear silence
+// (hard constraint 14).
+func (c *Controller) Adopt(ctx context.Context) error {
+	// One adoption at a time: two reconnects in quick succession must not
+	// both hand the same orphan over (review R1).
+	c.adoptMu.Lock()
+	defer c.adoptMu.Unlock()
+	c.discoverMu.Lock()
+	discovering := true
+	defer func() {
+		if discovering {
+			c.discoverMu.Unlock()
+		}
+	}()
+	octx, cancel := c.op(ctx)
+	chans, err := c.ari.ListChannels(octx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	listed := map[string]bool{}
+	var orphans []string
+	for _, ch := range chans {
+		if ch.App != c.opt.App {
+			continue
+		}
+		listed[ch.ID] = true
+		// A channel already handed over is skipped while a list still shows
+		// it; its StasisStart may also still be in flight.
+		if c.workers[ch.ID] == nil && !c.adopted[ch.ID] {
+			c.adopted[ch.ID] = true
+			orphans = append(orphans, ch.ID)
+		}
+	}
+	for ch := range c.adopted {
+		if !listed[ch] {
+			delete(c.adopted, ch) // it has left the application
+		}
+	}
+	c.mu.Unlock()
+	// Every orphan's escalation is registered before the first is handled
+	// and before a flush can run (discoverMu): should the shutdown deadline
+	// pass while they are handled one by one, FlushLost reports the queued
+	// ones too; after a flush, each is reported lost at once. An orphan whose
+	// recorder is still at work (an earlier adoption) keeps that one.
+	queued := make([]*call, len(orphans))
+	c.pendingMu.Lock()
+	for i, ch := range orphans {
+		// The channel ID is the call ID: HandOver finds the incident from it.
+		queued[i] = &call{ch: ch, turn: intake.IVRTurn{Call: intake.IVRCall{CallID: ch}}}
+		if p, fresh := c.registerLocked(queued[i]); fresh {
+			queued[i].pending = p
+		}
+		if c.flushed {
+			c.lostLocked(c.escalating[ch], errStopping)
+		}
+	}
+	c.pendingMu.Unlock()
+	c.discoverMu.Unlock()
+	discovering = false
+	for _, st := range queued {
+		ch := st.ch
+		c.log.Warn("ivr call found without a worker; handing over", "channel", ch)
+		if !c.handOver(ctx, st) {
+			// Still in the application: the next adoption tries again.
+			c.mu.Lock()
+			delete(c.adopted, ch)
+			c.mu.Unlock()
+		}
+	}
+	return nil
 }
 
 // Handle queues one event for its call and returns at once. Events of one
@@ -167,11 +449,12 @@ func (c *Controller) Handle(ctx context.Context, e Event) {
 	defer c.mu.Unlock()
 	w := c.workers[e.ChannelID]
 	if w == nil {
-		if e.Type != EventStasisStart {
+		if e.Type != EventStasisStart || c.adopted[e.ChannelID] {
 			return
 		}
 		w = &worker{wake: make(chan struct{}, 1), call: &call{ch: e.ChannelID}}
 		c.workers[e.ChannelID] = w
+		c.running.Add(1)
 		go c.run(ctx, w)
 	}
 	c.pending.Add(1)
@@ -189,10 +472,14 @@ func (c *Controller) enqueue(ch string, it item) {
 }
 
 func (c *Controller) run(ctx context.Context, w *worker) {
+	defer c.running.Done()
 	st := w.call
 	for !st.ended {
 		it, ok := w.pop(ctx)
 		if !ok {
+			// Stopping with the call live: a coordinator takes it. Each step
+			// has its own OpTimeout, outliving ctx (c.op).
+			c.handOver(ctx, st)
 			break
 		}
 		c.step(ctx, st, it)
@@ -227,9 +514,12 @@ func (c *Controller) step(ctx context.Context, st *call, it item) {
 		}
 	case EventDTMF:
 		c.dtmf(ctx, st, e.Digit)
-	case EventPlaybackStarted:
+	case EventPlaybackStarted, EventPlaybackContinuing:
 		if e.PlaybackID == st.current {
 			st.started, st.playing = true, true
+			// The backstop runs per recording, from its start: a long
+			// sequence (the reference, then a message) is never cut off.
+			c.startTimer(st, c.opt.PromptMax+c.opt.NoInput)
 		}
 	case EventPlaybackFinished:
 		if e.PlaybackID != st.current {
@@ -239,11 +529,19 @@ func (c *Controller) step(ctx context.Context, st *call, it item) {
 		switch {
 		case st.hangupOn == e.PlaybackID:
 			c.hangup(ctx, st)
+		case e.PlaybackState == ari.PlaybackFailed:
+			// The caller heard nothing: a failure, not silence (F-03).
+			c.log.Error("ivr prompt failed to play", "channel", st.ch, "playback", e.PlaybackID)
+			c.handOver(ctx, st)
 		case !st.turn.Prompt.End:
-			c.startTimer(st) // silence is counted from the end of the prompt
+			c.startTimer(st, c.opt.NoInput) // silence is counted from the end of the prompt
 		}
 	case evNoInput:
-		if it.gen == st.timerGen && !st.turn.Prompt.End {
+		switch {
+		case it.gen != st.timerGen:
+		case st.turn.Prompt.End:
+			c.silentHangup(ctx, st) // the closing prompt's end was never reported
+		default:
 			c.noInput(ctx, st)
 		}
 	case EventStasisEnd, EventHangupRequest:
@@ -252,6 +550,9 @@ func (c *Controller) step(ctx context.Context, st *call, it item) {
 }
 
 func (c *Controller) start(ctx context.Context, st *call, e Event) {
+	// The channel is the call ID: a start that fails after the session
+	// opened is escalated under it, so HandOver finds that incident.
+	st.turn.Call.CallID = st.ch
 	octx, cancel := c.op(ctx)
 	defer cancel()
 	if err := c.ari.Answer(octx, st.ch); err != nil {
@@ -298,7 +599,7 @@ func (c *Controller) dtmf(ctx context.Context, st *call, digit string) {
 		case len(st.digits) < maxCallbackDigits:
 			st.digits += digit
 			if !st.playing {
-				c.startTimer(st)
+				c.startTimer(st, c.opt.NoInput)
 			}
 		}
 		return
@@ -324,13 +625,27 @@ func (c *Controller) answer(ctx context.Context, st *call, input string) {
 		c.handOver(ctx, st)
 		return
 	}
+	// The same question back with a notice is a no-match.
+	noMatch := turn.Prompt.Notice != "" && turn.Prompt.Kind == st.turn.Call.Shown
 	st.turn, st.reprompts, st.digits = turn, 0, ""
+	if !noMatch {
+		st.invalid = 0
+	} else if st.invalid++; st.invalid >= c.opt.MaxNoMatch {
+		c.handOver(ctx, st)
+		return
+	}
 	c.play(ctx, st, Sounds(turn.Prompt), turn.Prompt.End)
 }
 
 func (c *Controller) noInput(ctx context.Context, st *call) {
 	if st.reprompts >= c.opt.MaxReprompts {
-		c.hangup(ctx, st)
+		// Past the first screen the caller has engaged (answered it, or
+		// resumed a report): silence is not a pocket dial.
+		if st.turn.Call.Shown != intake.KindLanguage {
+			c.handOver(ctx, st)
+			return
+		}
+		c.silentHangup(ctx, st)
 		return
 	}
 	st.reprompts++
@@ -352,42 +667,147 @@ func (c *Controller) play(ctx context.Context, st *call, sounds []string, end bo
 	}
 	octx, cancel := c.op(ctx)
 	defer cancel()
-	if err := c.ari.Play(octx, st.ch, pb, sounds); err != nil {
+	if err := c.ari.Play(octx, st.ch, pb, sounds); errors.Is(err, ari.ErrNotInStasis) {
+		c.log.Warn("ivr call already left the application", "channel", st.ch)
+		c.stopTimer(st)
+		st.ended = true
+		return
+	} else if err != nil {
 		c.log.Error("ivr play failed", "channel", st.ch, "err", err)
 		if end {
 			c.hangup(ctx, st)
 			return
 		}
 		c.handOver(ctx, st)
+		return
 	}
+	// The backstop: if the prompt's end is never reported, silence is still
+	// counted (PlaybackFinished re-arms the timer at NoInput).
+	c.startTimer(st, c.opt.PromptMax+c.opt.NoInput)
 }
 
 // handOver passes a call Sauti cannot serve to the dialplan's fallback (a
 // recorded message, then the on-call coordinators; hard constraint 14). The
 // incident and every answer given so far are already persisted, and a
-// redial resumes them. If even that fails, the call is hung up rather than
-// left in silence.
-func (c *Controller) handOver(ctx context.Context, st *call) {
+// redial resumes them. The escalation is recorded first, so the coordinator
+// line rings even if the transfer fails; one the store refuses is retried in
+// the background, never holding the caller back. The fallback masks the
+// caller ID: the coordinator sees Sauti's number and "SAUTI" with the
+// reference, never the caller's. If the transfer fails, the call is hung up
+// rather than left in silence.
+// It reports false only when the call is still in the application: the
+// transfer and the hang-up both failed.
+func (c *Controller) handOver(ctx context.Context, st *call) bool {
 	c.stopTimer(st)
+	c.escalate(ctx, st)
+	c.present(ctx, st)
 	octx, cancel := c.op(ctx)
 	defer cancel()
-	if err := c.ari.Continue(octx, st.ch, FallbackContext, "s", 1); err != nil {
+	if err := c.ari.Continue(octx, st.ch, FallbackContext, "s", 1); errors.Is(err, ari.ErrNotInStasis) {
+		// Another actor has already moved the call on (a second hand-over,
+		// the dialplan) or it has ended: never hang up a caller put through.
+		c.log.Warn("ivr call already left the application; not hung up", "channel", st.ch)
+		st.ended = true
+		return true
+	} else if err != nil {
 		c.log.Error("ivr hand-over to the fallback failed; hanging up", "channel", st.ch, "err", err)
-		c.hangup(ctx, st)
-		return
+		if !c.hangup(ctx, st) {
+			c.readopt(ctx) // still in the application, with no worker
+			return false
+		}
+		return true
 	}
 	c.log.Warn("ivr call handed to the coordinator fallback", "channel", st.ch)
 	st.ended = true
+	return true
 }
 
-func (c *Controller) hangup(ctx context.Context, st *call) {
+// retryHandOver records a refused hand-over escalation, every 5 s for up to
+// 10 minutes. It is the call's only recorder until it ends (escalating, per
+// call ID), and the store's idempotency key, made from the call ID, keeps
+// the escalation to one event. A durable retry is
+// not possible: the store that refused it is the only place it could go,
+// and a database outage pages through P0 alerting.
+//
+// When the controller stops (ctx ends), one last try is made at once and, if
+// it fails, the loss is logged and counted before Wait returns, so an exit
+// never drops a retry silently.
+func (c *Controller) retryHandOver(ctx context.Context, p *pendingEscalation) {
+	defer func() {
+		c.pendingMu.Lock()
+		c.settledLocked(p)
+		c.pendingMu.Unlock()
+	}()
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	until := time.Now().Add(10 * time.Minute) // a local timer, not a recorded time
+	for {
+		stopping := false
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			stopping = true
+		}
+		octx, cancel := c.op(ctx)
+		err := c.in.HandOver(octx, p.call, incident.ReasonVoiceHandedOver)
+		cancel()
+		if err == nil {
+			return
+		}
+		if stopping || !time.Now().Before(until) {
+			c.pendingMu.Lock()
+			c.lostLocked(p, err)
+			c.pendingMu.Unlock()
+			return
+		}
+	}
+}
+
+// present gives the fallback the reference to show the coordinator after
+// "SAUTI". A failure is logged and the hand-over goes ahead (the coordinator
+// then sees "SAUTI" alone): reaching a person comes first (hard constraint
+// 14). The caller ID is the dialplan's to mask, never this request's.
+func (c *Controller) present(ctx context.Context, st *call) {
+	ref := st.turn.Call.Reference
+	if ref == "" {
+		return
+	}
+	octx, cancel := c.op(ctx)
+	defer cancel()
+	if err := c.ari.SetReference(octx, st.ch, ref.Spoken()); err != nil {
+		c.log.Error("ivr hand-over reference not set", "channel", st.ch, "err", err)
+	}
+}
+
+// silentHangup ends a call that has sent no event for a while. Its silence
+// may mean another instance (whose newer stream took the application) or
+// the dialplan has taken it: a call no longer in this application is left
+// alone, never hung up on a coordinator (review R1). If Asterisk cannot be
+// asked, the call is hung up as before.
+func (c *Controller) silentHangup(ctx context.Context, st *call) {
+	octx, cancel := c.op(ctx)
+	chans, err := c.ari.ListChannels(octx)
+	cancel()
+	if err == nil && !slices.ContainsFunc(chans, func(ch ari.Channel) bool { return ch.ID == st.ch && ch.App == c.opt.App }) {
+		c.log.Warn("ivr call already left the application; not hung up", "channel", st.ch)
+		c.stopTimer(st)
+		st.ended = true
+		return
+	}
+	c.hangup(ctx, st)
+}
+
+func (c *Controller) hangup(ctx context.Context, st *call) bool {
 	c.stopTimer(st)
 	octx, cancel := c.op(ctx)
 	defer cancel()
 	if err := c.ari.Hangup(octx, st.ch); err != nil {
 		c.log.Error("ivr hangup failed", "channel", st.ch, "err", err)
+		st.ended = true
+		return false
 	}
 	st.ended = true
+	return true
 }
 
 func (c *Controller) stopTimer(st *call) {
@@ -400,10 +820,10 @@ func (c *Controller) stopTimer(st *call) {
 
 // startTimer arms the no-input timer; when it fires it queues an event to
 // the call's own worker, never touching the call from the timer goroutine.
-func (c *Controller) startTimer(st *call) {
+func (c *Controller) startTimer(st *call, after time.Duration) {
 	c.stopTimer(st)
 	gen, ch := st.timerGen, st.ch
-	st.timer = time.AfterFunc(c.opt.NoInput, func() {
+	st.timer = time.AfterFunc(after, func() {
 		c.enqueue(ch, item{ev: Event{Type: evNoInput, ChannelID: ch}, gen: gen})
 	})
 }

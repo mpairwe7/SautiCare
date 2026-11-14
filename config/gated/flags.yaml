@@ -4,3 +4,9 @@ android_app: false
 caller_link: false
 speech_assist: false
 app_api: false
+# Protocol proposals of the November 2026 UX audit (ADR-0029, ADR-0034). Each
+# changes Tool 1 and ships false, today's protocol, until the PI amends it.
+# On: "Somewhere else" after a danger yes or a red classification flags and
+# escalates the incident and leaves it open for a coordinator, instead of
+# closing it. The caller still hears 999 and 112.
+out_of_area_escalate_after_danger: false

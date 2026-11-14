@@ -85,15 +85,16 @@ type ForwardState struct {
 	TimedOut   bool
 }
 
-// Escalation reasons (the coordinator's alert says why).
+// Escalation reasons (the coordinator's alert says why), named in the
+// incident registry.
 const (
-	ReasonSuspended           = "dispatch_suspended"
-	ReasonExhausted           = "no_eligible_responder"
-	ReasonNoneNearby          = "no_responder_nearby" // amended mode: ring 1 empty at T2 (the search widens)
-	ReasonFollowUp            = "assigned_follow_up"  // still open FollowUpAfter after acceptance: a coordinator checks with the caller
-	ReasonRedNoAcceptance     = "red_no_acceptance"
-	ReasonForwarded           = "forwarded_to_facility"
-	ReasonForwardingExhausted = "no_facility_acknowledged"
+	ReasonSuspended           = incident.ReasonDispatchSuspended
+	ReasonExhausted           = incident.ReasonNoEligibleResponder
+	ReasonNoneNearby          = incident.ReasonNoResponderNearby // amended mode: ring 1 empty at T2 (the search widens)
+	ReasonFollowUp            = incident.ReasonAssignedFollowUp  // still open FollowUpAfter after acceptance: a coordinator checks with the caller
+	ReasonRedNoAcceptance     = incident.ReasonRedNoAcceptance
+	ReasonForwarded           = incident.ReasonForwardedToFacility
+	ReasonForwardingExhausted = incident.ReasonNoFacilityAcknowledged
 )
 
 // Caller message kinds (SMS templates, Part B).
