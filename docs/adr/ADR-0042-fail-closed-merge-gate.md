@@ -50,7 +50,7 @@ The gate merges only when all of the following hold, read in this order. Any `gh
 
 If CodeRabbit's latest decisive review still requests changes once every thread verdict is clean or explicitly deferred, the gate posts `@coderabbitai resolve` itself. It never posts the command while any thread is open, because the command resolves every thread, objections included. It then polls for up to 15 minutes until CodeRabbit's latest decisive review no longer requests changes. Then it reads everything again: the head, the checks, CodeRabbit's review of the head and the threads, because CodeRabbit may have commented meanwhile. The quiet window is skipped on this second read, because CodeRabbit has just answered the command. If CodeRabbit does not approve within 15 minutes, or requests changes again, the gate refuses. A dry run only says that it would post the command.
 
-Then the gate re-reads the head, resolves the settled threads, and merges with `gh pr merge --merge --match-head-commit <sha>`. It waits for `main`'s CI on the merge commit: exit 0 means merged and green; exit 3 means merged, but CI failed or could not be confirmed.
+Then the gate re-reads the head and resolves the settled threads. GitHub resolves a thread by its ID alone, so the gate then reads every thread and CodeRabbit's latest decisive review again. A thread that is now open is reopened, and the gate refuses; so does a new request for changes. Then it merges with `gh pr merge --merge --match-head-commit <sha>`. It waits for `main`'s CI on the merge commit: exit 0 means merged and green; exit 3 means merged, but CI failed or could not be confirmed.
 
 The gate never submits a review or dismisses one. The resolve command is the only comment it posts.
 
@@ -71,7 +71,7 @@ This supersedes ADR-0014 in part: the compensating control for "the amendment ga
 * Good: a PR whose threads are all settled no longer waits for a person to post the resolve command.
 * Bad: no human reads a change before it merges (V-03, accepted by the owner in O-1). The evidence is CI and CodeRabbit.
 * Bad: a failing check outside the CI pipeline, such as GitGuardian, no longer stops a merge. It is a warning that a person may miss. Real secrets are still blocked by `secret scan (full history)`.
-* Bad: the resolve command resolves every thread. The gate posts it only after its own verdicts are clean, and reads the threads again before it merges. A comment that CodeRabbit posts after that second read is not seen, but `--match-head-commit` still pins the code that was judged.
+* Bad: the resolve command resolves every thread. The gate posts it only after its own verdicts are clean, and reads the threads again after it resolves them, just before it merges. A comment posted between that last read and the merge is not seen. A new thread is unresolved, so the ruleset refuses the merge, and `--match-head-commit` still pins the code that was judged.
 * Bad: merging is slow. Allow the 30-minute quiet window, plus CodeRabbit's hourly quota, plus up to 15 minutes for its approval.
 * Bad: an unrecognised CodeRabbit wording means "open", so a person reads it. That conservatism is deliberate.
 * Neutral: a new CI job must be added to `required_checks.txt` and to the ruleset in the same pull request. A test keeps the file in step with `.github/workflows/ci.yml`.

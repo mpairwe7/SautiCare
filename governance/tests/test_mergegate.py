@@ -747,6 +747,31 @@ class MergeGateTest(unittest.TestCase):
             self.assertRefused(g, "the head moved during the run")
             self.assertEqual(g.posts(), [])
 
+    def test_the_threads_and_the_review_are_judged_again_after_the_resolve_writes(self):
+        """GitHub resolves a thread by its ID alone, so a word added after the
+        first read would be resolved unread. The gate reads the threads and
+        CodeRabbit's review again after its writes, reopens a thread that is
+        now open, and refuses."""
+        g = self.gate()
+        reads = [i for i, c in enumerate(g.calls) if any("reviewThreads(" in a for a in c)]
+        [resolve] = [g.calls.index(c) for c in g.mutations("resolveReviewThread")]
+        self.assertLess(resolve, reads[-1], "the threads are read again after the resolve")
+        self.assertLess(reads[-1], g.calls.index(g.merges()[0]), "and before the merge")
+        objected = thread("PRRT_1", *SETTLED["comments"]["nodes"],
+                          c("dev", "The retry path still fails on cancellation.", "2026-11-14T11:59:00Z"),
+                          resolved=True)
+        g = self.gate({"threads": {"argv": ["api", "graphql", "reviewThreads"], "times": 1,
+                                   **ok(threads_page(SETTLED))},
+                       "threads-after": {"argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(objected))}})
+        self.assertRefused(g, "discussion_r101")
+        self.assertEqual(len(g.mutations("resolveReviewThread")), 1)
+        [reopened] = g.mutations("unresolveReviewThread")
+        self.assertIn("id=PRRT_1", reopened)
+        with self.subTest("CodeRabbit requests changes after the first read"):
+            g = self.gate(self.reviews_in_turn(
+                [review()], [review(), review(state="CHANGES_REQUESTED", at="2026-11-14T11:59:30Z")]))
+            self.assertRefused(g, "CodeRabbit requested changes during the run")
+
     def test_a_refused_merge_refuses(self):
         g = self.gate({"merge": {"argv": ["pr", "merge", "--match-head-commit"], "exit": 1, "stderr": "Head branch was modified"}})
         self.assertEqual(g.code, 2, g.err)

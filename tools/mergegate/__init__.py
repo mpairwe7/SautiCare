@@ -21,8 +21,9 @@ If CodeRabbit's latest decisive review still requests changes once every
 thread is settled, it posts `@coderabbitai resolve` (never while a thread is
 open), waits up to 15 minutes for CodeRabbit to stop requesting changes, and
 reads everything again except the quiet window (CodeRabbit just answered).
-Then it re-reads the head, resolves the settled threads, merges with
-`--match-head-commit`, and waits for main's CI on the merge commit.
+Then it re-reads the head, resolves the settled threads, judges every thread
+and CodeRabbit's review again (a thread now open is reopened, and refuses),
+merges with `--match-head-commit`, and waits for main's CI on the merge commit.
 Any gh error, timeout, empty or unreadable answer refuses: exit 2, with the
 reason on stderr, and nothing merged. Exit 0: merged and main's CI passed on
 the merge commit (or, with --dry-run, every read passed and nothing was
@@ -637,6 +638,10 @@ def main(argv: list[str]) -> int:
             return 0
         for tid in to_resolve:
             set_resolved(tid, True)
+        # GitHub resolves a thread by its ID alone: judge what the writes resolved, as it is now.
+        _, deferred = check_threads(repo, pr, False, deferrals)
+        if requests_changes(coderabbit_reviews(repo, pr)):
+            raise Refused("CodeRabbit requested changes during the run; re-run")
         body = f"Merged by tools/mergegate (ADR-0042) at {head[:7]}."
         if deferred:
             body += "\n\nDeferred review threads:\n" + "\n".join(f"- {d}" for d in deferred)
