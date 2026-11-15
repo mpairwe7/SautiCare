@@ -263,6 +263,63 @@ func TestUSSDWithheldNumberNeverResumes(t *testing.T) {
 	}
 }
 
+// A new triage bundle during an open incident (Scalable MVP Stack, §Edge
+// cases, row 16): intake restarts on a new signed bundle over the same store.
+// The open incident keeps the severity and logic version it was classified
+// under when its caller redials; only a new incident takes the new version.
+func TestAnOpenIncidentKeepsItsLogicVersion(t *testing.T) {
+	v1 := fixedTriage{Severity: "yellow", RuleID: "r1", LogicVersion: "tool1-v1+sha256:111111111111"}
+	v2 := fixedTriage{Severity: "red", RuleID: "r1", LogicVersion: "tool1-v2+sha256:222222222222"}
+	before := newRig(t, v1, nil)
+	c := before.dial(t, "S1", "0772123456")
+	c.send("")
+	for _, in := range []string{"1", "2", "1", "3", "2"} { // classified at screen 5, dropped at screen 6
+		c.send(in)
+	}
+	after := newRigWith(t, before.inc, before.inc, v2, nil, 7)
+	d := after.dial(t, "S2", "0772123456")
+	d.send("")
+	for _, in := range []string{"1", "1", "1"} {
+		d.send(in)
+	}
+	if p := d.projection(); p.ID != c.incidentID() || p.T[2] == nil || p.Severity != incident.SevYellow || p.LogicVersion != v1.LogicVersion {
+		t.Fatalf("resumed incident: severity %s, logic version %q, T2 %v; want yellow under %q", p.Severity, p.LogicVersion, p.T[2], v1.LogicVersion)
+	}
+	n := after.dial(t, "S3", "0772999888")
+	n.send("")
+	for _, in := range []string{"1", "2", "1", "3", "2"} {
+		n.send(in)
+	}
+	if p := n.projection(); p.Severity != incident.SevRed || p.LogicVersion != v2.LogicVersion {
+		t.Fatalf("new incident: severity %s, logic version %q; want red under %q", p.Severity, p.LogicVersion, v2.LogicVersion)
+	}
+}
+
+// Prank or repeat calls (Scalable MVP Stack, §Edge cases, row 9): the line
+// never blocks a number. The same phone reporting again and again gets
+// screen 1 every time, and every report is kept as its own record and
+// reaches dispatch (or merges into the one already dispatching). Only a
+// coordinator may judge a call a prank, after review (M5).
+func TestARepeatCallerIsNeverBlocked(t *testing.T) {
+	r := newRig(t, nil, nil)
+	seen := map[uuid.UUID]bool{}
+	for _, session := range []string{"R1", "R2", "R3", "R4", "R5"} {
+		c := r.dial(t, session, "0772123456")
+		if sc := c.send(""); sc.End || !strings.Contains(sc.Text, "English") {
+			t.Fatalf("call %s refused: %+v", session, sc)
+		}
+		for _, in := range []string{"1", "2", "1", "3", "2", "1", "1"} {
+			c.send(in)
+		}
+		done := c.send("1")
+		p := c.projection()
+		if !done.End || p.T[2] == nil || p.LastScreen != 8 || seen[p.ID] {
+			t.Fatalf("call %s: closing %+v, incident %s (state %s, T2 %v, seen before %v)", session, done, p.ID, p.State, p.T[2], seen[p.ID])
+		}
+		seen[p.ID] = true
+	}
+}
+
 // Scenario 6: "Somewhere else" gives 999 or 112; the record is kept, flagged
 // out_of_area and closed.
 func TestOutOfAreaClosesAndFlags(t *testing.T) {
