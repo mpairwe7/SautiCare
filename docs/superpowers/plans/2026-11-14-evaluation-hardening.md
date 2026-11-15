@@ -103,7 +103,7 @@ A job that is not required yet (EV-9's Asterisk job, EV-11's mutation job) goes 
 ## Review Focus
 
 1. **The gate meets an answer it cannot read.** Cases: any `gh` call exits non-zero or times out; a JSON body is empty or truncated; GitHub reports `UNKNOWN` mergeability; CodeRabbit was rate-limited and reviewed an older commit. Expected: refuse with the reason, exit 2, write nothing. Tests: Task 1.1 `test_an_unreadable_pr_refuses`, `test_an_unreadable_check_list_refuses`; Task 1.2 `test_a_head_without_a_coderabbit_review_refuses`, `test_a_thread_query_error_refuses`.
-2. **A polite objection.** Cases: CodeRabbit's last word says "looks good, but … remain unverified" or "is addressed; however …"; a stranger replies "ok"; the author resolved a thread over an objection. Expected: the thread is open, it is reopened if resolved, and the merge is refused. Tests: Task 1.2 `test_judge_thread`, `test_open_threads_are_reopened_and_refuse`.
+2. **A polite objection.** Cases: CodeRabbit's last word says "looks good, but … remain unverified" or "is addressed; however …"; a stranger replies "ok"; the author replies "not fixed; will address later" and CodeRabbit has not answered; the author resolved a thread over an objection. Expected: the thread is open, it is reopened if resolved, and the merge is refused. Tests: Task 1.2 `test_judge_thread`, `test_open_threads_are_reopened_and_refuse`.
 3. **A seventh copy of the append function weakens the ratchet by one step.** Expected: a table test fails on every lowering pair, in Go and in SQL. Tests: Task 3.1 `TestNoEventLowersSeverity`; Task 3.2 `TestAppendRejectsEverySeverityLowering`.
 4. **Tier 3's signal is stale, not high.** Cases: intake-gw is down (series absent); no instance leads (all export 0); two dispatch leaders. Expected: a staleness alert fires within 2 minutes. Tests: Task 2.3's `promtool` cases.
 5. **A foreign caller's number in a new message path.** Expected: no rendering of a `pii.Phone`, through any fmt verb, JSON or slog handler, shows a run of digits. Tests: Task 5.2 `TestNoDigitEscapesAnyRendering`.
@@ -175,19 +175,20 @@ From then on every merge goes through `tools/mergegate`.
   - `REVIEWER = "coderabbitai"` (the GraphQL login; the REST login is `"coderabbitai[bot]"`), `QUIET = timedelta(minutes=5)`.
   - `def now() -> datetime`: `MERGEGATE_NOW` parsed as ISO 8601 if set, else UTC now.
   - `def check_review(repo: str, pr: int, head: str) -> None`
-  - `def judge_thread(thread: dict, pr_author: str) -> bool`: True means settled.
-  - `def check_threads(repo: str, pr: int, pr_author: str, dry_run: bool) -> None`
+  - `def judge_thread(thread: dict) -> bool`: True means settled. It takes no PR author: nothing the author writes settles a thread.
+  - `def check_threads(repo: str, pr: int, dry_run: bool, deferrals: dict[int, int]) -> None`, where `deferrals` maps a thread's first comment id to an open issue, from `main`'s repeatable `--defer COMMENT=ISSUE`.
 
 **Rules:**
 - **Review of the head:** `gh api repos/R/pulls/<pr>/reviews --paginate --jq '.[] | {user: .user.login, commit_id, state, submitted_at}'`. Require at least one review by `coderabbitai[bot]` with `commit_id` equal to the head. Of its reviews in state APPROVED or CHANGES_REQUESTED, the latest must not be CHANGES_REQUESTED. A rate-limited push leaves no review of the head, so it refuses.
 - **Quiet window:** the newest of CodeRabbit's inline comments (`pulls/<pr>/comments`) and issue comments (`issues/<pr>/comments`), by `created_at` and `updated_at`, and of its reviews' `submitted_at`, must be at least `QUIET` before `now()`. Otherwise refuse: "CodeRabbit was active <n> s ago; re-run after five quiet minutes". The gate does not wait: the operator re-runs it.
-- **Threads:** a GraphQL query with variables `owner`, `name`, `n` and `after`, paginating `reviewThreads(first: 100, after: $after)` and reading for each thread `id`, `isResolved`, `resolvedBy { login }`, and `comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body url } }`. A thread whose comments have a next page refuses (fail closed rather than judge a partial thread).
-- **`judge_thread`:** a thread is settled when:
-  1. it `isResolved` and `resolvedBy.login == REVIEWER` (CodeRabbit's own verdict); or
-  2. its last comment's author is the PR's author; or
-  3. its last comment's author is `REVIEWER`, its body matches `CONCEDES` and it matches no `OBJECTS`.
+- **Threads:** a GraphQL query with variables `owner`, `name`, `n` and `after`, paginating `reviewThreads(first: 100, after: $after)` and reading for each thread `id`, `isResolved`, and `comments(first: 100) { pageInfo { hasNextPage } nodes { author { login __typename } editor { login __typename } body url createdAt lastEditedAt } }`. A thread whose comments have a next page refuses (fail closed rather than judge a partial thread).
+- **`judge_thread`:** a thread is settled only by CodeRabbit's own visible concession. The thread's latest words (by the later of written and last edited) must all be CodeRabbit's: a `Bot` with login `REVIEWER`, edited by no one else. Each must concede, in one of three ways:
+  1. CodeRabbit's edit of its own finding ends the visible text with its addressed mark (`✅ Addressed in commit <sha>`, `✅ Addressed in the latest update`, `✅ Confirmed as addressed by @<login>`); or
+  2. a reply whose whole visible text fully matches `CONCEDES`; or
+  3. a reply that carries CodeRabbit's withdrawal marker at its top level and matches no `OBJECTS`.
 
-  Every other thread is open: no reply yet, a CodeRabbit word that is not a clear concession, a last word from anyone else (Copilot, a stranger), and a thread resolved by someone else over an objection. Start from `CONCEDES = r"✅ Addressed in commit|Review thread resolved|\bLGTM\b|\b(is|are|has been|have been) (now )?(addressed|resolved)\b"` and `OBJECTS = r"(?i)\b(not|no longer|still|remains?|however|but|unverified|missing|unresolved|rate.limit\w*)\b|please|\?"`; the tests below decide.
+  Visible text leaves out code fences, collapsed sections, HTML comments and quoted lines. Every other thread is open: no reply yet; a reply by the PR's author, whatever it says ("Fixed in abc1234" or "not fixed; will address later"), until CodeRabbit answers it; a CodeRabbit word that is not one whole concession; a last word from anyone else (Copilot, a stranger); and any resolved thread, since resolution is not a word (CodeRabbit's resolve command resolves every thread, objections included). Start from `CONCEDES = r"(✅ Addressed in commits? [0-9a-f]{7,40}( to [0-9a-f]{7,40})?|LGTM|(The finding|This finding|This|It) (is|has been) (now )?(addressed|resolved))[.!]?"` and `OBJECTS = r"(?i)\b(not|no longer|still|remains?|however|but|unverified|missing|unresolved|rate.limit\w*)\b|please|\?"`; the tests below decide.
+- **Deferral:** the only other way to settle a thread, and an explicit one. `--defer COMMENT=ISSUE` names the thread that starts at `discussion_r<COMMENT>` and an issue. The gate accepts it only when the thread's single latest word is a CodeRabbit reply that evaluated the thread (not its finding, not a rate-limit notice) and says that no further change is needed in this PR, and `gh issue view ISSUE --json number,state` reads OPEN. A deferral of a settled thread, of a thread the PR does not have, or in another form refuses. The merge commit's body records each deferral with CodeRabbit's words.
 - **Writes:** a settled thread that is not resolved is resolved with `gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' -f id=<thread id>`. An open thread that is resolved is reopened with the same shape and `unresolveReviewThread`, so GitHub's own rule blocks a merge from the web page too. A failed mutation refuses. `--dry-run` makes no mutation. Any open thread refuses, listing each one's first comment URL.
 
 - [ ] **Step 1: Write the failing tests:**
@@ -201,15 +202,20 @@ From then on every merge goes through `tools/mergegate`.
     | Thread | Expected |
     |---|---|
     | one CodeRabbit comment, unresolved | open |
-    | CodeRabbit, then the author | settled |
+    | CodeRabbit, then the author: "Fixed in abc1234." | open |
+    | CodeRabbit, then the author: "Not fixed; will address later." | open |
     | CodeRabbit last: "this looks good, but the failed-Dial path and the busy branch remain unverified" | open |
     | CodeRabbit last: "The coordinator fallback is addressed; however the coordinator dial is not escalated when every attempt fails." | open |
     | last word "ok" from `someone-else` | open |
-    | resolved, `resolvedBy` coderabbitai | settled |
+    | resolved by CodeRabbit, no concession | open |
     | resolved by the author, CodeRabbit's objection last | open |
     | CodeRabbit last: "✅ Addressed in commit abc1234" | settled |
+    | CodeRabbit's edit of its finding ends with "✅ Addressed in commit abc1234", after the author's reply | settled |
+    | CodeRabbit last: "The timeout is addressed. The retry path fails on cancellation." | open |
   - `test_open_threads_are_reopened_and_refuse`: a thread resolved over an objection. The log holds an `unresolveReviewThread` call carrying `-f id=<its id>`; exit 2.
   - `test_a_failed_resolve_refuses`: the resolve mutation exits 1. Exit 2, and no `pr merge`.
+  - `test_a_deferral_settles_a_thread_and_is_recorded`: CodeRabbit's last reply says "I do not see another code or plan change needed in this PR"; with `--defer <its id>=16` and issue 16 OPEN the gate merges, and the merge body names the thread, `#16` and CodeRabbit's words.
+  - `test_a_deferral_is_explicit_and_checked`, with subtests, each exit 2: no `--defer` (the thread is open); the author had the last word ("Tracked in #16."); CodeRabbit's last reply objects; issue 16 CLOSED or unreadable; a `--defer` naming no thread of the PR; a malformed `--defer`.
   - `test_the_resolve_mutation_passes_the_thread_id`: the logged query contains `$id` and the arguments contain `id=PRRT_1`.
 
   Run `python3 -m unittest governance.tests.test_mergegate -v`. Expected: the new tests FAIL.
