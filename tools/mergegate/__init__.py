@@ -55,8 +55,12 @@ QUIET = timedelta(minutes=30)
 MARKED = re.compile(r"✅ (Addressed in commits? [0-9a-f]{7,40}( to [0-9a-f]{7,40})?|Addressed in the latest update"
                     r"|Confirmed as addressed by @[\w-]+)")
 WITHDRAWN = "<!-- <review_comment_withdrawn> -->"  # counts only at the top level of a reply
-CONCEDES = re.compile(r"✅ Addressed in commit|Review thread resolved|\bLGTM\b"
-                      r"|\b(is|are|has been|have been) (now )?(addressed|resolved)\b")
+# A reply concedes only when its whole visible text is one verdict on the whole
+# finding. A clause inside longer prose is not: CodeRabbit concedes one part and
+# raises another in the same reply (PRs #11, #14, #15), and its "Review thread
+# resolved." footer accompanies those replies too.
+CONCEDES = re.compile(r"(✅ Addressed in commits? [0-9a-f]{7,40}( to [0-9a-f]{7,40})?|LGTM"
+                      r"|(The finding|This finding|This|It) (is|has been) (now )?(addressed|resolved))[.!]?")
 OBJECTS = re.compile(r"(?i)\b(not|no longer|still|remains?|however|but|unverified|missing|unresolved"
                      r"|rate.limit\w*)\b|please|\?")
 # What a reader does not see as the comment's own word: code fences (an
@@ -400,8 +404,8 @@ def last_words(thread: dict) -> list[tuple[int, dict, bool]]:
 def judge_thread(thread: dict) -> bool:
     """True when the thread is settled: every latest word is CodeRabbit's and
     concedes. On its finding (the first comment), its own edit must end the
-    visible text with its mark. In a reply, its visible text must concede,
-    or carry its top-level withdrawal marker, and must not object.
+    visible text with its mark. A reply must be one whole concession and
+    nothing else, or carry its top-level withdrawal marker and not object.
     Deliberately conservative: any other wording is open, and a person reads
     it. Resolution is not a word: the resolve command resolves every thread,
     objections included."""
@@ -416,8 +420,8 @@ def judge_thread(thread: dict) -> bool:
                 return False
         else:
             said = " ".join(visible(cm["body"]).split())
-            conceded = WITHDRAWN in visible(cm["body"], keep_markers=True) or CONCEDES.search(said)
-            if not conceded or OBJECTS.search(said):
+            withdrawn = WITHDRAWN in visible(cm["body"], keep_markers=True) and not OBJECTS.search(said)
+            if not (withdrawn or CONCEDES.fullmatch(said)):
                 return False
     return bool(words)
 

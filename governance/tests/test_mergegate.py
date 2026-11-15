@@ -546,6 +546,13 @@ class MergeGateTest(unittest.TestCase):
             ("addressed; however ...",
              thread("T", finding, c(CR, "The coordinator fallback is addressed; however the coordinator dial is "
                                         "not escalated when every attempt fails.", t1)), False),
+            ("a partial concession: one part addressed, another fails",
+             thread("T", finding, c(CR, "The timeout is addressed. The retry path fails on cancellation.", t1)), False),
+            ("a whole-finding verdict, then a remaining defect",
+             thread("T", finding, c(CR, "The finding is addressed. The retry path fails on cancellation.", t1)), False),
+            ("CodeRabbit's resolution footer under a new request (PR #15's shape)",
+             thread("T", finding, c(CR, "It fixes this finding. Line 358 re-enables the button early.\n\n"
+                                        "Review thread resolved.", t1)), False),
             ("a stranger's ok", thread("T", finding, c("someone-else", "ok", t1)), False),
             ("resolved by CodeRabbit is not a verdict (the resolve command resolves every thread)",
              thread("T", finding, resolved=True), False),
