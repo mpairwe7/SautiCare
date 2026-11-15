@@ -2,7 +2,7 @@
 
 **Type:** How-to (Diátaxis) · **Decision:** [ADR-0042](../adr/ADR-0042-fail-closed-merge-gate.md) · **Tool:** `tools/mergegate`
 
-Pull requests reach `main` only through the merge gate, on top of `main`'s ruleset. A PR is mergeable once the CI pipeline passes and every CodeRabbit comment is resolved (owner decision O-1, 2026-11-14). No human review or approval is needed. When CodeRabbit has not reviewed the head, for example because its quota is spent, the PR merges if GitHub reports it mergeable (owner decision O-2, 2026-11-15). The gate refuses whenever it cannot read an answer, so a refusal is normal. Read it, deal with it, and run the gate again.
+Merge every pull request into `main` through the merge gate. The gate is the merge procedure; `main`'s ruleset is what GitHub enforces. The ruleset requires the CI pipeline's checks and resolved review threads on every merge path, but a merge from GitHub's web page or a plain `gh pr merge` skips the gate's own checks: CodeRabbit's review of the head, the quiet window, the thread verdicts, the deferrals and `main`'s CI. A PR is mergeable once the CI pipeline passes and every CodeRabbit comment is resolved (owner decision O-1, 2026-11-14). No human review or approval is needed. When CodeRabbit has not reviewed the head, for example because its quota is spent, the PR merges if GitHub reports it mergeable (owner decision O-2, 2026-11-15). The gate refuses whenever it cannot read an answer, so a refusal is normal. Read it, deal with it, and run the gate again.
 
 ## Before you start
 
