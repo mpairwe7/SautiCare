@@ -615,3 +615,27 @@ threats:
       - cmd/demo/main_test.go::TestStagedSpaceHoldsNoConfidentialFiles
       - cmd/demo/main_test.go::TestStagingReadsTheCommittedDockerignore
       - internal/platform/devkeys/devkeys_test.go::TestDevkeysRefuseProduction
+  - id: T-034
+    title: A change merges unreviewed or over a failing gate
+    stride: Tampering
+    linddun: Non-compliance
+    asset: main (the code and rules that dispatch emergencies)
+    hard_constraints: [11, 14]
+    mitigations:
+      - Ruleset 27260742 on main blocks deletion and force-push, and requires a PR, resolved threads and the nine CI checks (strict)
+      - tools/mergegate (ADR-0042) refuses on any unreadable answer, re-checks the ruleset, requires every CI pipeline check on the head (any other check only warns; secrets are still blocked by the required gitleaks job), requires CodeRabbit's review of the head, or, when CodeRabbit has not reviewed it (owner decision O-2, 2026-11-15), GitHub reporting the PR CLEAN or UNSTABLE just before the merge and a head that reached GitHub at least 30 minutes ago (the newest GitHub Actions check suite for it on the PR's head branch, not the committer date), and in both cases a quiet window, settles each thread on CodeRabbit's visible last word or an explicit deferral to an open issue, posts the CodeRabbit resolve command only once every verdict is clean and verifies again after its approval, and merges only the head it judged
+      - No human review is required, by the owner's decision O-1 (2026-11-14); the owner stays code owner of every path and is notified of every PR. Accepted residual risk - no human reads a change before it merges
+      - A head CodeRabbit has not reviewed merges only under owner decision O-2, with a WARNING that the merge commit records. Accepted residual risk - such a head can merge when CodeRabbit's quota is exhausted, on the evidence of CI, GitHub's mergeability and CodeRabbit's verdicts on earlier commits
+    verified_by:
+      - governance/tests/test_mergegate.py::test_the_ec2_fault_cases_refuse
+      - governance/tests/test_mergegate.py::test_a_weakened_ruleset_refuses
+      - governance/tests/test_mergegate.py::test_a_concession_counts_only_as_codeRabbits_visible_word
+      - governance/tests/test_mergegate.py::test_a_push_during_the_run_refuses
+      - governance/tests/test_mergegate.py::test_a_failing_or_pending_required_check_refuses
+      - governance/tests/test_mergegate.py::test_an_open_thread_never_gets_the_resolve_command
+      - governance/tests/test_mergegate.py::test_clean_verdicts_and_changes_requested_post_the_resolve_command_then_merge
+      - governance/tests/test_mergegate.py::test_the_docs_name_no_enforced_codeowners_approval
+      - governance/tests/test_mergegate.py::test_a_head_without_a_coderabbit_review_merges_only_when_clean_and_old
+      - governance/tests/test_mergegate.py::test_an_unreviewed_head_refuses_unless_github_reports_it_clean
+      - governance/tests/test_mergegate.py::test_an_acceptance_holds_only_for_the_reply_first_read
+      - governance/tests/test_mergegate.py::test_the_quiet_window_is_read_again_after_the_writes

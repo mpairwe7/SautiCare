@@ -19,7 +19,7 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0011](ADR-0011-sqlc-and-postgresql-18.md) | sqlc v1.31.1 with PostgreSQL 18-only DDL | Accepted | 2026-11-12 |
 | [ADR-0012](ADR-0012-test-database-environments.md) | Test database environments | Accepted | 2026-11-12 |
 | [ADR-0013](ADR-0013-envelope-encryption-and-dev-keys.md) | Envelope encryption, row-bound AAD, keyed lookup hash and development keys | Accepted | 2026-11-12 |
-| [ADR-0014](ADR-0014-configuration-and-amendment-gate.md) | Versioned configuration, fingerprints and the amendment gate | Accepted | 2026-11-12 |
+| [ADR-0014](ADR-0014-configuration-and-amendment-gate.md) | Versioned configuration, fingerprints and the amendment gate | Accepted; superseded in part by ADR-0042 | 2026-11-12 |
 | [ADR-0015](ADR-0015-dependency-and-supply-chain-policy.md) | Dependency policy and supply-chain pinning | Accepted | 2026-11-12 |
 | [ADR-0016](ADR-0016-living-documentation-mapping.md) | Living-documentation mapping of the global engineering rules | Accepted | 2026-11-12 |
 | [ADR-0017](ADR-0017-metrics-exposition.md) | In-house Prometheus metrics until the OpenTelemetry SDK | Accepted | 2026-11-12 |
@@ -39,5 +39,6 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0039](ADR-0039-public-demo-on-hugging-face.md) | A public demo on a Hugging Face Space, with synthetic data only | Accepted | 2026-11-14 |
 | [ADR-0040](ADR-0040-repository-layout-follows-the-reference-architecture.md) | Repository layout follows the reference architecture | Accepted | 2026-11-14 |
 | [ADR-0041](ADR-0041-evaluation-strategy-and-quality-gates.md) | Evaluation strategy and quality gates: test what a person receives, properties for safety invariants, mutation testing, complete clinical expectations, provider contracts, binary smoke tests, run-proven pointers, tested alert rules, a fail-closed merge gate, drill freshness, severity by consequence | Accepted | 2026-11-14 |
+| [ADR-0042](ADR-0042-fail-closed-merge-gate.md) | A fail-closed merge gate: the CI pipeline's required checks on the head from the ruleset's app (any other check warns), CodeRabbit's review of the head and a quiet window, each thread settled by CodeRabbit's last word or an explicit deferral, the resolve command posted only after clean verdicts, the head pinned, main verified after the merge; owner decision O-1: no human review; O-2: an unreviewed head merges if GitHub reports it CLEAN or UNSTABLE | Accepted | 2026-11-15 |
 
 ADR-0030 to ADR-0038 are reserved by the M3 and UX-hardening plans (`docs/superpowers/plans/`).

@@ -15,7 +15,7 @@ Sauti processes health data about people in emergencies, including children, so 
 | Authoritative time | database-set timestamps | V16 | ISP §5.2 |
 | Input handling at the edge | form parsing limits, constant-time token, service-code allowlist, fuzzing | V1, V2, V4 | — |
 | Supply chain | SHA-pinned actions, digest-pinned images, checksum-verified tools, SBOM, govulncheck, OSV, gitleaks | V15 | Build Prompt §17 |
-| Change control | amendment gate; CODEOWNERS | V15 | Build Prompt rule 3.11 |
+| Change control | amendment gate; the merge gate `tools/mergegate/__init__.py` and ruleset 27260742 ([ADR-0042](../adr/ADR-0042-fail-closed-merge-gate.md)); CODEOWNERS (not enforced, by the owner's decision O-1 in the evaluation audit) | V15 | Build Prompt rule 3.11 |
 
 **Post-quantum position.** Checkpoints use ML-DSA-65 now, because the audit and analytic records are kept for five years and NIST IR 8547 retires quantum-vulnerable signatures after 2030. TLS with the X25519MLKEM768 hybrid key exchange arrives with the P0 infrastructure.
 
