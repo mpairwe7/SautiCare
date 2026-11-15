@@ -322,7 +322,7 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> bool:
     # A thread reply or a command approval is a review with an empty body,
     # stamped with whatever the head was: it is not a review of the code.
     real = [r for r in mine if visible(get(r, "body", str, "a CodeRabbit review")).strip()]
-    if not summary_reviewed(repo, pr, head):
+    if not summary_reviewed(repo, pr, head, mine):
         if not real:
             raise Refused(f"CodeRabbit has not reviewed PR #{pr}")
         if (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
@@ -341,21 +341,25 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> bool:
     return requests_changes(mine)
 
 
-REVIEWED_RANGE = re.compile(r"\bbetween ([0-9a-f]{40}) and ([0-9a-f]{40})\b")
+WALKTHROUGH = "<!-- walkthrough_start -->"
+REVIEWED_RANGE = re.compile(r"^Reviewing files that changed from the base of the PR and "
+                            r"between ([0-9a-f]{40}) and ([0-9a-f]{40})\.[ \t]*$", re.M)
 
 
-def summary_reviewed(repo: str, pr: int, head: str) -> bool:
+def summary_reviewed(repo: str, pr: int, head: str, reviews: list[dict]) -> bool:
     """CodeRabbit's walkthrough records the commits it reviewed. An incremental
-    review that finds nothing leaves only that record and an empty-body
-    approval (PR #17), so its last range ending at the full head SHA counts as
-    a review of the head. Only CodeRabbit's own comments count."""
-    for cm in items(f"repos/{repo}/issues/{pr}/comments?per_page=100"):
-        body = cm.get("body")
-        if login(cm) == REVIEWER_REST and isinstance(body, str):
-            ranges = REVIEWED_RANGE.findall(body)
-            if ranges and ranges[-1][1] == head:
-                return True
-    return False
+    review that finds nothing leaves only that record and an empty-body review
+    stamped at the head (PR #17). It counts as a review of the head only when:
+    the latest CodeRabbit walkthrough comment's own sentence, outside code
+    fences and not quoted, records a range ending at the full head SHA, and a
+    CodeRabbit review is stamped at the head to corroborate it."""
+    walks = [cm for cm in items(f"repos/{repo}/issues/{pr}/comments?per_page=100")
+             if login(cm) == REVIEWER_REST and isinstance(cm.get("body"), str) and WALKTHROUGH in cm["body"]]
+    if not walks:
+        return False
+    # The sentence is anchored to the start of its line, so a quoted copy ("> …") never matches.
+    ranges = REVIEWED_RANGE.findall(FENCE.sub("", max(walks, key=lambda cm: when(cm.get("updated_at")))["body"]))
+    return bool(ranges) and ranges[-1][1] == head and any(r.get("commit_id") == head for r in reviews)
 
 
 def visible(body: str, keep_markers: bool = False) -> str:
