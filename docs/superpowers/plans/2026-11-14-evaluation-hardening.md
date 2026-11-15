@@ -143,7 +143,7 @@ From then on every merge goes through `tools/mergegate`.
 
 **Rules:**
 - **PR:** `gh pr view <pr> --repo R --json number,state,isDraft,baseRefName,headRefOid,mergeable,title,author`. Require `state` OPEN, `isDraft` false, `baseRefName` main, `mergeable` MERGEABLE (UNKNOWN refuses with "re-run"), and `headRefOid` matching `^[0-9a-f]{40}$`.
-- **Ruleset:** `gh api repos/R/rules/branches/main`. Require a `required_status_checks` rule whose contexts include every expected name, and a `pull_request` rule with `required_review_thread_resolution: true`. Otherwise refuse: "main protection is missing or weaker than expected: <what>".
+- **Ruleset:** `gh api repos/R/rules/branches/main`. Require a `required_status_checks` rule with `strict_required_status_checks_policy: true` whose contexts include every expected name, and a `pull_request` rule with `required_review_thread_resolution: true`. A rule that is not strict counts as no rule: without it a PR tested against an older `main` stays mergeable. Otherwise refuse: "main protection is missing or weaker than expected: <what>".
 - **`main` is green:** `gh api repos/R/branches/main --jq .commit.sha`, then `gh run list --repo R --branch main --event push --workflow ci --limit 1 --json headSha,status,conclusion`. Require the run's `headSha` to equal `main`'s, `status` completed and `conclusion` success.
 - **Checks:** `gh pr checks <pr> --repo R --json name,bucket`. A non-zero exit refuses (gh exits 8 while checks are pending). Every expected name must appear, and every instance of it must be in bucket `pass`. Any check in bucket `fail`, `cancel` or `pending` refuses, whether expected or not. `skipping` is allowed only for names not in the expected list. No check is exempt by PR number.
 - `required_checks.txt` holds the nine CI job names exactly as ruleset 27260742 lists them.
@@ -156,7 +156,7 @@ From then on every merge goes through `tools/mergegate`.
   - `test_an_unreadable_check_list_refuses`: `pr checks` exits 1 with "no checks reported". Exit 2.
   - `test_a_missing_required_check_refuses`: the check list lacks "governance and living docs". Exit 2, and stderr names it.
   - `test_a_failing_or_pending_check_refuses`, with subtests: an expected check in `fail`; an expected check in `pending`; "GitGuardian Security Checks" in `fail`. Each exits 2.
-  - `test_a_weakened_ruleset_refuses`, with subtests: `[]`; required checks without "unit tests (race)"; `required_review_thread_resolution: false`. Each exits 2.
+  - `test_a_weakened_ruleset_refuses`, with subtests: `[]`; required checks without "unit tests (race)"; `required_review_thread_resolution: false`; `strict_required_status_checks_policy: false`. Each exits 2 with "main protection is missing or weaker than expected".
   - `test_red_main_refuses`, with subtests: `conclusion` failure; the run's `headSha` older than `main`'s. Each exits 2.
   - `test_required_checks_match_the_ci_jobs`: the `name` of every job in `.github/workflows/ci.yml` (read with `yaml.safe_load`) equals the set of lines in `required_checks.txt`, with no duplicates.
 
