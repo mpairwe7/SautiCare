@@ -14,7 +14,7 @@ evaluation audit V-02).
   * CodeRabbit's latest review is of the head commit, and CodeRabbit has
     been quiet for QUIET. If CodeRabbit has not reviewed the head (its quota
     is spent), owner decision O-2 lets the gate go on only when the head is
-    at least QUIET old and GitHub reports the PR CLEAN just before the merge
+    at least QUIET old and GitHub reports the PR CLEAN or UNSTABLE just before the merge
     (BLOCKED only until the gate's own writes clear it); it prints a WARNING
     and the merge commit records it;
   * every review thread is settled by its last word: CodeRabbit's, and a
@@ -747,7 +747,7 @@ def main(argv: list[str]) -> int:
         if args.dry_run:
             if unreviewed and info["merge_state"] == "BLOCKED":
                 say(f"GitHub reports the PR {info['merge_state']}: under owner decision O-2 the gate would merge "
-                    "only if GitHub then reports it CLEAN, once its writes have cleared the block")
+                    "only if GitHub then reports it CLEAN or UNSTABLE, once its writes have cleared the block")
             elif unreviewed:
                 say(o2_warning(head, unreviewed))
             say(f"would merge #{pr} at {head[:7]}")

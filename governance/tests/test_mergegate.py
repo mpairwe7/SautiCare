@@ -408,7 +408,7 @@ class MergeGateTest(unittest.TestCase):
 
     # Owner decision O-2 (2026-11-15): "when no coderabbitai reviews /limits
     # reached merge pr if mergeable". A head CodeRabbit has not reviewed
-    # merges only when GitHub reports the PR CLEAN and the head is at least
+    # merges only when GitHub reports the PR CLEAN or UNSTABLE and the head is at least
     # QUIET old; the quiet window, the threads and the checks rule as before.
 
     def o2_warning(self, reason):
