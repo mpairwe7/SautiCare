@@ -35,7 +35,7 @@ def ok(value, **extra):
 
 def pr(head=HEAD, **over):
     v = {"number": 9999, "state": "OPEN", "isDraft": False, "baseRefName": "main",
-         "headRefOid": head, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "title": "T",
+         "headRefOid": head, "headRefName": "feature", "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "title": "T",
          "author": {"login": "dev"}}
     v.update(over)
     return v
@@ -511,7 +511,8 @@ class MergeGateTest(unittest.TestCase):
         g = self.gate(self.reviews(review(commit=self.OLD)))
         ages = [c for c in g.calls if any("/check-suites" in a for a in c)]
         self.assertEqual(len(ages), 1, g.calls)
-        self.assertTrue(any("select(.app.id == 15368)" in a and ".created_at" in a for a in ages[0]))
+        self.assertTrue(any('select(.app.id == 15368 and .head_branch == "feature")' in a
+                            and ".created_at] | max" in a for a in ages[0]), ages[0])
         self.assertEqual([c for c in g.calls if any("committer" in a for a in c)], [])
 
     def test_an_unreviewed_head_needs_its_age_read(self):

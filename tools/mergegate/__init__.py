@@ -197,7 +197,7 @@ def expected_checks() -> list[str]:
 
 def check_pr(repo: str, pr: int) -> dict:
     v = gh_json("pr", "view", str(pr), "--repo", repo, "--json",
-                "number,state,isDraft,baseRefName,headRefOid,mergeable,mergeStateStatus,title,author")
+                "number,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,title,author")
     what = f"PR #{pr}"
     if get(v, "number", int, what) != pr:
         raise Refused(f"{what}: GitHub answered for another PR")
@@ -215,7 +215,7 @@ def check_pr(repo: str, pr: int) -> dict:
     head = get(v, "headRefOid", str, what)
     if not SHA.match(head):
         raise Refused(f"{what}: the head commit is unreadable ({head!r})")
-    return {"head": head, "title": get(v, "title", str, what),
+    return {"head": head, "head_ref": get(v, "headRefName", str, what), "title": get(v, "title", str, what),
             "author": get(get(v, "author", dict, what), "login", str, what),
             "merge_state": v.get("mergeStateStatus")}  # judged only under O-2
 
@@ -332,7 +332,7 @@ def requests_changes(mine: list[dict]) -> bool:
     return bool(decisive) and decisive[-1] == "CHANGES_REQUESTED"
 
 
-def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> tuple[bool, str | None]:
+def check_review(repo: str, pr: int, head: str, quiet: bool = True, head_ref: str = "") -> tuple[bool, str | None]:
     """Whether CodeRabbit's latest review is of head, and (if quiet) that it
     has been quiet for QUIET. A head it has not reviewed must be at least
     QUIET old by when GitHub received it (O-2), so the gate never races a review
@@ -352,8 +352,12 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> tuple[boo
         # When GitHub received the push: the head's first check suite from the
         # Actions app, created by GitHub. The committer date is set by whoever
         # commits, so a backdated commit could skip the wait (security review).
+        # Only suites for this PR's head branch, and the newest of them: an
+        # older suite for the same SHA on another branch must not make a head
+        # that just became this PR's look old (security review).
         pushed = when(gh("api", f"repos/{repo}/commits/{head}/check-suites?per_page=100", "--jq",
-                         f"[.check_suites[] | select(.app.id == {ACTIONS_APP}) | .created_at] | min").strip())
+                         f"[.check_suites[] | select(.app.id == {ACTIONS_APP} and .head_branch == "
+                         f"{json.dumps(head_ref)}) | .created_at] | max").strip())
         if (age := now() - pushed) < QUIET:
             raise Refused(f"CodeRabbit has not reviewed the head {head[:7]} ({unreviewed}), pushed "
                           f"{int(age.total_seconds())} s ago; wait until CodeRabbit has had "
@@ -624,7 +628,7 @@ def verify(repo: str, pr: int, expected: list[str], deferrals: dict[int, int], d
     for w in check_checks(repo, head, required):
         say(f"WARNING: {w} (not a required check; it does not block)")
     say(f"every required check passed on {head[:7]}")
-    changes_requested, unreviewed = check_review(repo, pr, head, quiet=not again)
+    changes_requested, unreviewed = check_review(repo, pr, head, quiet=not again, head_ref=info["head_ref"])
     quiet = "" if again else f" and has been quiet for {int(QUIET.total_seconds() // 60)} minutes"
     if unreviewed:
         check_mergeable(info, unreviewed, ("CLEAN", "UNSTABLE", "BLOCKED"))
