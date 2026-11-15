@@ -350,6 +350,30 @@ func TestControllerRunsACall(t *testing.T) {
 	}
 }
 
+// A number withheld on the voice line (Scalable MVP Stack, §Edge cases, row
+// 6): Asterisk's "anonymous" caller ID starts Tool 1 as an unknown number,
+// never a refusal or a hand-over. At the call-back question "1" is then the
+// first digit of a number, not "this number", so the caller can give one.
+func TestAWithheldNumberStartsTheCallAsUnknown(t *testing.T) {
+	s := &scripted{prompts: prompts()}
+	c, a, _ := newController(t, s)
+	send(t, c, Event{Type: EventStasisStart, ChannelID: "ch1", CallerNumber: "anonymous"})
+	if len(a.answers) != 1 || !s.phone.IsZero() || len(s.handedOver()) != 0 {
+		t.Fatalf("answers %v, phone %v, hand-overs %v: want the call started with no number", a.answers, s.phone, s.handedOver())
+	}
+	started(t, c, a, "ch1")
+	send(t, c, key("ch1", "1"))
+	started(t, c, a, "ch1")
+	send(t, c, key("ch1", "1"))
+	if got := s.answered(); len(got) != 1 {
+		t.Fatalf("inputs %v: '1' answered the call-back question with no number to call back", got)
+	}
+	send(t, c, key("ch1", "#"))
+	if got := s.answered(); len(got) != 2 || got[1] != "1" {
+		t.Fatalf("inputs %v, want the typed digits", got)
+	}
+}
+
 // "Press 1 for this number" is a single key when the caller ID is known.
 func TestControllerSameNumberIsOneKey(t *testing.T) {
 	s := &scripted{prompts: prompts()}
