@@ -37,6 +37,7 @@ async function api(method, path, body) {
 const app = {
   phase: "", // the last phase the server reported; a failed poll leaves it as it was
   lost: false, // the last state poll failed
+  verifying: false, // an audit verification is in flight
   phones: [],
   codes: { caller: "*384*1#", responder: "*384*2#" },
   inbox: {},
@@ -111,7 +112,7 @@ class Phone {
   }
 
   primary() {
-    if (this.busy || !this.p) return;
+    if (this.busy || !this.p || !live()) return; // Enter must not act while the page is not live
     if (this.mode === "idle") this.dial(this.input.value.trim());
     else if (this.mode === "con") this.reply(this.input.value);
     else this.end();
@@ -183,6 +184,7 @@ class Phone {
     this.input.setAttribute("inputmode", idle ? "tel" : "text");
     this.callBtn.textContent = idle ? "Call" : this.mode === "con" ? "Send" : "OK";
     for (const b of [this.callBtn, this.endBtn, this.quick, ...this.keypad.children]) b.disabled = this.busy || !p || !live();
+    this.input.disabled = this.busy || !p || !live();
     this.quick.hidden = !idle;
   }
 
@@ -348,14 +350,17 @@ function tick() {
 // ---------- Audit and reset ----------
 
 async function verify() {
+  if (app.verifying) return; // one verification at a time
   const btn = $("#audit-btn");
   const out = $("#audit-result");
+  app.verifying = true;
   btn.disabled = true;
   out.hidden = false;
   out.className = "audit";
   out.replaceChildren(h("p", { text: "Signing a checkpoint and verifying the ledger…" }));
   const gen = app.gen;
   const { status, data: r } = await api("POST", "api/audit", {});
+  app.verifying = false;
   btn.disabled = !live();
   if (gen !== app.gen) return; // the run was reset while the ledger was verified
   if (status !== 200) {
@@ -418,7 +423,7 @@ function showPhase(down) {
   }[app.phase] || "Connecting…";
   s.textContent = down && down.length ? "Stopped: " + down.join(", ") + ". Press Reset." : text;
   s.className = "status " + (ready && !(down && down.length) ? "ok" : app.lost || app.phase === "failed" || (down && down.length) ? "bad" : "");
-  $("#audit-btn").disabled = !ready;
+  $("#audit-btn").disabled = !ready || app.verifying;
   $("#reset-btn").disabled = app.phase === "starting" || app.phase === "resetting";
   callerPhone.render();
   respPhone.render();
@@ -464,6 +469,7 @@ async function pollData() {
     refreshTabs();
   }
   if (board.status === 200) renderBoard(board.data);
+  $("#board-stale").hidden = board.status === 200; // a failed refresh is shown, not hidden behind the last copy
 }
 
 function loop(fn, ms) {

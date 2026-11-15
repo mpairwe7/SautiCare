@@ -44,6 +44,7 @@
     <h2 id="board-h" tabindex="-1"><span class="step">3</span> Dispatch board</h2>
     <p class="hint">Live from the operational store, read with the read-only role. A caller's number is never shown.</p>
     <div id="audit-result" class="audit" role="status" aria-live="polite" hidden></div>
+    <p id="board-stale" class="warn" role="status" hidden>The dispatch board could not be refreshed. It shows the last copy; retrying.</p>
     <p id="suspended" class="warn" hidden>Dispatch is suspended: no responder is alerted and a coordinator handles every call.</p>
     <div id="board" class="board"></div>
   </section>
