@@ -31,6 +31,7 @@ The standard library covers UUIDs (`uuid`, Go 1.27), ML-DSA (`crypto/mldsa`), HK
 | sqlc | v1.31.1 | release binary sha256 in `scripts/tools/install-sqlc.sh` |
 | golangci-lint | v2.15.0 | GitHub Action pinned by commit SHA; local binary via `scripts/tools/fetch.sh` |
 | gitleaks / osv-scanner | v8.30.1 / v2.7.1 | release binaries sha256 in `scripts/tools/install-scanners.sh` |
+| promtool (alert rule checks and tests) | v3.13.5, Prometheus 3.13 LTS (supported to 2027-07-31) | release tarball sha256, from the release's `sha256sums.txt`, in `scripts/tools/install-promtool.sh` (verified 2026-11-14) |
 | govulncheck / cyclonedx-gomod | v1.9.0 / v1.12.0 | `build/tools.mod` (`go tool -modfile=build/tools.mod …`) |
 | PyYAML (governance gates) | 6.0.3 | `governance/requirements.txt` with `--require-hashes` |
 | GitHub Actions | checkout v7.0.1, setup-go v7.0.0, setup-python v7.1.0, upload-artifact v7.0.2, golangci-lint-action v9.3.0 | full commit SHAs in `.github/workflows/ci.yml` |

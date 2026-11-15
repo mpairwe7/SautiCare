@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -14,6 +16,7 @@ import (
 
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/location"
+	"sautihealth.com/sauti/internal/platform/metrics"
 )
 
 // Production refuses to start until the key provider exists (P0): the
@@ -153,4 +156,69 @@ func TestTheStartupGazetteerReadIsBounded(t *testing.T) {
 			t.Fatalf("read %+v %v", got, err)
 		}
 	})
+}
+
+func scrape(reg *metrics.Registry) string {
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
+}
+
+// hasSample reports whether the exposition holds this exact sample line; a
+// gauge's HELP text may begin with the same words.
+func hasSample(body, line string) bool { return slices.Contains(strings.Split(body, "\n"), line) }
+
+// V-01 (EO-7): "no dispatch leader anywhere" must not read as healthy. The
+// leader gauge is 1 only while this instance's term runs, and 0 once it
+// returns, whatever it returns, so the rule sees no leader or two.
+func TestTheLeaderGaugeFollowsTheTerm(t *testing.T) {
+	for name, result := range map[string]error{"cancelled": context.Canceled, "failed": errors.New("dispatch loop stopped")} {
+		t.Run(name, func(t *testing.T) {
+			reg := metrics.NewRegistry()
+			g := newDispatchGauges(reg)
+			if body := scrape(reg); !hasSample(body, "sauti_dispatch_leader 0") {
+				t.Fatalf("a standby:\n%s", body)
+			}
+			running, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+			go func() {
+				done <- lead(t.Context(), g, func(context.Context) error { close(running); <-release; return result })
+			}()
+			<-running
+			if body := scrape(reg); !hasSample(body, "sauti_dispatch_leader 1") {
+				t.Fatalf("leading:\n%s", body)
+			}
+			close(release)
+			if err := <-done; !errors.Is(err, result) {
+				t.Fatalf("lead returned %v, want the term's %v", err, result)
+			}
+			if body := scrape(reg); !hasSample(body, "sauti_dispatch_leader 0") {
+				t.Fatalf("after the term:\n%s", body)
+			}
+		})
+	}
+}
+
+type overdueFunc func(context.Context) (time.Duration, error)
+
+func (f overdueFunc) OldestOverdueDispatch(ctx context.Context) (time.Duration, error) { return f(ctx) }
+
+// V-01 (EO-7): a failed read of the overdue wakes no longer freezes the
+// overdue gauge silently: the read gauge drops to 0 and the error is
+// returned, and the last overdue value is left as it was.
+func TestAFailedOverdueReadIsVisible(t *testing.T) {
+	reg := metrics.NewRegistry()
+	g := newDispatchGauges(reg)
+	if err := g.readOverdue(t.Context(), overdueFunc(func(context.Context) (time.Duration, error) { return 42 * time.Second, nil })); err != nil {
+		t.Fatal(err)
+	}
+	if body := scrape(reg); !hasSample(body, "sauti_dispatch_oldest_overdue_seconds 42") || !hasSample(body, "sauti_dispatch_overdue_read_ok 1") {
+		t.Fatalf("after a read:\n%s", body)
+	}
+	down := errors.New("db down")
+	if err := g.readOverdue(t.Context(), overdueFunc(func(context.Context) (time.Duration, error) { return 0, down })); !errors.Is(err, down) {
+		t.Fatalf("the failed read returned %v", err)
+	}
+	if body := scrape(reg); !hasSample(body, "sauti_dispatch_oldest_overdue_seconds 42") || !hasSample(body, "sauti_dispatch_overdue_read_ok 0") {
+		t.Fatalf("after a failed read:\n%s", body)
+	}
 }

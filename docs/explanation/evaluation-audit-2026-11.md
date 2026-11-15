@@ -81,6 +81,8 @@ Every other standard below is cited with the URL and version its source audit ve
 Each entry gives the sources, the evidence on `main`, the failure scenario, the standard, and the decision with its phase.
 
 ### V-01 · Critical · (a), (d) for paging · Tier 3 is unalerted, its wiring is untested, and the planned rule cannot see a dead signal
+
+**Status:** class (a) fixed in EV-2. `leaderTerm` runs the gauge loop, and `TestTheLeaderTermExportsTheGauges` reads `/metrics` and kills mutant M3. dispatch-worker exports `sauti_dispatch_leader` and `sauti_dispatch_overdue_read_ok`. `build/prometheus/sauti-rules.yml` holds the staleness-aware rules and the Watchdog, tested by promtool 3.13.5 in the CI job "alert rules (promtool)", which `tools/mergegate/required_checks.txt` lists; the owner adds it to the ruleset before the merge. Open: EV-6's binary smoke test, and (d) the dead man's switch off the monitoring host with its drill (P0, R-16).
 - **Sources:** EO-1, EO-7. **Overlaps:** F-67 (UX-8 Task 8.3, the rules file).
 - **Evidence:**
   - No rule file exists in the repository.

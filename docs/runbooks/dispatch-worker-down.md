@@ -4,7 +4,7 @@
 |---|---|
 | Owner | technical operator on call |
 | Severity | SEV-1 (responders are not being alerted) |
-| Alert / trigger | `/readyz` on dispatch-worker (127.0.0.1:9102) failing; no process holding advisory lock 7347004; incidents in `dispatching` with no alert more than 60 s after T2; repeated `dispatch pass failed` log lines; `dispatch_error` escalations |
+| Alert / trigger | the pages `SautiDispatchLeaderMissing` (no leader, or two, for 1 minute) and `SautiDispatchOverdueUnreadable` (an instance cannot read the overdue wakes for 2 minutes); `/readyz` on dispatch-worker (127.0.0.1:9102) failing; no process holding advisory lock 7347004; incidents in `dispatching` with no alert more than 60 s after T2; repeated `dispatch pass failed` log lines; `dispatch_error` escalations |
 | Last reviewed: | 2026-11-14 |
 | Last drilled | not yet drilled |
 
@@ -21,6 +21,8 @@ dispatch-worker decides who is alerted and records it ([ADR-0024](../adr/ADR-002
   So the absence of `dispatch_error` events proves nothing. Use the backlog query.
 - `incident.escalated` with reason `dispatch_stalled`: intake-gw's watchdog, a separate process, found an incident with no alert and no dispatch escalation two minutes after T2, or a dispatching incident whose dispatch timer is two minutes overdue and not taken by a worker (the worker died after the first alert; [ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)). One incident that cannot be escalated no longer holds up the others.
 - `/readyz` check `dispatch_loop` failing on the leader (no successful pass for two minutes); metrics `sauti_dispatch_last_pass_age_seconds` and `sauti_dispatch_oldest_overdue_seconds` growing, `sauti_dispatch_pass_failures_total` rising.
+- `SautiDispatchLeaderMissing` (`build/prometheus/sauti-rules.yml`): `sum(sauti_dispatch_leader) != 1 or absent(sauti_dispatch_leader)` for 1 minute. `sauti_dispatch_leader` is 1 on the instance whose leader term is running and 0 on a standby, so the sum is 0 with no leader, 2 with two, and absent when no dispatch-worker is scraped. `sauti_dispatch_last_pass_age_seconds` cannot tell: it is 0 on a standby.
+- `SautiDispatchOverdueUnreadable`: `min(sauti_dispatch_overdue_read_ok) < 1` for 2 minutes. Each instance reads the overdue wakes every 5 seconds. After a failed read, `sauti_dispatch_overdue_read_ok` is 0, `sauti_dispatch_oldest_overdue_seconds` keeps its last value, and the log shows `overdue dispatch not read`. The overdue age is stale, so use the backlog query instead.
 
 ## Impact
 **The dispatch path is affected.** Callers still get their incident number (intake is separate), but no VHT or transporter is alerted, no health centre is called, and the caller is not told help is on the way. Escalations already raised stay visible to coordinators.
@@ -37,7 +39,7 @@ dispatch-worker decides who is alerted and records it ([ADR-0024](../adr/ADR-002
    ```
 
    List them, oldest first, to hand to the coordinators: `SELECT incident_id, due_at, lease_until FROM op.dispatch_timers WHERE due_at < now() - interval '30 seconds' ORDER BY due_at;`. The metric `sauti_dispatch_oldest_overdue_seconds` also counts leased wakes.
-3. Is there a leader? As `op_readonly`: `SELECT pid, granted FROM pg_locks WHERE locktype = 'advisory' AND objid = 7347004;`
+3. Is there a leader? As `op_readonly`: `SELECT pid, granted FROM pg_locks WHERE locktype = 'advisory' AND objid = 7347004;`. On each host, `curl -s 127.0.0.1:9102/metrics | grep -E '^sauti_dispatch_(leader|overdue_read_ok)'` shows which instance believes it leads and whether its read works.
 4. Read the latest errors: `journalctl -u sauti-dispatch-worker@* --since -15min | grep -E 'dispatch pass failed|stopped'`.
 5. Startup refusals:
    - configuration or ranking order invalid (a stopping-rule rate must be a number strictly between 0 and 1);
@@ -58,13 +60,14 @@ dispatch-worker decides who is alerted and records it ([ADR-0024](../adr/ADR-002
 2. Restart the worker: `systemctl restart sauti-dispatch-worker@<n>`. The new leader resumes from the store: every recorded fact and every wake is kept. Delivery is at most once ([ADR-0025](../adr/ADR-0025-dispatch-store-and-first-accept-wins.md)): a claimed delivery attempt is never sent again, because the worker cannot know whether the provider took it. So a worker that stopped after claiming an attempt and before calling the provider leaves that responder **without the alert**. The alert lapses at the cascade timeout (90 s) and the next responder is alerted. For each incident in Diagnosis step 7, the coordinators phone the responder or cover the incident by hand until an acceptance (T4) is recorded.
 3. If a configuration change caused a startup refusal, roll the configuration back through the amendment gate. Never hand-edit gated files on a host.
 4. If the operational database failed over, the pool reconnects by itself. Leases expire after 30 s and the work is retried.
-5. Never insert or update `op.alerts`, `op.assignments` or `op.dispatch_timers` by hand.
+5. If two instances show `sauti_dispatch_leader 1` for more than a minute, one has lost its lock without noticing yet. Restart the instance whose backend does not hold lock 7347004 (Diagnosis step 3).
+6. Never insert or update `op.alerts`, `op.assignments` or `op.dispatch_timers` by hand.
 
 ## Escalation
 The technical operator lead, by voice, within 15 minutes for SEV-1. The Medical Director is told if any red incident waited more than 3 minutes without an alert.
 
 ## Verification
-- `/readyz` is 200 on every instance and one instance holds lock 7347004.
+- `/readyz` is 200 on every instance and one instance holds lock 7347004; in Prometheus, `sum(sauti_dispatch_leader)` is 1 and `min(sauti_dispatch_overdue_read_ok)` is 1.
 - The backlog query (Diagnosis step 2) returns `overdue = 0` within a minute and stays at 0.
 - No unfinished claim is left (Diagnosis step 7), or the coordinators have covered each one.
 - **Simulated delivery proves nothing about phones.** Outside production the worker only logs `simulated delivery`, and production refuses to start until the M2 Part B channel exists. A dev or test incident (`TestEngineYellowCascadeDepthThree` describes the expected sequence) shows that the planner and the store work, not that a responder received an alert. Keep manual dispatch in place until a real alert is confirmed: on a live incident or a drill, the responder's acceptance (T4) is recorded.
