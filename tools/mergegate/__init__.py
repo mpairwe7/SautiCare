@@ -54,6 +54,7 @@ REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 CHECKS_FILE = Path(__file__).with_name("required_checks.txt")
 REVIEWER = "coderabbitai"            # CodeRabbit's login in GraphQL, as a Bot
 REVIEWER_REST = "coderabbitai[bot]"  # and in REST
+ACTIONS_APP = 15368                  # GitHub Actions, the app main's ruleset names for every required check
 RESOLVE_COMMAND = "@coderabbitai resolve"
 # CodeRabbit answers a reply up to 22 minutes later (PR #13: 1324 s), often
 # after first marking the finding addressed; its last word must be final.
@@ -334,7 +335,7 @@ def requests_changes(mine: list[dict]) -> bool:
 def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> tuple[bool, str | None]:
     """Whether CodeRabbit's latest review is of head, and (if quiet) that it
     has been quiet for QUIET. A head it has not reviewed must be at least
-    QUIET old by its committer date (O-2), so the gate never races a review
+    QUIET old by when GitHub received it (O-2), so the gate never races a review
     that has just started. Returns whether its latest decisive review
     requests changes, and why the head is unreviewed (None if reviewed)."""
     mine = coderabbit_reviews(repo, pr)
@@ -348,9 +349,13 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> tuple[boo
         elif (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
             unreviewed = f"latest review is of {commit[:7]}"
     if unreviewed:
-        committed = when(gh("api", f"repos/{repo}/commits/{head}", "--jq", ".commit.committer.date").strip())
-        if (age := now() - committed) < QUIET:
-            raise Refused(f"CodeRabbit has not reviewed the head {head[:7]} ({unreviewed}), committed "
+        # When GitHub received the push: the head's first check suite from the
+        # Actions app, created by GitHub. The committer date is set by whoever
+        # commits, so a backdated commit could skip the wait (security review).
+        pushed = when(gh("api", f"repos/{repo}/commits/{head}/check-suites?per_page=100", "--jq",
+                         f"[.check_suites[] | select(.app.id == {ACTIONS_APP}) | .created_at] | min").strip())
+        if (age := now() - pushed) < QUIET:
+            raise Refused(f"CodeRabbit has not reviewed the head {head[:7]} ({unreviewed}), pushed "
                           f"{int(age.total_seconds())} s ago; wait until CodeRabbit has had "
                           f"{int(QUIET.total_seconds() // 60)} minutes to review")
     if not quiet:
@@ -367,13 +372,14 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> tuple[boo
     return requests_changes(mine), unreviewed
 
 
-def check_mergeable(info: dict, unreviewed: str, allowed: tuple[str, ...] = ("CLEAN",)) -> None:
+def check_mergeable(info: dict, unreviewed: str, allowed: tuple[str, ...] = ("CLEAN", "UNSTABLE")) -> None:
     """Owner decision O-2: an unreviewed head merges only if GitHub reports
-    the PR CLEAN. BLOCKED is allowed before the gate's writes, which clear
+    the PR mergeable: CLEAN, or UNSTABLE (a check outside the pipeline
+    failed; the required checks were verified above, and O-1 lets it warn). BLOCKED is allowed before the gate's writes, which clear
     what blocks it: a request for changes, or settled threads unresolved."""
     if (state := info["merge_state"]) not in allowed:
         raise Refused(f"CodeRabbit has not reviewed the head {info['head'][:7]} ({unreviewed}), and GitHub "
-                      f"reports the PR {state or 'with no merge state'}, not CLEAN (owner decision O-2)")
+                      f"reports the PR {state or 'with no merge state'}, not CLEAN or UNSTABLE (owner decision O-2)")
 
 
 def o2_warning(head: str, unreviewed: str) -> str:
@@ -621,7 +627,7 @@ def verify(repo: str, pr: int, expected: list[str], deferrals: dict[int, int], d
     changes_requested, unreviewed = check_review(repo, pr, head, quiet=not again)
     quiet = "" if again else f" and has been quiet for {int(QUIET.total_seconds() // 60)} minutes"
     if unreviewed:
-        check_mergeable(info, unreviewed, ("CLEAN", "BLOCKED"))
+        check_mergeable(info, unreviewed, ("CLEAN", "UNSTABLE", "BLOCKED"))
         say(f"CodeRabbit has not reviewed {head[:7]} ({unreviewed}){quiet}; the head is at least "
             f"{int(QUIET.total_seconds() // 60)} minutes old; GitHub reports the PR {info['merge_state']}")
     else:
@@ -673,7 +679,7 @@ def main(argv: list[str]) -> int:
         if check_pr(repo, pr)["head"] != head:
             raise Refused("the head moved during the run; re-run")
         if args.dry_run:
-            if unreviewed and info["merge_state"] != "CLEAN":
+            if unreviewed and info["merge_state"] == "BLOCKED":
                 say(f"GitHub reports the PR {info['merge_state']}: under owner decision O-2 the gate would merge "
                     "only if GitHub then reports it CLEAN, once its writes have cleared the block")
             elif unreviewed:

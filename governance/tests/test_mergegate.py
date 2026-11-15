@@ -448,27 +448,39 @@ class MergeGateTest(unittest.TestCase):
                            "issue-comments": {"argv": ["api", "issues/9999/comments"], **ok([[]])}})
             self.assertMergedUnderO2(g, "never reviewed")
 
+    def test_an_unreviewed_head_merges_when_only_a_non_required_check_fails(self):
+        """GitHub reports UNSTABLE when only a check outside the pipeline fails
+        (PR #15: GitGuardian). Under O-1 that check only warns, and GitHub itself
+        allows the merge, so under O-2 UNSTABLE is mergeable like CLEAN."""
+        runs = [run(n) for n in EXPECTED] + [run("GitGuardian Security Checks", conclusion="failure", app=46505)]
+        g = self.gate({**self.reviews(review(commit=self.OLD)),
+                       "pr": {"argv": ["pr", "view", "9999", "number,state"], **ok(pr(mergeStateStatus="UNSTABLE"))},
+                       "check-runs": {"argv": ["api", f"commits/{HEAD}/check-runs"], **ok(check_runs(runs))}})
+        self.assertEqual(g.code, 0, g.err + g.out)
+        self.assertEqual(len(g.merges()), 1)
+        self.assertIn("GitGuardian Security Checks: failure (not a required check", g.out + g.err)
+
     def test_an_unreviewed_head_refuses_unless_github_reports_it_clean(self):
         """O-2 rests on GitHub's own answer. Anything but CLEAN or BLOCKED
         refuses before the gate writes anything; BLOCKED refuses once the gate
         has nothing left to clear, or still reports BLOCKED after clearing it."""
         unreviewed = self.reviews(review(commit=self.OLD))
         no_state = {k: v for k, v in pr().items() if k != "mergeStateStatus"}
-        cases = {s: ok(pr(mergeStateStatus=s)) for s in ("BEHIND", "UNKNOWN", "DIRTY", "UNSTABLE", "HAS_HOOKS")}
+        cases = {s: ok(pr(mergeStateStatus=s)) for s in ("BEHIND", "UNKNOWN", "DIRTY", "HAS_HOOKS")}
         cases.update({"null": ok(pr(mergeStateStatus=None)), "missing": ok(no_state)})
         for name, answer in cases.items():
             with self.subTest(name):
                 g = self.gate({**unreviewed, "pr": {"argv": ["pr", "view", "9999", "number,state"], **answer}})
-                self.assertRefused(g, "not CLEAN (owner decision O-2)")
+                self.assertRefused(g, "not CLEAN or UNSTABLE (owner decision O-2)")
                 self.assertEqual(g.mutations("resolveReviewThread"), [], "refused before any write")
         with self.subTest("BLOCKED, with nothing for the gate to clear"):
             done = thread("PRRT_1", *SETTLED["comments"]["nodes"], resolved=True)
             g = self.gate({**unreviewed, **self.merge_states("BLOCKED"), **self.threads(done)})
-            self.assertRefused(g, "GitHub reports the PR BLOCKED, not CLEAN")
+            self.assertRefused(g, "GitHub reports the PR BLOCKED, not CLEAN or UNSTABLE")
             self.assertEqual(g.mutations("resolveReviewThread"), [])
         with self.subTest("still BLOCKED after the gate resolved the settled threads"):
             g = self.gate({**unreviewed, **self.merge_states("BLOCKED")})
-            self.assertRefused(g, "GitHub reports the PR BLOCKED, not CLEAN")
+            self.assertRefused(g, "GitHub reports the PR BLOCKED, not CLEAN or UNSTABLE")
             self.assertEqual(len(g.mutations("resolveReviewThread")), 1)
 
     def test_an_unreviewed_head_blocked_by_what_the_gate_clears_merges_once_clean(self):
@@ -492,12 +504,22 @@ class MergeGateTest(unittest.TestCase):
             self.assertMergedUnderO2(g, older)
             self.assertEqual(g.posts(), [RESOLVE_POST])
 
+    def test_the_head_age_comes_from_github_not_the_committer(self):
+        """Security review: the committer date is set by whoever commits, so a
+        backdated commit could skip the wait. The age is read from the head's
+        first GitHub Actions check suite, which GitHub creates on the push."""
+        g = self.gate(self.reviews(review(commit=self.OLD)))
+        ages = [c for c in g.calls if any("/check-suites" in a for a in c)]
+        self.assertEqual(len(ages), 1, g.calls)
+        self.assertTrue(any("select(.app.id == 15368)" in a and ".created_at" in a for a in ages[0]))
+        self.assertEqual([c for c in g.calls if any("committer" in a for a in c)], [])
+
     def test_an_unreviewed_head_needs_its_age_read(self):
-        """The head's committer date decides its age; unreadable refuses."""
+        """When GitHub received the head (its first Actions check suite) decides its age; unreadable refuses."""
         cases = {
-            "29 minutes old": ({"stdout": "2026-11-14T11:31:00Z\n"}, "committed 1740 s ago"),
+            "29 minutes old": ({"stdout": "2026-11-14T11:31:00Z\n"}, "pushed 1740 s ago"),
             "dated in the future": ({"stdout": "2026-11-14T13:00:00Z\n"}, "wait until CodeRabbit"),
-            "no committer date": ({"stdout": "null\n"}, "unreadable time"),
+            "no check suite yet": ({"stdout": "null\n"}, "unreadable time"),
             "an empty answer": ({"stdout": ""}, "unreadable time"),
             "an unreadable commit": ({"exit": 1, "stderr": "HTTP 422: No commit found for SHA"}, "No commit found"),
         }
