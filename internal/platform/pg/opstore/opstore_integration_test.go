@@ -241,7 +241,7 @@ func TestAppendRejectsSeverityLowering(t *testing.T) {
 func TestAppendRejectsEverySeverityLowering(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
-	ctx := context.Background()
+	ctx := pgtest.Context(t) // bounded: every external call has a deadline
 	sevs := []incident.Severity{incident.SevGreen, incident.SevYellow, incident.SevRed}
 	for _, typ := range []incident.EventType{incident.EvClassified, incident.EvSeverityRaised} {
 		for _, from := range sevs {
@@ -292,7 +292,7 @@ func TestAppendRejectsEverySeverityLowering(t *testing.T) {
 func TestAppendRequiresLogicVersionOnClassification(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
-	ctx := context.Background()
+	ctx := pgtest.Context(t) // bounded: every external call has a deadline
 	o, err := s.OpenIncident(ctx, openParams(t))
 	if err != nil {
 		t.Fatal(err)
