@@ -122,7 +122,7 @@ func TestLedgerCheckCoversEveryFixtureNumber(t *testing.T) {
 	patterns := ledgerPhonePatterns()
 	numbers := []string{demoPhone}
 	for _, d := range demoResponders {
-		numbers = append(numbers, d.phone)
+		numbers = append(numbers, d.Phone)
 	}
 	for _, n := range numbers {
 		national := strings.TrimPrefix(n, "+256")
