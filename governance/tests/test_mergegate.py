@@ -521,7 +521,7 @@ class MergeGateTest(unittest.TestCase):
     def test_the_head_age_comes_from_github_not_the_committer(self):
         """Security review: the committer date is set by whoever commits, so a
         backdated commit could skip the wait. The age is read from the head's
-        first GitHub Actions check suite, which GitHub creates on the push."""
+        newest GitHub Actions check suite on the PR's branch, which GitHub creates on the push."""
         g = self.gate(self.reviews(review(commit=self.OLD)))
         ages = [c for c in g.calls if any("/check-suites" in a for a in c)]
         self.assertEqual(len(ages), 1, g.calls)
@@ -530,7 +530,7 @@ class MergeGateTest(unittest.TestCase):
         self.assertEqual([c for c in g.calls if any("committer" in a for a in c)], [])
 
     def test_an_unreviewed_head_needs_its_age_read(self):
-        """When GitHub received the head (its first Actions check suite) decides its age; unreadable refuses."""
+        """When GitHub received the head (its newest Actions check suite on the PR's branch) decides its age; unreadable refuses."""
         cases = {
             "29 minutes old": ({"stdout": "2026-11-14T11:31:00Z\n"}, "pushed 1740 s ago"),
             "dated in the future": ({"stdout": "2026-11-14T13:00:00Z\n"}, "wait until CodeRabbit"),

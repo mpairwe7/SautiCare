@@ -359,8 +359,8 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True, head_ref: st
         elif (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
             unreviewed = f"latest review is of {commit[:7]}"
     if unreviewed:
-        # When GitHub received the push: the head's first check suite from the
-        # Actions app, created by GitHub. The committer date is set by whoever
+        # When GitHub received the push: a check suite from the Actions app,
+        # created by GitHub. The committer date is set by whoever
         # commits, so a backdated commit could skip the wait (security review).
         # Only suites for this PR's head branch, and the newest of them: an
         # older suite for the same SHA on another branch must not make a head
