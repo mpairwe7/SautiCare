@@ -26,7 +26,8 @@ thread is settled, it posts `@coderabbitai resolve` (never while a thread is
 open), waits up to 15 minutes for CodeRabbit to stop requesting changes, and
 reads everything again except the quiet window (CodeRabbit just answered).
 Then it re-reads the head, resolves the settled threads, judges every thread
-and CodeRabbit's review again (a thread now open is reopened, and refuses),
+and CodeRabbit's review again (a thread now open is reopened, and refuses; so
+does a deferred or accepted thread whose last word is not the one first read),
 reads the quiet window again (unless it posted the resolve command), merges
 with `--match-head-commit`, and waits for main's CI on the merge commit.
 Any gh error, timeout, empty or unreadable answer refuses: exit 2, with the
@@ -576,9 +577,12 @@ def acceptance(t: dict) -> str:
     if len(words) != 1 or words[0][0] == 0 or not words[0][2] or not resolved_by_reviewer(words[0][1]["body"]):
         raise Refused(f"--accept: the last word in {url} is not a CodeRabbit reply ending with its own "
                       "\"Review thread resolved.\"; an operator accepts only what CodeRabbit itself resolved")
-    said = " ".join(visible(words[0][1]["body"]).split())
+    cm = words[0][1]
+    said = " ".join(visible(cm["body"]).split())
     quote = said if len(said) <= 240 else said[:237] + "..."
-    return f'{url} accepted by the operator on CodeRabbit\'s own resolution; CodeRabbit: "{quote}"'
+    # The reply and its version, so that a later read can tell whether it is still the one accepted.
+    reply = f'{get(cm, "url", str, url)} ({cm.get("lastEditedAt") or cm["createdAt"]})'
+    return f'{url} accepted by the operator on CodeRabbit\'s own resolution in {reply}; CodeRabbit: "{quote}"'
 
 
 def check_threads(repo: str, pr: int, dry_run: bool, deferrals: dict[int, int]) -> tuple[list[str], list[str]]:
@@ -734,7 +738,7 @@ def main(argv: list[str]) -> int:
                 raise Refused("the head moved during the run; re-run")
             post_resolve(repo, pr)
             say("CodeRabbit no longer requests changes; verifying again")
-            info, to_resolve, deferred, still, unreviewed = verify(repo, pr, expected, deferrals, False, again=head)
+            info, to_resolve, _, still, unreviewed = verify(repo, pr, expected, deferrals, False, again=head)
             if still:
                 raise Refused(f"CodeRabbit requests changes again after `{RESOLVE_COMMAND}`; "
                               "read its latest review, then re-run after the quiet window")
@@ -751,7 +755,11 @@ def main(argv: list[str]) -> int:
         for tid in to_resolve:
             set_resolved(tid, True)
         # GitHub resolves a thread by its ID alone: judge what the writes resolved, as it is now.
-        _, deferred = check_threads(repo, pr, False, deferrals)
+        # A deferred or accepted thread must still end with the word first judged: the operator
+        # named that thread on that reply, not on one CodeRabbit has written since.
+        if check_threads(repo, pr, False, deferrals)[1] != deferred:
+            raise Refused("a deferred or accepted thread has a new last word since the gate first read it; "
+                          "read it, then re-run")
         mine = coderabbit_reviews(repo, pr)
         if requests_changes(mine):
             raise Refused("CodeRabbit requested changes during the run; re-run")

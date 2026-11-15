@@ -730,6 +730,39 @@ class MergeGateTest(unittest.TestCase):
         [merge] = g.merges()
         self.assertTrue(any("accepted by the operator on CodeRabbit's own resolution" in a for a in merge), merge)
 
+    def test_an_acceptance_holds_only_for_the_reply_first_read(self):
+        """PR #20 review: --accept settles the reply the gate read first. A
+        reply CodeRabbit adds or edits after that, even one that ends with its
+        own resolution, was not accepted, and the gate refuses."""
+        resolution = "\n\n---\n\nReview thread resolved." + self.FOOTER
+        long = "`@dev` This finding is addressed. " + "The controls are planned work. " * 9
+        first = self.resolved_thread(long + resolution)
+        nodes = first["comments"]["nodes"]
+        later = {
+            "a reply added": thread("PRRT_9", *nodes, c(CR, "The retry path still fails." + resolution,
+                                                        "2026-11-14T11:59:00Z")),
+            # The edit lies past the record's 240-character quote: only the reply's edit time shows it.
+            "the reply edited": thread("PRRT_9", *nodes[:-1], c(CR, long + "The retry path still fails." + resolution,
+                                                                "2026-11-14T09:20:00Z", "2026-11-14T11:59:00Z", CR)),
+        }
+        for name, t in later.items():
+            with self.subTest(name):
+                g = self.gate({"threads": {"argv": ["api", "graphql", "reviewThreads"], "times": 1,
+                                           **ok(threads_page(first))},
+                               "threads-later": {"argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(t))}},
+                              "--accept", "901")
+                self.assertRefused(g, "since the gate first read it")
+                self.assertEqual(len(g.mutations("resolveReviewThread")), 1, "refused after the writes")
+        with self.subTest("a reply added while CodeRabbit answers the resolve command"):
+            flow = self.reviews_in_turn(requested(), requested(), requested(), requested(APPROVED))
+            g = self.gate({**flow, "threads": {"argv": ["api", "graphql", "reviewThreads"], "times": 1,
+                                               **ok(threads_page(first))},
+                           "threads-later": {"argv": ["api", "graphql", "reviewThreads"],
+                                             **ok(threads_page(later["a reply added"]))}},
+                          "--accept", "901", env={"MERGEGATE_APPROVAL_WAIT": "20"})
+            self.assertRefused(g, "since the gate first read it")
+            self.assertEqual(g.posts(), [RESOLVE_POST])
+
     def test_an_operator_cannot_accept_what_codeRabbit_did_not_resolve(self):
         cases = {
             "an objection after the line": "Review thread resolved.\n\nHowever, one point remains: please fix X.",
