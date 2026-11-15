@@ -194,8 +194,8 @@ def forbidden(call):
 
 class MergeGateTest(unittest.TestCase):
     def gate(self, overrides=None, *args, env=None):
-        rules = clean()
-        rules.update(overrides or {})
+        # An override moves to the end, in the order given: the stub answers with the first matching rule.
+        rules = {k: v for k, v in clean().items() if k not in (overrides or {})} | (overrides or {})
         g = Gate(rules, *args, env=env)
         self.assertEqual([c for c in g.calls if forbidden(c)], [], "the gate never reviews or dismisses a review")
         self.assertLessEqual(len(g.posts()), 1, "the resolve command is posted at most once")
@@ -802,7 +802,10 @@ class MergeGateTest(unittest.TestCase):
         green = self.gate()
         self.assertEqual(green.code, 0, green.err)
         self.assertIn("main's CI passed on bbbbbbb", green.out)
-        self.assertEqual(self.gate(self.run_list(ok([]), r("in_progress"), r("completed", "success"))).code, 0)
+        polled = self.gate(self.run_list(ok([]), r("in_progress"), r("completed", "success")))
+        self.assertEqual(polled.code, 0, polled.err)
+        self.assertEqual(len([c for c in polled.calls if c[:2] == ["run", "list"] and MERGED in c]), 3,
+                         "no run, then a running one, then the finished one")
         cases = {
             "failure": (self.run_list(r("completed", "failure")), {}, "failure"),
             "cancelled": (self.run_list(r("completed", "cancelled")), {}, "cancelled"),
