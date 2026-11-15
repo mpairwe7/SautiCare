@@ -773,9 +773,15 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 10.1: The USSD adapter answers within its budget
 
-**Files:** Modify `internal/platform/africastalking/ussd.go` (`serve`). Test `internal/platform/africastalking/ussd_test.go`.
-- [ ] **Step 1:** Write `TestATAnswersTheVoiceLineWithinTheBudget`, with two cases: the port blocks until its context ends; the port blocks and never returns (it ignores cancellation until the test's cleanup releases it). In each, the reply arrives in under 1 s and is `END` with the configured error text. The audit's mutant M1 (`ussd.go:74`, 60 s) must fail both. Run `go test ./internal/platform/africastalking/ -run Budget -count=1`. Expected: the first case PASSES on `main`; the second FAILS, because `serve` waits for `HandleUSSD` to return.
-- [ ] **Step 2:** In `serve`, call `HandleUSSD` on its own goroutine, which sends its result on a channel buffered for one, and answer with whichever comes first: the result, or the end of the budget's context (then the error text, logged without input or number as today). The call left behind holds the cancelled context, never blocks on its send, and its result is dropped.
+**Files:** Modify `internal/platform/africastalking/ussd.go` (`serve`; `USSDConfig.MaxInFlight`, default 64 when unset, as `MaxBody` and `Budget` default). Test `internal/platform/africastalking/ussd_test.go`.
+
+**Rules:**
+- `serve` calls `HandleUSSD` on its own goroutine, which sends its result on a channel buffered for one, and answers with whichever comes first: the result, or the end of the budget's context. The call left behind holds the cancelled context, never blocks on its send, and its result is dropped.
+- At most `MaxInFlight` calls run at once. A call takes a slot before it starts and gives it back only when `HandleUSSD` returns, not when the reply is sent. So a port that never returns can hold at most `MaxInFlight` goroutines and requests, however many callbacks time out.
+- When every slot is taken, `serve` waits for one until the budget ends. If none frees in time, it does not call the port: it answers `END` with the configured error text, the free voice line, as for any internal error, and logs `ussd intake saturated` with the provider and the session correlation only, never the input or the number.
+
+- [ ] **Step 1:** Write `TestATAnswersTheVoiceLineWithinTheBudget`, with two cases: the port blocks until its context ends; the port blocks and never returns (it ignores cancellation until the test's cleanup releases it). In each, the reply arrives in under 1 s and is `END` with the configured error text. The audit's mutant M1 (`ussd.go:74`, 60 s) must fail both. Write `TestAPortThatNeverReturnsHoldsAtMostMaxInFlightCalls`, with `MaxInFlight` 2 and a port that never returns until released: four callbacks in turn each get `END` with the error text in under 1 s (repeated timeouts), the port is called only twice (overload: the third and fourth never reach it), and once the port is released the next callback reaches it again. Run `go test ./internal/platform/africastalking/ -run 'Budget|MaxInFlight' -count=1`. Expected: the first case PASSES on `main`; the second case and the new test FAIL, because `serve` waits for `HandleUSSD` to return and has no bound.
+- [ ] **Step 2:** Implement the rules. Apply by hand three mutants: the slot given back when the reply is sent, not when the call returns; no bound; the port called when no slot frees. The new test must fail on each.
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `fix(africastalking): the reply arrives within the budget even if the port never returns (EV-10 Task 1; EO-2)`.
 
