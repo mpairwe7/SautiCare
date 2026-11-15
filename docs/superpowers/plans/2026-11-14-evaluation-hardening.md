@@ -785,11 +785,11 @@ From then on every merge goes through `tools/mergegate`.
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `fix(africastalking): the reply arrives within the budget even if the port never returns (EV-10 Task 1; EO-2)`.
 
-### Task 10.2: The poll the binary uses is the poll the test uses
+### Task 10.2: The poll and batch the binary uses are the ones the test uses
 
-**Files:** Modify `internal/dispatch/` (export `const DefaultPoll = time.Second`), `cmd/dispatch-worker/main.go:58`. Test `internal/platform/wiring/dispatch_integration_test.go`.
-- [ ] **Step 1:** Write `TestFirstAlertWithinTenSecondsOfT2`: start `Engine.Run` with `dispatch.DefaultPoll`, and record the red incident only after its first pass has run. `Run`'s first pass is immediate, so an incident recorded before it is alerted at once whatever the poll. A first red incident recorded before `Run` marks the pass: once its T3 is recorded, record the second. The second's T3 − T2, both read from `recorded_at`, is under 10 s; the test waits at most 15 s for that T3. With `DefaultPoll` at 60 s, and at 15 s, it fails. Run `go test -tags integration ./internal/platform/wiring/ -run FirstAlert -count=1`. Expected: PASS.
-- [ ] **Step 2:** Commit `test(dispatch): first alert within 10 s of T2 at the binary's poll (EV-10 Task 2; EO-2)`.
+**Files:** Modify `internal/dispatch/` (export `const DefaultPoll = time.Second` and `const DefaultBatch = 50`), `cmd/dispatch-worker/main.go:58-59`. Test `internal/platform/wiring/dispatch_integration_test.go`.
+- [ ] **Step 1:** Write `TestFirstAlertWithinTenSecondsOfT2`: start `Engine.Run` with `dispatch.DefaultPoll` and `dispatch.DefaultBatch`, and record the measured red incident while the first pass is held open. Three things would let the test pass at any poll: `Run`'s first pass is immediate, so an incident recorded before it is alerted at once; `RunOnce` records T3 while it plans, before the pass's sends end; and `Run` repeats at once after a full batch (`internal/dispatch/engine.go:644`). So a first red incident recorded before `Run` marks the pass, and the test's deliverer is a barrier: it holds that incident's first delivery until the test has seen its T3 and recorded the second red incident. The first pass then claims one incident, fewer than a batch, and ends after the second's T2, so `Run` waits a whole poll before the pass that claims it. The second's T3 − T2, both read from `recorded_at`, is under 10 s; the test waits at most 15 s for that T3. With `DefaultPoll` at 60 s, and at 15 s, it fails. Run `go test -tags integration ./internal/platform/wiring/ -run FirstAlert -count=1`. Expected: PASS.
+- [ ] **Step 2:** Commit `test(dispatch): first alert within 10 s of T2 at the binary's poll and batch (EV-10 Task 2; EO-2)`.
 
 ### Task 10.3: A first-alert histogram and the service-level page
 
