@@ -37,8 +37,8 @@ The test fails when a present or planned path is not a directory, or when a top-
 | `internal/` platform adapters | `internal/platform/` | present | Database (`pg`), telemetry (`metrics`, `logging`), environment, telco and voice adapters; the authentication adapter (OIDC) arrives with M5 |
 | Triage rules | `triage-rules/` | present | The triage rule tables (signed) with the scenarios that test them. Gated by the amendment gate |
 | `db/` operational | `db/operational/` | present | Migrations and sqlc queries |
-| `db/` analytic | `db/analytic/` | present | Meant for the Principal Investigator in CODEOWNERS |
-| `db/` linkage | `db/linkage/` | present | Meant for the Principal Investigator in CODEOWNERS |
+| `db/` analytic | `db/analytic/` | present | Meant for the Principal Investigator in CODEOWNERS (code-owner review not enforced, by the owner's decision O-1 in the evaluation audit) |
+| `db/` linkage | `db/linkage/` | present | Meant for the Principal Investigator in CODEOWNERS (code-owner review not enforced, by the owner's decision O-1 in the evaluation audit) |
 | `db/` audit | `db/audit/` | present | |
 | Console app | `web/console/` | planned (M5) | Roadmap phase 6 |
 | Telephony | `telephony/asterisk/`, `telephony/prompts/` | present | Asterisk dialplan; English and Luganda prompt catalogue |
@@ -63,5 +63,5 @@ The test fails when a present or planned path is not a directory, or when a top-
 |---|---|
 | Module boundaries are enforced by a CI import check | `tools/archcheck/`, run by `scripts/ci/arch.sh`. The allowlist of context-to-context imports is [`tools/archcheck/rules.go`](../../tools/archcheck/rules.go); a new context needs an entry there before its first Go file ([ADR-0002](../adr/ADR-0002-hexagonal-modular-monolith.md)) |
 | Ports and adapters | Contexts declare ports; `internal/platform/` implements them; `cmd/` wires them (spec §4.1) |
-| Code owners | [`.github/CODEOWNERS`](../../.github/CODEOWNERS). Interim: the repository owner holds every path; the comments name the intended owners, among them the emergency-medicine co-investigator for `triage-rules/` and the Principal Investigator for `db/analytic/` |
+| Code owners | [`.github/CODEOWNERS`](../../.github/CODEOWNERS). Interim: the repository owner holds every path; the comments name the intended owners, among them the emergency-medicine co-investigator for `triage-rules/` and the Principal Investigator for `db/analytic/` (code-owner review not enforced, by the owner's decision O-1 in the evaluation audit) |
 | Every requirement maps to a test or drill | [`docs/traceability.md`](../traceability.md), checked by `python3 -m tools.freshness --check` |
