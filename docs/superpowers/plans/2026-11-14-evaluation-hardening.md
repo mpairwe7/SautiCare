@@ -103,7 +103,7 @@ A job that is not required yet (EV-9's Asterisk job, EV-11's mutation job) goes 
 ## Review Focus
 
 1. **The gate meets an answer it cannot read.** Cases: any `gh` call exits non-zero or times out; a JSON body is empty or truncated; GitHub reports `UNKNOWN` mergeability; CodeRabbit was rate-limited and reviewed an older commit. Expected: refuse with the reason, exit 2, write nothing. Tests: Task 1.1 `test_an_unreadable_pr_refuses`, `test_an_unreadable_check_list_refuses`; Task 1.2 `test_a_head_without_a_coderabbit_review_refuses`, `test_a_thread_query_error_refuses`.
-2. **A polite objection.** Cases: CodeRabbit's last word says "looks good, but … remain unverified" or "is addressed; however …"; a stranger replies "ok"; the author resolved a thread over an objection. Expected: the thread is open, it is reopened if resolved, and the merge is refused. Tests: Task 1.2 `test_judge_thread`, `test_open_threads_are_reopened_and_refuse`.
+2. **A polite objection.** Cases: CodeRabbit's last word says "looks good, but … remain unverified" or "is addressed; however …"; a stranger replies "ok"; the author replies "not fixed; will address later" and CodeRabbit has not answered; the author resolved a thread over an objection. Expected: the thread is open, it is reopened if resolved, and the merge is refused. Tests: Task 1.2 `test_judge_thread`, `test_open_threads_are_reopened_and_refuse`.
 3. **A seventh copy of the append function weakens the ratchet by one step.** Expected: a table test fails on every lowering pair, in Go and in SQL. Tests: Task 3.1 `TestNoEventLowersSeverity`; Task 3.2 `TestAppendRejectsEverySeverityLowering`.
 4. **Tier 3's signal is stale, not high.** Cases: intake-gw is down (series absent); no instance leads (all export 0); two dispatch leaders. Expected: a staleness alert fires within 2 minutes. Tests: Task 2.3's `promtool` cases.
 5. **A foreign caller's number in a new message path.** Expected: no rendering of a `pii.Phone`, through any fmt verb, JSON or slog handler, shows a run of digits. Tests: Task 5.2 `TestNoDigitEscapesAnyRendering`.
@@ -143,7 +143,7 @@ From then on every merge goes through `tools/mergegate`.
 
 **Rules:**
 - **PR:** `gh pr view <pr> --repo R --json number,state,isDraft,baseRefName,headRefOid,mergeable,title,author`. Require `state` OPEN, `isDraft` false, `baseRefName` main, `mergeable` MERGEABLE (UNKNOWN refuses with "re-run"), and `headRefOid` matching `^[0-9a-f]{40}$`.
-- **Ruleset:** `gh api repos/R/rules/branches/main`. Require a `required_status_checks` rule whose contexts include every expected name, and a `pull_request` rule with `required_review_thread_resolution: true`. Otherwise refuse: "main protection is missing or weaker than expected: <what>".
+- **Ruleset:** `gh api repos/R/rules/branches/main`. Require a `required_status_checks` rule with `strict_required_status_checks_policy: true` whose contexts include every expected name, and a `pull_request` rule with `required_review_thread_resolution: true`. A rule that is not strict counts as no rule: without it a PR tested against an older `main` stays mergeable. Otherwise refuse: "main protection is missing or weaker than expected: <what>".
 - **`main` is green:** `gh api repos/R/branches/main --jq .commit.sha`, then `gh run list --repo R --branch main --event push --workflow ci --limit 1 --json headSha,status,conclusion`. Require the run's `headSha` to equal `main`'s, `status` completed and `conclusion` success.
 - **Checks:** `gh pr checks <pr> --repo R --json name,bucket`. A non-zero exit refuses (gh exits 8 while checks are pending). Every expected name must appear, and every instance of it must be in bucket `pass`. Any check in bucket `fail`, `cancel` or `pending` refuses, whether expected or not. `skipping` is allowed only for names not in the expected list. No check is exempt by PR number.
 - `required_checks.txt` holds the nine CI job names exactly as ruleset 27260742 lists them.
@@ -151,12 +151,12 @@ From then on every merge goes through `tools/mergegate`.
 **The stub `gh`.** `stub_gh.py` reads a JSON scenario from `STUB_GH_SCENARIO`: a list of `{"argv": [tokens], "exit": int, "stdout": str, "stderr": str}`. It answers with the first rule whose tokens all appear in its own arguments in order, and appends its arguments as one JSON line to `STUB_GH_LOG`. With no matching rule it exits 99 with "stub gh: no rule for …", so an unexpected call fails closed. A helper in the test module builds a clean scenario (every answer a mergeable PR, head `"a" * 40`, title "T", author "dev") that each test overrides one rule of. Tests run `python3 -m tools.mergegate --repo o/r 9999` as a subprocess with `MERGEGATE_GH` set to `<sys.executable> governance/tests/stub_gh.py` and `MERGEGATE_NOW` set to a fixed UTC time.
 
 - [ ] **Step 1: Write the failing tests** in `governance/tests/test_mergegate.py`:
-  - `test_a_clean_pr_merges_with_the_head_pinned`: exit 0; the log holds `["pr", "merge", "9999", "--repo", "o/r", "--merge", "--match-head-commit", "a"*40, "--subject", "Merge PR #9999: T"]`.
+  - `test_a_clean_pr_merges_with_the_head_pinned`: exit 0; the log holds `["pr", "merge", "9999", "--repo", "o/r", "--merge", "--match-head-commit", "a"*40, "--subject", "Merge PR #9999: T", "--body", "Merged by tools/mergegate (ADR-0042) at aaaaaaa."]`.
   - `test_an_unreadable_pr_refuses`: `pr view` exits 1 with "HTTP 502". Exit 2; no `pr merge` in the log.
   - `test_an_unreadable_check_list_refuses`: `pr checks` exits 1 with "no checks reported". Exit 2.
   - `test_a_missing_required_check_refuses`: the check list lacks "governance and living docs". Exit 2, and stderr names it.
   - `test_a_failing_or_pending_check_refuses`, with subtests: an expected check in `fail`; an expected check in `pending`; "GitGuardian Security Checks" in `fail`. Each exits 2.
-  - `test_a_weakened_ruleset_refuses`, with subtests: `[]`; required checks without "unit tests (race)"; `required_review_thread_resolution: false`. Each exits 2.
+  - `test_a_weakened_ruleset_refuses`, with subtests: `[]`; required checks without "unit tests (race)"; `required_review_thread_resolution: false`; `strict_required_status_checks_policy: false`. Each exits 2 with "main protection is missing or weaker than expected".
   - `test_red_main_refuses`, with subtests: `conclusion` failure; the run's `headSha` older than `main`'s. Each exits 2.
   - `test_required_checks_match_the_ci_jobs`: the `name` of every job in `.github/workflows/ci.yml` (read with `yaml.safe_load`) equals the set of lines in `required_checks.txt`, with no duplicates.
 
@@ -172,28 +172,29 @@ From then on every merge goes through `tools/mergegate`.
 **Interfaces:**
 - Consumes Task 1.1's `gh`, `gh_json`, `gh_lines`, `Refused`.
 - Produces:
-  - `REVIEWER = "coderabbitai"` (the GraphQL login; the REST login is `"coderabbitai[bot]"`), `QUIET = timedelta(minutes=5)`.
+  - `REVIEWER = "coderabbitai"` (the GraphQL login; the REST login is `"coderabbitai[bot]"`), `QUIET = timedelta(minutes=30)` (CodeRabbit has answered a reply up to 22 minutes later, on PR #13).
   - `def now() -> datetime`: `MERGEGATE_NOW` parsed as ISO 8601 if set, else UTC now.
   - `def check_review(repo: str, pr: int, head: str) -> None`
-  - `def judge_thread(thread: dict, pr_author: str) -> bool`: True means settled.
-  - `def check_threads(repo: str, pr: int, pr_author: str, dry_run: bool) -> None`
+  - `def judge_thread(thread: dict) -> bool`: True means settled. It takes no PR author: nothing the author writes settles a thread.
+  - `def check_threads(repo: str, pr: int, dry_run: bool, deferrals: dict[int, int]) -> None`, where `deferrals` maps a thread's first comment id to an open issue, from `main`'s repeatable `--defer COMMENT=ISSUE`.
 
 **Rules:**
 - **Review of the head:** `gh api repos/R/pulls/<pr>/reviews --paginate --jq '.[] | {user: .user.login, commit_id, state, submitted_at}'`. Require at least one review by `coderabbitai[bot]` with `commit_id` equal to the head. Of its reviews in state APPROVED or CHANGES_REQUESTED, the latest must not be CHANGES_REQUESTED. A rate-limited push leaves no review of the head, so it refuses.
-- **Quiet window:** the newest of CodeRabbit's inline comments (`pulls/<pr>/comments`) and issue comments (`issues/<pr>/comments`), by `created_at` and `updated_at`, and of its reviews' `submitted_at`, must be at least `QUIET` before `now()`. Otherwise refuse: "CodeRabbit was active <n> s ago; re-run after five quiet minutes". The gate does not wait: the operator re-runs it.
-- **Threads:** a GraphQL query with variables `owner`, `name`, `n` and `after`, paginating `reviewThreads(first: 100, after: $after)` and reading for each thread `id`, `isResolved`, `resolvedBy { login }`, and `comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body url } }`. A thread whose comments have a next page refuses (fail closed rather than judge a partial thread).
-- **`judge_thread`:** a thread is settled when:
-  1. it `isResolved` and `resolvedBy.login == REVIEWER` (CodeRabbit's own verdict); or
-  2. its last comment's author is the PR's author; or
-  3. its last comment's author is `REVIEWER`, its body matches `CONCEDES` and it matches no `OBJECTS`.
+- **Quiet window:** the newest of CodeRabbit's inline comments (`pulls/<pr>/comments`) and issue comments (`issues/<pr>/comments`), by `created_at` and `updated_at`, and of its reviews' `submitted_at`, must be at least `QUIET` before `now()`. Otherwise refuse: "CodeRabbit was active <n> s ago; re-run after 30 quiet minutes (`QUIET`)". The gate does not wait: the operator re-runs it.
+- **Threads:** a GraphQL query with variables `owner`, `name`, `n` and `after`, paginating `reviewThreads(first: 100, after: $after)` and reading for each thread `id`, `isResolved`, and `comments(first: 100) { pageInfo { hasNextPage } nodes { author { login __typename } editor { login __typename } body url createdAt lastEditedAt } }`. A thread whose comments have a next page refuses (fail closed rather than judge a partial thread).
+- **`judge_thread`:** a thread is settled only by CodeRabbit's own visible concession. The thread's latest words (by the later of written and last edited) must all be CodeRabbit's: a `Bot` with login `REVIEWER`, edited by no one else. Each must concede, in one of three ways:
+  1. CodeRabbit's edit of its own finding ends the visible text with its addressed mark (`✅ Addressed in commit <sha>`, `✅ Addressed in the latest update`, `✅ Confirmed as addressed by @<login>`); or
+  2. a reply whose whole visible text fully matches `CONCEDES`; or
+  3. a reply that carries CodeRabbit's withdrawal marker at its top level and matches no `OBJECTS`.
 
-  Every other thread is open: no reply yet, a CodeRabbit word that is not a clear concession, a last word from anyone else (Copilot, a stranger), and a thread resolved by someone else over an objection. Start from `CONCEDES = r"✅ Addressed in commit|Review thread resolved|\bLGTM\b|\b(is|are|has been|have been) (now )?(addressed|resolved)\b"` and `OBJECTS = r"(?i)\b(not|no longer|still|remains?|however|but|unverified|missing|unresolved|rate.limit\w*)\b|please|\?"`; the tests below decide.
+  Visible text leaves out code fences, collapsed sections, HTML comments and quoted lines. Every other thread is open: no reply yet; a reply by the PR's author, whatever it says ("Fixed in abc1234" or "not fixed; will address later"), until CodeRabbit answers it; a CodeRabbit word that is not one whole concession; a last word from anyone else (Copilot, a stranger); and any resolved thread, since resolution is not a word (CodeRabbit's resolve command resolves every thread, objections included). Start from `CONCEDES = r"(✅ Addressed in commits? [0-9a-f]{7,40}( to [0-9a-f]{7,40})?|LGTM|(The finding|This finding|This|It) (is|has been) (now )?(addressed|resolved))[.!]?"` and `OBJECTS = r"(?i)\b(not|no longer|still|remains?|however|but|unverified|missing|unresolved|rate.limit\w*)\b|please|\?"`; the tests below decide.
+- **Deferral:** the only other way to settle a thread, and an explicit one. `--defer COMMENT=ISSUE` names the thread that starts at `discussion_r<COMMENT>` and an issue. The gate accepts it only when the thread's single latest word is a CodeRabbit reply that evaluated the thread (not its finding, not a rate-limit notice) and says that no further change is needed in this PR, and `gh issue view ISSUE --json number,state` reads OPEN. A deferral of a settled thread, of a thread the PR does not have, or in another form refuses. The merge commit's body records each deferral with CodeRabbit's words.
 - **Writes:** a settled thread that is not resolved is resolved with `gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' -f id=<thread id>`. An open thread that is resolved is reopened with the same shape and `unresolveReviewThread`, so GitHub's own rule blocks a merge from the web page too. A failed mutation refuses. `--dry-run` makes no mutation. Any open thread refuses, listing each one's first comment URL.
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_a_head_without_a_coderabbit_review_refuses`, with subtests: no CodeRabbit review; a review of an older commit only (the rate-limited case).
   - `test_changes_requested_refuses`: the latest decisive CodeRabbit review requests changes.
-  - `test_activity_inside_the_quiet_window_refuses`, with subtests: an inline comment created 4 minutes before `MERGEGATE_NOW`; an issue comment updated 1 minute before.
+  - `test_activity_inside_the_quiet_window_refuses`, with subtests: an inline comment created 6 minutes before `MERGEGATE_NOW`; an issue comment updated 1 minute before; a review submitted 29 minutes before. Each exits 2 naming the quiet window. CodeRabbit activity 31 minutes before passes, and so does another account's comment 1 minute before.
   - `test_a_thread_query_error_refuses`: the GraphQL call exits 1 with "HTTP 403: API rate limit exceeded".
   - `test_a_thread_with_a_second_page_of_comments_refuses`.
   - `test_judge_thread`, a table calling `judge_thread` directly:
@@ -201,15 +202,20 @@ From then on every merge goes through `tools/mergegate`.
     | Thread | Expected |
     |---|---|
     | one CodeRabbit comment, unresolved | open |
-    | CodeRabbit, then the author | settled |
+    | CodeRabbit, then the author: "Fixed in abc1234." | open |
+    | CodeRabbit, then the author: "Not fixed; will address later." | open |
     | CodeRabbit last: "this looks good, but the failed-Dial path and the busy branch remain unverified" | open |
     | CodeRabbit last: "The coordinator fallback is addressed; however the coordinator dial is not escalated when every attempt fails." | open |
     | last word "ok" from `someone-else` | open |
-    | resolved, `resolvedBy` coderabbitai | settled |
+    | resolved by CodeRabbit, no concession | open |
     | resolved by the author, CodeRabbit's objection last | open |
     | CodeRabbit last: "✅ Addressed in commit abc1234" | settled |
+    | CodeRabbit's edit of its finding ends with "✅ Addressed in commit abc1234", after the author's reply | settled |
+    | CodeRabbit last: "The timeout is addressed. The retry path fails on cancellation." | open |
   - `test_open_threads_are_reopened_and_refuse`: a thread resolved over an objection. The log holds an `unresolveReviewThread` call carrying `-f id=<its id>`; exit 2.
   - `test_a_failed_resolve_refuses`: the resolve mutation exits 1. Exit 2, and no `pr merge`.
+  - `test_a_deferral_settles_a_thread_and_is_recorded`: CodeRabbit's last reply says "I do not see another code or plan change needed in this PR"; with `--defer <its id>=16` and issue 16 OPEN the gate merges, and the merge body names the thread, `#16` and CodeRabbit's words.
+  - `test_a_deferral_is_explicit_and_checked`, with subtests, each exit 2: no `--defer` (the thread is open); the author had the last word ("Tracked in #16."); CodeRabbit's last reply objects; issue 16 CLOSED or unreadable; a `--defer` naming no thread of the PR; a malformed `--defer`.
   - `test_the_resolve_mutation_passes_the_thread_id`: the logged query contains `$id` and the arguments contain `id=PRRT_1`.
 
   Run `python3 -m unittest governance.tests.test_mergegate -v`. Expected: the new tests FAIL.
@@ -223,7 +229,7 @@ From then on every merge goes through `tools/mergegate`.
 
 **Rules:**
 - After the threads, re-read `headRefOid`. If it moved, refuse: "the head moved during the run".
-- Merge with `gh pr merge <pr> --repo R --merge --match-head-commit <head> --subject "Merge PR #<pr>: <title>"`. A non-zero exit refuses. On success print `mergegate: merged #<pr> at <head[:7]>`.
+- Merge with `gh pr merge <pr> --repo R --merge --match-head-commit <head> --subject "Merge PR #<pr>: <title>" --body "<body>"`. `<body>` is `Merged by tools/mergegate (ADR-0042) at <head[:7]>.`; when threads were deferred, it continues with `Deferred review threads:` and one line for each deferral: its thread URL, its issue and CodeRabbit's quoted words. A non-zero exit refuses. On success print `mergegate: merged #<pr> at <head[:7]>`.
 - The gate never calls `pr comment`, `pr review`, any `dismissals` endpoint, `--admin` or `--auto`.
 - `--dry-run` performs every read, prints `mergegate: would merge #<pr> at <head[:7]>` and returns 0, with no mutation and no merge.
 
@@ -262,7 +268,7 @@ From then on every merge goes through `tools/mergegate`.
 
 **ADR-0042 decides:** the gate's rules (Tasks 1.1 to 1.3); the ruleset as a second gate, and the gate's check of it; CodeRabbit's review required and its status check not; no approval by command; the owner's recorded decision on each PR until a second human can approve (O-1). It supersedes ADR-0014 in part: the compensating control for "the amendment gate cannot protect its own code" is the ruleset plus this gate, and code-owner review stays the owner's decision.
 
-**The how-to:** run the gate with `--dry-run`; read each refusal; answer each open thread in the thread, never by resolving it; re-run after five quiet minutes; then run without `--dry-run` once the owner has recorded the merge decision.
+**The how-to:** run the gate with `--dry-run`; read each refusal; answer each open thread in the thread, never by resolving it; re-run after 30 quiet minutes (`QUIET`); then run without `--dry-run` once the owner has recorded the merge decision.
 
 - [ ] **Step 1:** Write `test_the_docs_name_no_enforced_codeowners_approval`. Run `python3 -m unittest governance.tests.test_mergegate -v`. Expected: FAIL on the four claims.
 - [ ] **Step 2:** Write the docs.
@@ -282,9 +288,10 @@ From then on every merge goes through `tools/mergegate`.
 **Interfaces:**
 - `func runEscalationGauges(ctx context.Context, store escalationAges, g *escalationGauges, every time.Duration)`: the loop at `:177-191`, where `escalationAges` is the store interface `gauges.update` already takes and `escalationGauges` the existing type at `cmd/intake-gw/main.go:217-253` (rename only if the names differ).
 - `func leaderTerm(ctx context.Context, t term) error`: the body of `RunAsLeader`'s callback today. It starts the dispatch watchdog and `runEscalationGauges`, and returns the sweeper's result. `term` holds the store, the gauges, the interval, and the watchdog and the sweeper as `func(context.Context) error`. The callback becomes one line: `return leaderTerm(lctx, t)`.
+- `escalationGauges.update` bounds each read with its own `gaugeReadTimeout` (10 s: under the 15 s interval, so reads do not pile up, and far under the staleness alert's 2 m `for`). At the bound the leader gauge drops to 0, as after a failed read, even if the store never returns, and an answer after the bound is an error, not a fresh value. The term's context has no deadline, so without this a hung read keeps `leader` at 1 and the last age, and neither alert fires.
 
-- [ ] **Step 1:** Write `TestTheLeaderTermExportsTheGauges` in a `synctest` bubble: call `leaderTerm` with a fake store reporting 2 unacknowledged escalations, the oldest 700 s, a sweeper that blocks until its context ends and a watchdog that does nothing; run for one tick; the registry's text holds `sauti_escalation_gauges_leader 1`, `sauti_escalations_unacknowledged 2` and `sauti_escalation_oldest_unacknowledged_seconds 700`; cancel the context; the text holds `sauti_escalation_gauges_leader 0`. Run `go test ./cmd/intake-gw/ -run Gauges -count=1`. Expected: FAIL (no such function).
-- [ ] **Step 2:** Extract both functions. Apply by hand the audit's mutant M3 (the update call removed) and a second mutant (the `runEscalationGauges` call removed from `leaderTerm`): the test must fail on each. Revert. The one-line callback is covered by EV-6 Task 6.1, which reads the gauges from the running binary.
+- [ ] **Step 1:** Write `TestTheLeaderTermExportsTheGauges` in a `synctest` bubble: call `leaderTerm` with a fake store reporting 2 unacknowledged escalations, the oldest 700 s, a sweeper that blocks until its context ends and a watchdog that does nothing; run for one tick; the registry's text holds `sauti_escalation_gauges_leader 1`, `sauti_escalations_unacknowledged 2` and `sauti_escalation_oldest_unacknowledged_seconds 700`; cancel the context; the text holds `sauti_escalation_gauges_leader 0`. Write `TestAHungReadMarksTheGaugesStale`, in a bubble too: after a fresh read, a store whose read blocks and ignores its context; after `gaugeReadTimeout` the text holds `sauti_escalation_gauges_leader 0`; released, the late answer is an error and the gauge stays 0. Run `go test ./cmd/intake-gw/ -run 'Gauges|HungRead' -count=1`. Expected: FAIL (no such function; no bound).
+- [ ] **Step 2:** Extract both functions. Bound `update`. Apply by hand the audit's mutant M3 (the update call removed) and a second mutant (the `runEscalationGauges` call removed from `leaderTerm`): the first test must fail on each. Apply the read's context without a deadline, then the bound without its drop of the leader gauge: the hung-read test must fail on each. Revert. The one-line callback is covered by EV-6 Task 6.1, which reads the gauges from the running binary.
 - [ ] **Step 3:** Run the same command. Expected: PASS.
 - [ ] **Step 4:** Commit `test(intake-gw): the leader term exports the dead-man gauges (EV-2 Task 1; EO-1)`.
 
@@ -486,14 +493,17 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 4.3: What a voice caller hears is inside the signature too
 
-`ivr.Sounds` (`internal/platform/ivr/sounds.go`) names each recording after its screen and the option's value (`sauti/en/danger-yes`), and `TestPromptCatalogueIsComplete` keeps `telephony/prompts/catalogue.yaml` in step, so which code a recording stands for is fixed in code. What can differ is the audio: a "No" recorded as `danger-yes` makes a voice caller give the opposite answer, and Task 4.2's digest cannot see it. The recordings are not in the repository and not yet made.
+`ivr.Sounds` (`internal/platform/ivr/sounds.go`) names each recording after its screen and the option's value (`sauti/en/danger-yes`), and `TestPromptCatalogueIsComplete` keeps `telephony/prompts/catalogue.yaml` in step, so the recording an option's code names is fixed in code. Two things can still differ, and Task 4.2's digest sees neither: the audio (a "No" recorded as `danger-yes` makes a voice caller give the opposite answer), and the digit-to-code mapping, including the shared `press-<digit>` recordings (below). The recordings are not in the repository and not yet made.
 
 **Files:**
-- Modify: `telephony/prompts/catalogue.yaml` (each sound gains `sha256:`, empty until the recording is made and approved; the `-update` path keeps existing digests), `internal/platform/ivr/` (load the catalogue; the check), `triage-rules/tool1.yaml` (each input gains `recordings_sha256: {en: <hex>, lg: <hex>}`), `triage-rules/tool1.yaml.sig`, `config/gated/triage.yaml` (the new `approved_sha256`), `cmd/sautictl/main.go` (`prompts verify`), `cmd/ivr-controller/main.go`.
+- Modify: `telephony/prompts/catalogue.yaml` (each sound gains `sha256:`, empty until the recording is made and approved; the `-update` path keeps existing digests), `internal/platform/ivr/` (load the catalogue; the check), `triage-rules/tool1.yaml` (each input gains `recordings_sha256: {en: <hex>, lg: <hex>}` and `keys: [{digit, code, sound}]`; the bundle gains `digit_recordings_sha256: {en: <hex>, lg: <hex>}`), `triage-rules/tool1.yaml.sig`, `config/gated/triage.yaml` (the new `approved_sha256`), `cmd/sautictl/main.go` (`prompts verify`), `cmd/ivr-controller/main.go`.
 - Test: `internal/platform/ivr/catalogue_test.go`, `cmd/sautictl/` tests, `cmd/ivr-controller/` tests.
+
+**The digit prompts and the key mapping are bound too** (CodeRabbit on #19). Before each option `ivr.Sounds` plays a shared `press-<digit>` recording (`internal/platform/ivr/sounds.go:62`). A `press-1` that says "press 2" sends the caller to the other answer just as surely, and the catalogue test compares ID sets only. So the signed bundle also records, per language, each `press-<digit>` recording's `sha256`, and per input the exact mapping key digit → answer code → recording ID that the IVR plays. `ivr-controller` refuses to start, and `sautictl prompts verify` fails, if the deployed digit recordings or the mapping in code differ from the signed ones. Tests: `TestASwappedDigitRecordingIsRefused` (two `press-` digests exchanged) and `TestASwappedKeyMappingIsRefused` (two options' digits exchanged in code), each failing until the binding covers it.
 
 **Rules:**
 - `recordings_sha256` is `ScreenDigest`'s encoding over the `(sound ID, sha256)` pairs of the screen's question and option recordings, so the clinicians and translators who sign the bundle sign which audio voices which code (P-3).
+- `digit_recordings_sha256` is the same encoding over a language's `(press-<digit> ID, sha256)` pairs. Each input's `keys` lists, in menu order, the digit `ivr.Sounds` announces, the answer code that digit selects (`MenuOption.Digit` to `Value`) and the option's recording ID. ivr-controller rebuilds `keys` from the running machine and compares both with the bundle.
 - ivr-controller compares the catalogue with the bundle at start-up, as intake-gw compares the screens, in every environment. In production it also refuses a `placeholder` catalogue or a screen 2 to 5 recording with no `sha256`.
 - `sautictl prompts verify --catalogue telephony/prompts/catalogue.yaml --sounds <dir>` hashes each file the catalogue names and fails on a missing file or a different digest, naming each. The P0 deployment runs it on the Asterisk host before Asterisk starts (deferred list).
 
@@ -501,17 +511,19 @@ From then on every merge goes through `tools/mergegate`.
   - `TestRecordingsAreBoundToTheBundle`: a catalogue whose `danger-yes` digest differs from the one the bundle binds is refused, naming `danger` and the language; the committed catalogue passes.
   - `TestPromptsVerifyRefusesASwappedRecording`: a temporary sounds directory with the `danger-yes` and `danger-no` files swapped fails, naming both.
   - `TestProductionRefusesUnapprovedRecordings`: a `placeholder` catalogue, and an approved one with an empty `sha256` on a screen 2 to 5 recording, each stop ivr-controller under `SAUTI_ENV=production`.
+  - `TestASwappedDigitRecordingIsRefused`: the `press-1` and `press-2` digests of one language exchanged; refused, naming both.
+  - `TestASwappedKeyMappingIsRefused`: two options' digits exchanged in the machine, so digit 1 selects `no`; refused, naming the screen.
 
-  Run `go test ./internal/platform/ivr/ ./cmd/sautictl/ ./cmd/ivr-controller/ -run 'Recording' -count=1`. Expected: FAIL.
+  Run `go test ./internal/platform/ivr/ ./cmd/sautictl/ ./cmd/ivr-controller/ -run 'Recording|KeyMapping' -count=1`. Expected: FAIL.
 - [ ] **Step 2:** Implement; paste the digests; re-sign; update `approved_sha256`.
 - [ ] **Step 3:** Run the same command and the unit suite. Expected: PASS.
-- [ ] **Step 4:** Commit `feat(ivr): the signed bundle binds the approved recordings (EV-4 Task 3; ES-3)`.
+- [ ] **Step 4:** Commit `feat(ivr): the signed bundle binds the approved recordings and the key mapping (EV-4 Task 3; ES-3)`.
 
 ### Task 4.4: EV-4 docs: ADR-0044
 
 **Files:**
-- Create: `docs/adr/ADR-0044-signed-expectations-and-label-binding.md` (index it; supersedes ADR-0019 in part: expectations are signed clinical data under their own context and keys; the bundle binds questions, labels and recordings; production refuses pending expectations and unapproved recordings; the catch-all's severity is the co-investigators' choice, P-2).
-- Modify: `docs/MODEL_CARD.md` §3 and §4 (the expectations replace the "independent oracle"; screen and recording binding; what production refuses), `governance/ai_risk_manifest.yaml`, `threat-model/threats.yaml`, `docs/traceability.md` (hard constraint 3), `docs/reference/tool1-flow.md`, `docs/reference/cli-sautictl.md`, `docs/runbooks/triage-rule-error.md` (the screen and recording mismatch refusals), the audit's V-05 and V-06 status lines.
+- Create: `docs/adr/ADR-0044-signed-expectations-and-label-binding.md` (index it; supersedes ADR-0019 in part: expectations are signed clinical data under their own context and keys; the bundle binds questions, labels, recordings and the key mapping; production refuses pending expectations and unapproved recordings; the catch-all's severity is the co-investigators' choice, P-2).
+- Modify: `docs/MODEL_CARD.md` §3 and §4 (the expectations replace the "independent oracle"; screen, recording and key-mapping binding; what production refuses), `governance/ai_risk_manifest.yaml`, `threat-model/threats.yaml`, `docs/traceability.md` (hard constraint 3), `docs/reference/tool1-flow.md`, `docs/reference/cli-sautictl.md`, `docs/runbooks/triage-rule-error.md` (the screen and recording mismatch refusals), the audit's V-05 and V-06 status lines.
 - [ ] **Step 1:** Write the docs.
 - [ ] **Step 2:** Run the four gates. Expected: OK.
 - [ ] **Step 3:** Commit `docs: ADR-0044, model card, triage reference (EV-4 Task 4)`. Push, open the PR, gate, and **ask before merging**.
@@ -650,13 +662,14 @@ From then on every merge goes through `tools/mergegate`.
 
 **Files:** Create `governance/record-categories.yaml`, `governance/record-categories-baseline.txt`. Modify `governance/compliance_check.py`. Test `internal/platform/pg/schemas_integration_test.go`, `governance/tests/test_compliance_check.py`.
 
-**Format:** `<store>: {<schema.table>: {retention: <category or PENDING-DPO>, approved_by: <role or pending>, approved_on: <date or null>, columns: [<names>]}}`. The engineers list every table and column; the retention categories stay `PENDING-DPO` until the DPO fills them (D-1). No category name is copied from the confidential records policy.
+**Format:** `<store>: {<schema.table>: {retention: <category or PENDING-DPO>, approved_by: <role or pending>, approved_at: <RFC 3339 UTC timestamp such as 2026-11-20T09:30:00Z, or null>, columns: [<names>]}}`. The engineers list every table and column; the retention categories stay `PENDING-DPO` until the DPO fills them (D-1). No category name is copied from the confidential records policy.
 
 **The baseline.** `record-categories-baseline.txt` lists, one `<store> <schema.table>` or `<store> <schema.table>(<column>)` per line, the tables and columns that exist when EV-7 merges. Pending approval is allowed only for them:
-- A row whose `retention` is `PENDING-DPO`, whose `approved_by` is `pending` or whose `approved_on` is null fails unless its table and each of its columns are in the baseline. So a table or column added after EV-7 fails until its row names a category, the approving role and a date, starting with M3 Part A's four tables.
+- A row whose `retention` is `PENDING-DPO`, whose `approved_by` is `pending` or whose `approved_at` is null fails unless its table and each of its columns are in the baseline. So a table or column added after EV-7 fails until its row names a category, the approving role and a timestamp, starting with M3 Part A's four tables. An `approved_at` that is not an RFC 3339 timestamp in UTC (ending in `Z`) fails, a date-only value such as `2026-11-20` included.
 - The baseline may only shrink. `compliance_check.py` reads the copy at the base commit (`git show <base>:governance/record-categories-baseline.txt`, the base taken from `AMENDGATE_BASE` as the amendment gate takes it) and fails on any line the branch adds; with no copy at the base (EV-7's own PR) it passes. The DPO deletes a line as its row is approved.
+- A row that was approved at the base commit and changes (a column added, removed or renamed, or its retention changed) fails unless its `approved_at` changes to a later timestamp than the base copy's; `approved_by` may stay the same role, since the same DPO approves again. A timestamp, not a date, so two approvals on the same day stay distinct. A new column needs its own recorded approval, not the row's earlier one. `compliance_check.py` compares each row with the base copy of the register, read the way the baseline is. Test: `test_an_approved_row_that_gains_a_column_needs_a_new_approval`.
 - The approval is recorded, not proven: a signed DPO approval waits for the DPO's account and code-owner review (O-1, O-2, D-1).
-- [ ] **Step 1:** Write `TestEveryColumnIsInTheDPORegister`: migrate all five stores and compare `information_schema.columns` with the register in both directions. A migration adding `op.probe(x text)`, and a column removed from the register, must each fail it. Add `test_register_rows_name_a_category_and_an_approval`, `test_a_pending_row_outside_the_baseline_fails` (a pending `op.probe` row fails; the same row with a category, a role and a date passes) and `test_the_baseline_only_shrinks` (a line added against the base copy fails; a line removed passes) to the compliance tests. Run both. Expected: FAIL, then PASS once the register lists today's schema.
+- [ ] **Step 1:** Write `TestEveryColumnIsInTheDPORegister`: migrate all five stores and compare `information_schema.columns` with the register in both directions. A migration adding `op.probe(x text)`, and a column removed from the register, must each fail it. Add `test_register_rows_name_a_category_and_an_approval`, `test_a_pending_row_outside_the_baseline_fails` (a pending `op.probe` row fails; the same row with a category, a role and `approved_at: 2026-11-20T09:30:00Z` passes; with the date-only `approved_at: 2026-11-20`, or the offset time `2026-11-20T12:30:00+03:00`, it fails) and `test_the_baseline_only_shrinks` (a line added against the base copy fails; a line removed passes) to the compliance tests. Run both. Expected: FAIL, then PASS once the register lists today's schema.
 - [ ] **Step 2:** Commit `feat(governance): every column is in the DPO's register (EV-7 Task 3; EG-3)`.
 
 ### Task 7.4: EV-7 docs: ADR-0045
@@ -674,7 +687,9 @@ From then on every merge goes through `tools/mergegate`.
 
 **Files:** Modify `scripts/ci/integration.sh` (also writes `go test -json` to `dist/test-events.json`), `.github/workflows/ci.yml` (the integration job sets up Python from the governance job's pinned steps, runs the governance suite through `tools.freshness.pyevents` and runs the check), `tools/freshness/__init__.py`, `tools/freshness/__main__.py`, `tools/freshness/pointers.py`, `governance/tests/test_freshness.py:110-113`. Create `tools/freshness/pyevents.py`.
 
-**Interfaces:** `python3 -m tools.freshness --ran dist/test-events.json dist/py-test-events.json`. It collects every non-planned pointer from `docs/traceability.md`, `threat-model/threats.yaml` and `governance/ai_risk_manifest.yaml`, maps each Go pointer's file to its package import path, and fails unless that package has an event `{"Action": "pass", "Test": <name>}`. A `skip`, a `fail` or no event fails, naming the pointer. A Python pointer must name a method of a `unittest.TestCase` subclass in a file under `governance/tests/` (checked with `ast`), and must also have a `pass` event, because a method that calls `skipTest` or carries a skip decorator satisfies the `ast` check. `python3 -m tools.freshness.pyevents dist/py-test-events.json` runs `unittest` discovery over `governance/tests` with a `unittest.TestResult` subclass and writes one event per test in `test2json`'s shape: `Action` `pass` only for a success, `skip` for a skip, and `fail` for a failure, an error, a failed subtest, an expected failure or an unexpected success; `Package` the test file's path; `Test` the method name.
+**Interfaces:** `python3 -m tools.freshness --ran dist/test-events.json dist/py-test-events.json`. It collects every non-planned pointer from `docs/traceability.md`, `threat-model/threats.yaml` and `governance/ai_risk_manifest.yaml`, maps each Go pointer's file to its package import path, and fails unless that package has an event `{"Action": "pass", "Test": <name>}` and no `skip` or `fail` event for a subtest under it (`Test` beginning `<name>/`). Test: `test_a_parent_whose_subtests_skip_fails_the_run_check`. A `skip`, a `fail` or no event fails, naming the pointer. A Python pointer must name a method of a `unittest.TestCase` subclass in a file under `governance/tests/` (checked with `ast`), and must also have a `pass` event, because a method that calls `skipTest` or carries a skip decorator satisfies the `ast` check. `python3 -m tools.freshness.pyevents dist/py-test-events.json` runs `unittest` discovery over `governance/tests` with a `unittest.TestResult` subclass and writes one event per test in `test2json`'s shape: `Action` `pass` only for a success, `skip` for a skip, and `fail` for a failure, an error, a failed subtest, an expected failure or an unexpected success; `Package` the test file's path; `Test` the class and method name, `ClassName.test_x`. A Python pointer names the same `ClassName.test_x` form, and the `ast` check rejects a pointer whose method name resolves to more than one `TestCase` method in the file, so two classes with the same method cannot share one result. Test: `test_a_python_pointer_names_its_class`.
+**Migrating the existing Python pointers.** Every Python pointer written before EV-8 names only the method (for example `governance/tests/test_runbooks.py::test_no_stale_escalation_phrases` in `docs/traceability.md`). The same PR rewrites each one to `ClassName.test_x` (here `StaleEscalationPhrasesTest.test_no_stale_escalation_phrases`) in `docs/traceability.md`, `threat-model/threats.yaml` and `governance/ai_risk_manifest.yaml`, before the run check is required. The `ast` check then rejects a Python pointer without its class. Test: `test_a_python_pointer_without_its_class_fails`.
+
 - [ ] **Step 1:** Write `test_a_skipped_test_fails_the_run_check`, `test_a_test_that_did_not_run_fails`, `test_a_method_outside_a_testcase_fails` (replacing the case at `test_freshness.py:110-113`), `test_a_skipped_python_test_fails_the_run_check` (a `TestCase` method that calls `self.skipTest`, run through `pyevents`, fails its pointer) and `test_a_passing_test_satisfies_the_run_check`, each on a small events file. Run `python3 -m unittest governance.tests.test_freshness -v`. Expected: FAIL.
 - [ ] **Step 2:** Implement. The integration script runs `-tags integration ./...`, a superset of the unit tests, so one events file covers both tag sets.
 - [ ] **Step 3:** Run the tests, then `scripts/ci/integration.sh && python3 -m tools.freshness.pyevents dist/py-test-events.json && python3 -m tools.freshness --ran dist/test-events.json dist/py-test-events.json`. Expected: PASS, every pointer passed. Re-create the audit's probes A (a `t.Skip`), B (a commented-out test) and C (a test behind `//go:build drill`), and a fourth, a pointed-to Python test that calls `self.skipTest`, on a scratch branch: each fails the check, naming the pointer.
@@ -758,15 +773,23 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 10.1: The USSD adapter answers within its budget
 
-**Files:** Test `internal/platform/africastalking/ussd_test.go`.
-- [ ] **Step 1:** Write `TestATAnswersTheVoiceLineWithinTheBudget`: the port blocks until its context ends; the reply arrives in under 1 s and is `END` with the configured error text. The audit's mutant M1 (`ussd.go:74`, 60 s) must fail it. Run `go test ./internal/platform/africastalking/ -run Budget -count=1`. Expected: PASS on `main`.
-- [ ] **Step 2:** Commit `test(africastalking): the reply arrives within the budget (EV-10 Task 1; EO-2)`.
+**Files:** Modify `internal/platform/africastalking/ussd.go` (`serve`; `USSDConfig.MaxInFlight`, default 64 when unset, as `MaxBody` and `Budget` default). Test `internal/platform/africastalking/ussd_test.go`.
 
-### Task 10.2: The poll the binary uses is the poll the test uses
+**Rules:**
+- `serve` calls `HandleUSSD` on its own goroutine, which sends its result on a channel buffered for one, and answers with whichever comes first: the result, or the end of the budget's context. The call left behind holds the cancelled context, never blocks on its send, and its result is dropped.
+- At most `MaxInFlight` calls run at once. A call takes a slot before it starts and gives it back only when `HandleUSSD` returns, not when the reply is sent. So a port that never returns can hold at most `MaxInFlight` goroutines and requests, however many callbacks time out.
+- When every slot is taken, `serve` waits for one until the budget ends. If none frees in time, it does not call the port: it answers `END` with the configured error text, the free voice line, as for any internal error, and logs `ussd intake saturated` with the provider and the session correlation only, never the input or the number.
 
-**Files:** Modify `internal/dispatch/` (export `const DefaultPoll = time.Second`), `cmd/dispatch-worker/main.go:58`. Test `internal/platform/wiring/dispatch_integration_test.go`.
-- [ ] **Step 1:** Write `TestFirstAlertWithinTenSecondsOfT2`: `Engine.Run` with `dispatch.DefaultPoll` on a red incident; T3 − T2, both read from `recorded_at`, is under 10 s. With `DefaultPoll` at 60 s, and at 15 s, it fails. Run `go test -tags integration ./internal/platform/wiring/ -run FirstAlert -count=1`. Expected: PASS.
-- [ ] **Step 2:** Commit `test(dispatch): first alert within 10 s of T2 at the binary's poll (EV-10 Task 2; EO-2)`.
+- [ ] **Step 1:** Write `TestATAnswersTheVoiceLineWithinTheBudget`, with two cases: the port blocks until its context ends; the port blocks and never returns (it ignores cancellation until the test's cleanup releases it). In each, the reply arrives in under 1 s and is `END` with the configured error text. The audit's mutant M1 (`ussd.go:74`, 60 s) must fail both. Write `TestAPortThatNeverReturnsHoldsAtMostMaxInFlightCalls`, with `MaxInFlight` 2 and a port that never returns until released: four callbacks in turn each get `END` with the error text in under 1 s (repeated timeouts), the port is called only twice (overload: the third and fourth never reach it), and once the port is released the next callback reaches it again. Run `go test ./internal/platform/africastalking/ -run 'Budget|MaxInFlight' -count=1`. Expected: the first case PASSES on `main`; the second case and the new test FAIL, because `serve` waits for `HandleUSSD` to return and has no bound.
+- [ ] **Step 2:** Implement the rules. Apply by hand three mutants: the slot given back when the reply is sent, not when the call returns; no bound; the port called when no slot frees. The new test must fail on each.
+- [ ] **Step 3:** Run the same command. Expected: PASS.
+- [ ] **Step 4:** Commit `fix(africastalking): the reply arrives within the budget even if the port never returns (EV-10 Task 1; EO-2)`.
+
+### Task 10.2: The poll and batch the binary uses are the ones the test uses
+
+**Files:** Modify `internal/dispatch/` (export `const DefaultPoll = time.Second` and `const DefaultBatch = 50`), `cmd/dispatch-worker/main.go:58-59`. Test `internal/platform/wiring/dispatch_integration_test.go`.
+- [ ] **Step 1:** Write `TestFirstAlertWithinTenSecondsOfT2`: start `Engine.Run` with `dispatch.DefaultPoll` and `dispatch.DefaultBatch`, and record the measured red incident while the first pass is held open. Three things would let the test pass at any poll: `Run`'s first pass is immediate, so an incident recorded before it is alerted at once; `RunOnce` records T3 while it plans, before the pass's sends end; and `Run` repeats at once after a full batch (`internal/dispatch/engine.go:644`). So a first red incident recorded before `Run` marks the pass, and the test's deliverer is a barrier: it holds that incident's first delivery until the test has seen its T3 and recorded the second red incident. The first pass then claims one incident, fewer than a batch, and ends after the second's T2, so `Run` waits a whole poll before the pass that claims it. The second's T3 − T2, both read from `recorded_at`, is under 10 s; the test waits at most 15 s for that T3. With `DefaultPoll` at 60 s, and at 15 s, it fails. Run `go test -tags integration ./internal/platform/wiring/ -run FirstAlert -count=1`. Expected: PASS.
+- [ ] **Step 2:** Commit `test(dispatch): first alert within 10 s of T2 at the binary's poll and batch (EV-10 Task 2; EO-2)`.
 
 ### Task 10.3: A first-alert histogram and the service-level page
 

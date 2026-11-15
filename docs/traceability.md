@@ -1,6 +1,6 @@
 # Traceability matrix
 
-**Type:** Reference (Diátaxis) · **Last updated:** 2026-11-14 (EV-2) · **Checked by:** `python3 -m tools.freshness --check` (every test pointer must name a test function that exists)
+**Type:** Reference (Diátaxis) · **Last updated:** 2026-11-14 (EV-2; edge-case verification) · **Checked by:** `python3 -m tools.freshness --check` (every test pointer must name a test function that exists)
 
 This matrix maps each policy requirement (MVP stack doc, 15 requirements), each of the 14 hard constraints (Build Prompt §3) and each of the 17 scenarios (Build Prompt §16) to the automated test or drill that proves it.
 
@@ -10,6 +10,8 @@ This matrix maps each policy requirement (MVP stack doc, 15 requirements), each 
 - **Planned:** a later milestone delivers it.
 
 Policy documents are cited by section only (they are confidential, ADR-0008).
+
+The 22 edge cases of the Scalable MVP Stack, with the resilience and security failure modes a test can exercise, are mapped case by case in [Edge-case verification](reference/edge-case-verification.md).
 
 ## Policy requirements
 
@@ -147,3 +149,15 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 | No dispatch leader, two, or a term that ends with an error; a failed read of the overdue wakes | `cmd/dispatch-worker/main_test.go::TestTheLeaderGaugeFollowsTheTerm`, `::TestAFailedOverdueReadIsVisible` |
 | Tier 3's signal is stale, not high: intake-gw absent or stopped (stale markers), no instance leading, a failover inside the window; dispatch-worker absent or stopped, no leader or two; an unreadable overdue age; the Watchdog at every evaluation | `build/prometheus/sauti-rules.test.yml` (`promtool test rules`); `governance/tests/test_runbooks.py::test_every_alert_is_tested_firing_and_quiet` |
 | An alert whose runbook is missing or does not name it | `governance/tests/test_runbooks.py::test_every_alert_names_a_runbook_that_exists` |
+
+## Review focus (edge-case verification; [reference](reference/edge-case-verification.md))
+
+| Input class | Proof |
+|---|---|
+| Africa's Talking retries a callback after the first answer (row 4) | `internal/platform/pg/intake_integration_test.go::TestRetriedAnswerReturnsSameScreenNoSecondWrite` |
+| A Luganda screen alone over the operator limit (row 5) | `internal/intake/machine_test.go::TestALugandaScreenOverTheLimitFailsTheGate` |
+| A withheld caller ID on the voice line (row 6) | `internal/platform/ivr/controller_test.go::TestAWithheldNumberStartsTheCallAsUnknown` |
+| The same number calling again and again (row 9) | `internal/intake/service_test.go::TestARepeatCallerIsNeverBlocked` |
+| A responder who loses the accept race on a voice alert (row 11) | `internal/platform/ivr/alerts_test.go::TestALateVoiceAcceptHearsAlreadyTaken` |
+| More incidents than free responders, in protocol mode (row 14) | `internal/dispatch/plan_test.go::TestAnIncidentWithNobodyFreeKeepsWaiting` |
+| A new signed triage bundle while an incident is open (row 16) | `internal/intake/service_test.go::TestAnOpenIncidentKeepsItsLogicVersion` |

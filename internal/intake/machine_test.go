@@ -295,6 +295,24 @@ func TestEveryRenderedScreenFitsLimitAndGSM7(t *testing.T) {
 	}
 }
 
+// A Luganda screen longer than the English one (Scalable MVP Stack, §Edge
+// cases, row 5): the gate renders every screen in every language, so a
+// Luganda text that alone overflows the operator limit fails it and is named.
+func TestALugandaScreenOverTheLimitFailsTheGate(t *testing.T) {
+	b := repoBundle(t)
+	limit := b.Intake.DefaultScreenCharLimit
+	cat := b.Tool1
+	cat.Category.Prompt = config.Text{"en": cat.Category.Prompt["en"], "lg": strings.Repeat("a", limit+1)}
+	m, err := NewMachine(cat, repoGazetteer(t), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = m.CheckScreens(map[string]int{"default": limit})
+	if err == nil || !strings.Contains(err.Error(), string(KindCategory)+"/lg") || strings.Contains(err.Error(), "/en") {
+		t.Fatalf("CheckScreens = %v, want only the Luganda category screen over %d", err, limit)
+	}
+}
+
 func TestNewMachineRejectsTooManyWards(t *testing.T) {
 	g := repoGazetteer(t)
 	for len(g.Wards) < 9 {

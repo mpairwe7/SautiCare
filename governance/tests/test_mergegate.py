@@ -35,7 +35,8 @@ def ok(value, **extra):
 
 def pr(head=HEAD, **over):
     v = {"number": 9999, "state": "OPEN", "isDraft": False, "baseRefName": "main",
-         "headRefOid": head, "mergeable": "MERGEABLE", "title": "T", "author": {"login": "dev"}}
+         "headRefOid": head, "headRefName": "feature", "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "title": "T",
+         "author": {"login": "dev"}}
     v.update(over)
     return v
 
@@ -134,7 +135,7 @@ def clean():
     return {
         "pr-merged": {"argv": ["pr", "view", "mergeCommit"],
                       **ok({"state": "MERGED", "mergeCommit": {"oid": MERGED}})},
-        "pr": {"argv": ["pr", "view", "9999"], **ok(pr())},
+        "pr": {"argv": ["pr", "view", "9999", "number,state"], **ok(pr())},
         "ruleset": {"argv": ["api", "rules/branches/main"], **ok(ruleset())},
         "main": {"argv": ["api", "repos/o/r/branches/main"], **ok({"name": "main", "commit": {"sha": MAIN}})},
         "main-run": {"argv": ["run", "list", "--commit", MAIN],
@@ -143,6 +144,8 @@ def clean():
                       **ok([{"databaseId": 2, "headSha": MERGED, "status": "completed", "conclusion": "success"}])},
         "check-runs": {"argv": ["api", f"commits/{HEAD}/check-runs"], **ok(check_runs())},
         "statuses": {"argv": ["api", f"commits/{HEAD}/status?"], **ok(statuses())},
+        # Read only for a head CodeRabbit has not reviewed (O-2): committed two hours ago.
+        "head-commit": {"argv": ["api", f"repos/o/r/commits/{HEAD}", "--jq"], "stdout": "2026-11-14T10:00:00Z\n"},
         "reviews": {"argv": ["api", "pulls/9999/reviews"], **ok([[review()]])},
         "inline": {"argv": ["api", "pulls/9999/comments"], **ok([[activity()]])},
         "issue-comments": {"argv": ["api", "issues/9999/comments"],
@@ -166,7 +169,7 @@ class Gate:
             log = Path(tmp) / "calls.jsonl"
             scen.write_text(json.dumps(list(rules.values()) if isinstance(rules, dict) else rules))
             e = dict(os.environ, MERGEGATE_GH=f"{shlex.quote(sys.executable)} {shlex.quote(str(STUB))}",
-                     MERGEGATE_NOW=NOW, MERGEGATE_POLL="0", MERGEGATE_APPROVAL_WAIT="0", STUB_GH_SCENARIO=str(scen), STUB_GH_LOG=str(log))
+                     MERGEGATE_NOW=NOW, MERGEGATE_POLL="0", MERGEGATE_APPROVAL_WAIT="0", MERGEGATE_RETRY_WAIT="0", STUB_GH_SCENARIO=str(scen), STUB_GH_LOG=str(log))
             e.update(env or {})
             p = subprocess.run([sys.executable, "-m", "tools.mergegate", "--repo", "o/r", "9999", *args],
                                cwd=ROOT, env=e, capture_output=True, text=True, timeout=30)
@@ -194,8 +197,8 @@ def forbidden(call):
 
 class MergeGateTest(unittest.TestCase):
     def gate(self, overrides=None, *args, env=None):
-        rules = clean()
-        rules.update(overrides or {})
+        # An override moves to the end, in the order given: the stub answers with the first matching rule.
+        rules = {k: v for k, v in clean().items() if k not in (overrides or {})} | (overrides or {})
         g = Gate(rules, *args, env=env)
         self.assertEqual([c for c in g.calls if forbidden(c)], [], "the gate never reviews or dismisses a review")
         self.assertLessEqual(len(g.posts()), 1, "the resolve command is posted at most once")
@@ -218,6 +221,7 @@ class MergeGateTest(unittest.TestCase):
         self.assertEqual(len(merges), 1)
         self.assertEqual(merges[0][:10], ["pr", "merge", "9999", "--repo", "o/r", "--merge",
                                           "--match-head-commit", HEAD, "--subject", "Merge PR #9999: T"])
+        self.assertNotIn("O-2", g.out + merges[0][11])
 
     def test_an_unreadable_pr_refuses(self):
         g = self.gate({"pr": {"argv": ["pr", "view"], "exit": 1, "stderr": "HTTP 502: Bad Gateway"}})
@@ -342,19 +346,219 @@ class MergeGateTest(unittest.TestCase):
     def threads(self, *ts):
         return {"threads": {"argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(*ts))}}
 
-    def test_a_head_without_a_coderabbit_review_refuses(self):
-        cases = {
-            "no CodeRabbit review": [review(user="dev")],
-            "only an older commit reviewed (rate-limited push)": [review(commit="c" * 40)],
-            "the latest review is of an older commit": [review(), review(commit="c" * 40, at="2026-11-14T10:10:00Z")],
-            "a thread reply after the push is not a review of the head": [
-                review(commit="c" * 40), review(at="2026-11-14T10:10:00Z", body="")],
-            "an approval by command is not a review of the head": [
-                review(commit="c" * 40), review(state="APPROVED", at="2026-11-14T10:10:00Z", body="")],
-        }
-        for name, rs in cases.items():
+    # PR #17: an incremental review that finds nothing leaves an empty-body
+    # approval plus the walkthrough's record of the commits it reviewed. A
+    # range CodeRabbit wrote that ends at the full head SHA is its review of
+    # the head; any other range, or one written by anyone else, is not.
+    OLD = "c" * 40
+
+    def summary(self, end, user=CR_REST, start=None, marker="<!-- walkthrough_start -->", prefix="", suffix="", others=()):
+        body = (f"{marker}\n<details><summary>Review details</summary>\n{prefix}Reviewing files that "
+                f"changed from the base of the PR and between {start or self.OLD} and {end}.{suffix}\n</details>")
+        return {"argv": ["api", "issues/9999/comments"],
+                **ok([[{**activity("2026-11-14T09:00:00Z", "2026-11-14T10:05:00Z", user), "body": body}, *others]])}
+
+    def test_a_summary_range_ending_at_the_head_counts_as_its_review(self):
+        g = self.gate({"reviews": {"argv": ["api", "pulls/9999/reviews"],
+                                   **ok([[review(commit=self.OLD),
+                                          review(state="APPROVED", at="2026-11-14T10:10:00Z", body="")]])},
+                       "issue-comments": self.summary(HEAD)})
+        self.assertEqual(g.code, 0, g.err)
+        self.assertEqual(len(g.merges()), 1)
+        self.assertNotIn("O-2", g.out, "a reviewed head is not merged under O-2")
+
+    def test_a_summary_range_needs_a_review_stamped_at_the_head(self):
+        """Without the stamp the head is unreviewed: it merges only under O-2."""
+        g = self.gate({"reviews": {"argv": ["api", "pulls/9999/reviews"], **ok([[review(commit=self.OLD)]])},
+                       "issue-comments": self.summary(HEAD)})
+        self.assertMergedUnderO2(g, "latest review is of ccccccc")
+
+    def test_a_summary_range_that_misses_the_head_does_not_count(self):
+        for name, rule in {"ends at an older commit": self.summary(self.OLD, start="e" * 40),
+                           "a short SHA": self.summary(HEAD[:7]),
+                           "another commit with the head's short SHA": self.summary(HEAD[:7] + "f" * 33),
+                           "written by someone else": self.summary(HEAD, user="dev"),
+                           "not the walkthrough comment": self.summary(HEAD, marker=""),
+                           "inside a quote": self.summary(HEAD, prefix="> "),
+                           "inside a code fence": self.summary(HEAD, prefix="```\n", suffix="\n```"),
+                           "a later CodeRabbit reply quoting a range": self.summary(
+                               self.OLD, start="e" * 40, others=[{**activity("2026-11-14T09:00:00Z", "2026-11-14T10:06:00Z"),
+                                                                 "body": "Reviewing files that changed from the base of the PR "
+                                                                         f"and between {self.OLD} and {HEAD}."}])}.items():
             with self.subTest(name):
-                self.assertRefused(self.gate(self.reviews(*rs)), "CodeRabbit")
+                g = self.gate({"reviews": {"argv": ["api", "pulls/9999/reviews"],
+                                           **ok([[review(commit=self.OLD),
+                                                  review(state="APPROVED", at="2026-11-14T10:10:00Z", body="")]])},
+                               "issue-comments": rule})
+                self.assertMergedUnderO2(g, "latest review is of ccccccc")
+
+    # Owner decision O-2 (2026-11-15): "when no coderabbitai reviews /limits
+    # reached merge pr if mergeable". A head CodeRabbit has not reviewed
+    # merges only when GitHub reports the PR CLEAN and the head is at least
+    # QUIET old; the quiet window, the threads and the checks rule as before.
+
+    def o2_warning(self, reason):
+        return (f"WARNING: CodeRabbit has not reviewed the head aaaaaaa ({reason}); "
+                "merging under owner decision O-2 because GitHub reports the PR mergeable")
+
+    def assertMergedUnderO2(self, g, reason):
+        self.assertEqual(g.code, 0, g.err + g.out)
+        [merge] = g.merges()
+        self.assertIn(self.o2_warning(reason), g.out)
+        self.assertIn(self.o2_warning(reason), merge[merge.index("--body") + 1], "the merge commit records O-2")
+        reads = [c[-1].split(",") for c in g.calls if c[:3] == ["pr", "view", "9999"] and c[-1].startswith("number,")]
+        self.assertTrue(reads and all("mergeStateStatus" in f for f in reads), "gh answers only the fields asked for")
+
+    def merge_states(self, *states):
+        """GitHub's mergeStateStatus at each read of the PR, in turn; the last one from then on."""
+        argv = ["pr", "view", "9999", "number,state"]
+        rules = {f"pr-{i}": {"argv": argv, "times": 1, **ok(pr(mergeStateStatus=s))} for i, s in enumerate(states[:-1])}
+        return {**rules, "pr": {"argv": argv, **ok(pr(mergeStateStatus=states[-1]))}}
+
+    def head_committed(self, at):
+        return {"head-commit": {"argv": ["api", f"repos/o/r/commits/{HEAD}", "--jq"], "stdout": f"{at}\n"}}
+
+    def test_a_head_without_a_coderabbit_review_merges_only_when_clean_and_old(self):
+        """O-2: a head CodeRabbit has not reviewed no longer refuses on that
+        alone. It merges, with the warning, when GitHub reports the PR CLEAN
+        and the head is at least 30 minutes old; otherwise it refuses."""
+        older = "latest review is of ccccccc"
+        cases = {
+            "no CodeRabbit review": ([review(user="dev")], "never reviewed"),
+            "only an older commit reviewed (rate-limited push)": ([review(commit="c" * 40)], older),
+            "the latest review is of an older commit": (
+                [review(), review(commit="c" * 40, at="2026-11-14T10:10:00Z")], older),
+            "a thread reply after the push is not a review of the head": (
+                [review(commit="c" * 40), review(at="2026-11-14T10:10:00Z", body="")], older),
+            "an approval by command is not a review of the head": (
+                [review(commit="c" * 40), review(state="APPROVED", at="2026-11-14T10:10:00Z", body="")], older),
+        }
+        for name, (rs, reason) in cases.items():
+            with self.subTest(name, github="CLEAN", head="2 hours old"):
+                self.assertMergedUnderO2(self.gate(self.reviews(*rs)), reason)
+            with self.subTest(name, github="BLOCKED"):
+                g = self.gate({**self.reviews(*rs), **self.merge_states("BLOCKED")})
+                self.assertRefused(g, f"CodeRabbit has not reviewed the head aaaaaaa ({reason}), "
+                                      "and GitHub reports the PR BLOCKED, not CLEAN")
+            with self.subTest(name, head="29 minutes old"):
+                g = self.gate({**self.reviews(*rs), **self.head_committed("2026-11-14T11:31:00Z")})
+                self.assertRefused(g, "wait until CodeRabbit has had 30 minutes to review")
+        with self.subTest("never reviewed, and no CodeRabbit activity at all"):
+            g = self.gate({**self.reviews(), "inline": {"argv": ["api", "pulls/9999/comments"], **ok([[]])},
+                           "issue-comments": {"argv": ["api", "issues/9999/comments"], **ok([[]])}})
+            self.assertMergedUnderO2(g, "never reviewed")
+
+    def test_an_unreviewed_head_merges_when_only_a_non_required_check_fails(self):
+        """GitHub reports UNSTABLE when only a check outside the pipeline fails
+        (PR #15: GitGuardian). Under O-1 that check only warns, and GitHub itself
+        allows the merge, so under O-2 UNSTABLE is mergeable like CLEAN."""
+        runs = [run(n) for n in EXPECTED] + [run("GitGuardian Security Checks", conclusion="failure", app=46505)]
+        g = self.gate({**self.reviews(review(commit=self.OLD)),
+                       "pr": {"argv": ["pr", "view", "9999", "number,state"], **ok(pr(mergeStateStatus="UNSTABLE"))},
+                       "check-runs": {"argv": ["api", f"commits/{HEAD}/check-runs"], **ok(check_runs(runs))}})
+        self.assertEqual(g.code, 0, g.err + g.out)
+        self.assertEqual(len(g.merges()), 1)
+        self.assertIn("GitGuardian Security Checks: failure (not a required check", g.out + g.err)
+
+    def test_an_unreviewed_head_refuses_unless_github_reports_it_clean(self):
+        """O-2 rests on GitHub's own answer. Anything but CLEAN or BLOCKED
+        refuses before the gate writes anything; BLOCKED refuses once the gate
+        has nothing left to clear, or still reports BLOCKED after clearing it."""
+        unreviewed = self.reviews(review(commit=self.OLD))
+        no_state = {k: v for k, v in pr().items() if k != "mergeStateStatus"}
+        cases = {s: ok(pr(mergeStateStatus=s)) for s in ("BEHIND", "UNKNOWN", "DIRTY", "HAS_HOOKS")}
+        cases.update({"null": ok(pr(mergeStateStatus=None)), "missing": ok(no_state)})
+        for name, answer in cases.items():
+            with self.subTest(name):
+                g = self.gate({**unreviewed, "pr": {"argv": ["pr", "view", "9999", "number,state"], **answer}})
+                self.assertRefused(g, "not CLEAN or UNSTABLE (owner decision O-2)")
+                self.assertEqual(g.mutations("resolveReviewThread"), [], "refused before any write")
+        with self.subTest("BLOCKED, with nothing for the gate to clear"):
+            done = thread("PRRT_1", *SETTLED["comments"]["nodes"], resolved=True)
+            g = self.gate({**unreviewed, **self.merge_states("BLOCKED"), **self.threads(done)})
+            self.assertRefused(g, "GitHub reports the PR BLOCKED, not CLEAN or UNSTABLE")
+            self.assertEqual(g.mutations("resolveReviewThread"), [])
+        with self.subTest("still BLOCKED after the gate resolved the settled threads"):
+            g = self.gate({**unreviewed, **self.merge_states("BLOCKED")})
+            self.assertRefused(g, "GitHub reports the PR BLOCKED, not CLEAN or UNSTABLE")
+            self.assertEqual(len(g.mutations("resolveReviewThread")), 1)
+
+    def test_an_unreviewed_head_blocked_by_what_the_gate_clears_merges_once_clean(self):
+        """GitHub reports BLOCKED while a settled thread is unresolved or
+        CodeRabbit requests changes. The gate clears both as before (it resolves
+        the settled threads; it posts the resolve command once and waits for the
+        approval), then requires CLEAN just before the merge."""
+        older = "latest review is of ccccccc"
+        with self.subTest("a settled thread not yet resolved"):
+            g = self.gate({**self.reviews(review(commit=self.OLD)), **self.merge_states("BLOCKED", "BLOCKED", "CLEAN")})
+            self.assertMergedUnderO2(g, older)
+            [resolve] = g.mutations("resolveReviewThread")
+            pr_reads = [i for i, c in enumerate(g.calls) if c[:3] == ["pr", "view", "9999"] and "--json" in c
+                        and "mergeCommit" not in c[-1]]
+            self.assertLess(g.calls.index(resolve), pr_reads[-1], "GitHub's answer is read again after the writes")
+        with self.subTest("CodeRabbit requests changes: the resolve command, then CLEAN"):
+            asked = review(commit=self.OLD, state="CHANGES_REQUESTED", at="2026-11-14T09:00:00Z")
+            flow = self.reviews_in_turn([asked], [asked], [asked], [asked, APPROVED])
+            g = self.gate({**flow, **self.merge_states("BLOCKED", "BLOCKED", "BLOCKED", "CLEAN")},
+                          env={"MERGEGATE_APPROVAL_WAIT": "20"})
+            self.assertMergedUnderO2(g, older)
+            self.assertEqual(g.posts(), [RESOLVE_POST])
+
+    def test_the_head_age_comes_from_github_not_the_committer(self):
+        """Security review: the committer date is set by whoever commits, so a
+        backdated commit could skip the wait. The age is read from the head's
+        first GitHub Actions check suite, which GitHub creates on the push."""
+        g = self.gate(self.reviews(review(commit=self.OLD)))
+        ages = [c for c in g.calls if any("/check-suites" in a for a in c)]
+        self.assertEqual(len(ages), 1, g.calls)
+        self.assertTrue(any('select(.app.id == 15368 and .head_branch == "feature")' in a
+                            and ".created_at] | max" in a for a in ages[0]), ages[0])
+        self.assertEqual([c for c in g.calls if any("committer" in a for a in c)], [])
+
+    def test_an_unreviewed_head_needs_its_age_read(self):
+        """When GitHub received the head (its first Actions check suite) decides its age; unreadable refuses."""
+        cases = {
+            "29 minutes old": ({"stdout": "2026-11-14T11:31:00Z\n"}, "pushed 1740 s ago"),
+            "dated in the future": ({"stdout": "2026-11-14T13:00:00Z\n"}, "wait until CodeRabbit"),
+            "no check suite yet": ({"stdout": "null\n"}, "unreadable time"),
+            "an empty answer": ({"stdout": ""}, "unreadable time"),
+            "an unreadable commit": ({"exit": 1, "stderr": "HTTP 422: No commit found for SHA"}, "No commit found"),
+        }
+        for name, (answer, reason) in cases.items():
+            with self.subTest(name):
+                g = self.gate({**self.reviews(review(commit=self.OLD)),
+                               "head-commit": {"argv": ["api", f"repos/o/r/commits/{HEAD}", "--jq"], **answer}})
+                self.assertRefused(g, reason)
+        with self.subTest("exactly 30 minutes old"):
+            g = self.gate({**self.reviews(review(commit=self.OLD)), **self.head_committed("2026-11-14T11:30:00Z")})
+            self.assertMergedUnderO2(g, "latest review is of ccccccc")
+
+    def test_an_unreviewed_head_still_needs_quiet_settled_threads_and_passed_checks(self):
+        unreviewed = self.reviews(review(commit=self.OLD))
+        open_ = thread("PRRT_7", c(CR, FINDING, "2026-11-14T09:30:00Z", n=701))
+        failed = [run(n, conclusion="failure" if n == "fuzz smoke" else "success") for n in EXPECTED]
+        cases = {
+            "an open CodeRabbit thread": (self.threads(SETTLED, open_), "discussion_r701"),
+            "CodeRabbit active a minute ago": ({"issue-comments": {"argv": ["api", "issues/9999/comments"],
+                                                                   **ok([[activity(updated="2026-11-14T11:59:00Z")]])}},
+                                               "quiet"),
+            "a required check failed": ({"check-runs": {"argv": ["api", "check-runs"], **ok(check_runs(failed))}},
+                                        "fuzz smoke: failure"),
+        }
+        for name, (over, reason) in cases.items():
+            with self.subTest(name):
+                self.assertRefused(self.gate({**unreviewed, **over}), reason)
+
+    def test_a_reviewed_head_ignores_O2(self):
+        """When CodeRabbit has reviewed the head, nothing changes: GitHub's
+        merge state and the head's age are not read for the decision."""
+        for state in ("BEHIND", "UNKNOWN"):
+            with self.subTest(state):
+                g = self.gate({**self.merge_states(state), **self.head_committed("2026-11-14T11:59:00Z")})
+                self.assertEqual(g.code, 0, g.err + g.out)
+                [merge] = g.merges()
+                self.assertNotIn("O-2", g.out + merge[merge.index("--body") + 1])
+                self.assertEqual([c for c in g.calls if "--jq" in c], [], "the head's age is not read")
 
     def test_an_unreadable_review_list_refuses(self):
         self.assertRefused(self.gate({"reviews": {"argv": ["api", "pulls/9999/reviews"], "exit": 1,
@@ -502,6 +706,13 @@ class MergeGateTest(unittest.TestCase):
             ("addressed; however ...",
              thread("T", finding, c(CR, "The coordinator fallback is addressed; however the coordinator dial is "
                                         "not escalated when every attempt fails.", t1)), False),
+            ("a partial concession: one part addressed, another fails",
+             thread("T", finding, c(CR, "The timeout is addressed. The retry path fails on cancellation.", t1)), False),
+            ("a whole-finding verdict, then a remaining defect",
+             thread("T", finding, c(CR, "The finding is addressed. The retry path fails on cancellation.", t1)), False),
+            ("CodeRabbit's resolution footer under a new request (PR #15's shape)",
+             thread("T", finding, c(CR, "It fixes this finding. Line 358 re-enables the button early.\n\n"
+                                        "Review thread resolved.", t1)), False),
             ("a stranger's ok", thread("T", finding, c("someone-else", "ok", t1)), False),
             ("resolved by CodeRabbit is not a verdict (the resolve command resolves every thread)",
              thread("T", finding, resolved=True), False),
@@ -648,9 +859,17 @@ class MergeGateTest(unittest.TestCase):
                 self.assertRefused(self.gate({**self.threads(SETTLED, DEFERRABLE), **over}, *args), reason)
         conceded = thread("PRRT_6", c(CR, FINDING, "2026-11-14T09:30:00Z", n=601),
                           c(CR, "✅ Addressed in commit abc1234", "2026-11-14T09:40:00Z"))
+        def answered(n, said):
+            return thread(f"PRRT_{n}", c(CR, FINDING, "2026-11-14T09:30:00Z", n=n),
+                          c("dev", "Tracked in #16.", "2026-11-14T09:40:00Z"), c(CR, said, "2026-11-14T09:50:00Z"))
+        no_consent = "does not say that no further change is needed in this PR"
         for name, t, n, reason in (("the author had the last word", author_last, 301, "not a CodeRabbit reply"),
                                    ("the last word is a rate-limit notice", limited, 401, "not a CodeRabbit reply"),
-                                   ("the thread is already settled", conceded, 601, "already settled")):
+                                   ("the thread is already settled", conceded, 601, "already settled"),
+                                   ("CodeRabbit objects", answered(1001, "`@dev` Please fix this before merging."),
+                                    1001, no_consent),
+                                   ("CodeRabbit gives no verdict", answered(1002, "`@dev` The staging drill remains "
+                                                                            "a go-live gate."), 1002, no_consent)):
             with self.subTest(name):
                 g = self.gate(self.threads(t), "--defer", f"{n}=16")
                 self.assertRefused(g, f"discussion_r{n}")
@@ -688,10 +907,87 @@ class MergeGateTest(unittest.TestCase):
             self.assertRefused(g, "the head moved during the run")
             self.assertEqual(g.posts(), [])
 
-    def test_a_refused_merge_refuses(self):
-        g = self.gate({"merge": {"argv": ["pr", "merge", "--match-head-commit"], "exit": 1, "stderr": "Head branch was modified"}})
+    def test_the_threads_and_the_review_are_judged_again_after_the_resolve_writes(self):
+        """GitHub resolves a thread by its ID alone, so a word added after the
+        first read would be resolved unread. The gate reads the threads and
+        CodeRabbit's review again after its writes, reopens a thread that is
+        now open, and refuses."""
+        g = self.gate()
+        reads = [i for i, c in enumerate(g.calls) if any("reviewThreads(" in a for a in c)]
+        [resolve] = [g.calls.index(c) for c in g.mutations("resolveReviewThread")]
+        self.assertLess(resolve, reads[-1], "the threads are read again after the resolve")
+        self.assertLess(reads[-1], g.calls.index(g.merges()[0]), "and before the merge")
+        objected = thread("PRRT_1", *SETTLED["comments"]["nodes"],
+                          c("dev", "The retry path still fails on cancellation.", "2026-11-14T11:59:00Z"),
+                          resolved=True)
+        g = self.gate({"threads": {"argv": ["api", "graphql", "reviewThreads"], "times": 1,
+                                   **ok(threads_page(SETTLED))},
+                       "threads-after": {"argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(objected))}})
+        self.assertRefused(g, "discussion_r101")
+        self.assertEqual(len(g.mutations("resolveReviewThread")), 1)
+        [reopened] = g.mutations("unresolveReviewThread")
+        self.assertIn("id=PRRT_1", reopened)
+        with self.subTest("CodeRabbit requests changes after the first read"):
+            g = self.gate(self.reviews_in_turn(
+                [review()], [review(), review(state="CHANGES_REQUESTED", at="2026-11-14T11:59:30Z")]))
+            self.assertRefused(g, "CodeRabbit requested changes during the run")
+
+    def test_a_failed_merge_command_is_reconciled_with_github(self):
+        """A merge command that fails, or whose answer is lost, may still have
+        merged: GitHub's own state of the PR decides the exit code."""
+        def failed(stderr):
+            return {"merge": {"argv": ["pr", "merge", "--match-head-commit"], "exit": 1, "stderr": stderr}}
+        still_open = {"pr-merged": {"argv": ["pr", "view", "mergeCommit"], **ok({"state": "OPEN", "mergeCommit": None})}}
+        unreadable = {"pr-merged": {"argv": ["pr", "view", "mergeCommit"], "exit": 1, "stderr": "HTTP 502"}}
+        cases = {
+            "GitHub refused it: refused": ({**failed("Head branch was modified"), **still_open}, 2,
+                                           "REFUSED: gh pr merge"),
+            "the answer was lost, and GitHub reports it open: refused": ({**failed(self.NET), **still_open}, 2,
+                                                                         "REFUSED: gh pr merge"),
+            "the answer was lost, but GitHub reports it merged: main's CI is verified": (
+                failed(self.NET), 0, "main's CI passed on bbbbbbb"),
+            "the answer was lost, and the PR is unreadable: it may have merged": (
+                {**failed(self.NET), **unreadable}, 3, "MAY HAVE MERGED"),
+        }
+        for name, (over, code, text) in cases.items():
+            with self.subTest(name):
+                g = self.gate(over)
+                self.assertEqual(g.code, code, g.err + g.out)
+                self.assertEqual(len(g.merges()), 1, "a merge command is never resent")
+                self.assertIn(text, g.err + g.out)
+
+    # A network blip against api.github.com (seen on 2026-11-14: "error
+    # connecting to api.github.com", "i/o timeout") retries the same read,
+    # bounded; it refuses once the retries run out, and never retries a write.
+    NET = "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n"
+
+    def blip(self, times=None, argv=("pr", "view", "9999")):
+        rule = {"argv": list(argv), "exit": 1, "stderr": self.NET}
+        if times is not None:
+            rule["times"] = times
+        return [rule, *clean().values()]
+
+    def test_a_transient_read_error_is_retried(self):
+        g = Gate(self.blip(times=2), env={"MERGEGATE_RETRY_WAIT": "0"})
+        self.assertEqual(g.code, 0, g.err)
+        self.assertEqual(len(g.merges()), 1)
+
+    def test_a_persistent_network_error_refuses(self):
+        g = Gate(self.blip(), env={"MERGEGATE_RETRY_WAIT": "0", "MERGEGATE_RETRIES": "3"})
         self.assertEqual(g.code, 2, g.err)
-        self.assertIn("Head branch was modified", g.err)
+        self.assertEqual(g.merges(), [])
+        self.assertEqual(len([c for c in g.calls if c[:3] == ["pr", "view", "9999"]]), 4, "one try and three retries")
+        self.assertIn("error connecting to api.github.com", g.err)
+
+    def test_a_non_network_error_is_not_retried(self):
+        rules = [{"argv": ["pr", "view", "9999"], "exit": 1, "stderr": "HTTP 404: Not Found"}, *clean().values()]
+        g = Gate(rules, env={"MERGEGATE_RETRY_WAIT": "0"})
+        self.assertEqual(g.code, 2, g.err)
+        self.assertEqual(len([c for c in g.calls if c[:3] == ["pr", "view", "9999"]]), 1)
+
+    def test_a_write_is_never_retried(self):
+        g = Gate(self.blip(argv=("pr", "merge", "--match-head-commit")), env={"MERGEGATE_RETRY_WAIT": "0"})
+        self.assertEqual(len(g.merges()), 1, "a merge whose answer was lost may have happened: never resent")
 
     def test_dry_run_writes_nothing(self):
         g = self.gate(None, "--dry-run")
@@ -711,6 +1007,18 @@ class MergeGateTest(unittest.TestCase):
             self.assertIn("would merge #9999 at aaaaaaa", g.out)
             self.assertEqual(g.posts(), [])
             self.assertEqual(g.merges(), [])
+        with self.subTest("an unreviewed head: it prints the O-2 warning"):
+            g = self.gate(self.reviews(review(commit=self.OLD)), "--dry-run")
+            self.assertEqual(g.code, 0, g.err + g.out)
+            self.assertIn(self.o2_warning("latest review is of ccccccc"), g.out)
+            self.assertIn("would merge #9999 at aaaaaaa", g.out)
+            self.assertEqual([c for c in g.calls if any(a.startswith("query=mutation") for a in c)], [])
+        with self.subTest("an unreviewed head GitHub reports BLOCKED: CLEAN is needed after the writes"):
+            g = self.gate({**self.reviews(review(commit=self.OLD)), **self.merge_states("BLOCKED")}, "--dry-run")
+            self.assertEqual(g.code, 0, g.err + g.out)
+            self.assertIn("only if GitHub then reports it CLEAN", g.out)
+            self.assertNotIn(self.o2_warning("latest review is of ccccccc"), g.out)
+            self.assertEqual([c for c in g.calls if any(a.startswith("query=mutation") for a in c)], [])
 
     def run_list(self, *answers):
         rules = {}
@@ -724,7 +1032,10 @@ class MergeGateTest(unittest.TestCase):
         green = self.gate()
         self.assertEqual(green.code, 0, green.err)
         self.assertIn("main's CI passed on bbbbbbb", green.out)
-        self.assertEqual(self.gate(self.run_list(ok([]), r("in_progress"), r("completed", "success"))).code, 0)
+        polled = self.gate(self.run_list(ok([]), r("in_progress"), r("completed", "success")))
+        self.assertEqual(polled.code, 0, polled.err)
+        self.assertEqual(len([c for c in polled.calls if c[:2] == ["run", "list"] and MERGED in c]), 3,
+                         "no run, then a running one, then the finished one")
         cases = {
             "failure": (self.run_list(r("completed", "failure")), {}, "failure"),
             "cancelled": (self.run_list(r("completed", "cancelled")), {}, "cancelled"),

@@ -12,21 +12,29 @@ evaluation audit V-02).
     ruleset names; any other check or status that failed or is pending is
     printed as a WARNING and does not block (owner decision O-1);
   * CodeRabbit's latest review is of the head commit, and CodeRabbit has
-    been quiet for QUIET;
+    been quiet for QUIET. If CodeRabbit has not reviewed the head (its quota
+    is spent), owner decision O-2 lets the gate go on only when the head is
+    at least QUIET old and GitHub reports the PR CLEAN just before the merge
+    (BLOCKED only until the gate's own writes clear it); it prints a WARNING
+    and the merge commit records it;
   * every review thread is settled by its last word: CodeRabbit's, and a
     concession; or it is deferred explicitly (--defer) to an open issue,
-    on CodeRabbit's own last word, and the merge commit records it.
+    on CodeRabbit's own last word that no further change is needed in this
+    PR, and the merge commit records it.
 If CodeRabbit's latest decisive review still requests changes once every
 thread is settled, it posts `@coderabbitai resolve` (never while a thread is
 open), waits up to 15 minutes for CodeRabbit to stop requesting changes, and
 reads everything again except the quiet window (CodeRabbit just answered).
-Then it re-reads the head, resolves the settled threads, merges with
-`--match-head-commit`, and waits for main's CI on the merge commit.
+Then it re-reads the head, resolves the settled threads, judges every thread
+and CodeRabbit's review again (a thread now open is reopened, and refuses),
+merges with `--match-head-commit`, and waits for main's CI on the merge commit.
 Any gh error, timeout, empty or unreadable answer refuses: exit 2, with the
 reason on stderr, and nothing merged. Exit 0: merged and main's CI passed on
 the merge commit (or, with --dry-run, every read passed and nothing was
 written). Exit 3: merged, but main's CI on the merge commit failed or could
-not be confirmed. It never reviews or dismisses a review, and the resolve
+not be confirmed. If the merge command itself fails, GitHub's state of the
+PR decides: open is exit 2, merged goes on to main's CI, and unreadable is
+exit 3 (MAY HAVE MERGED). It never reviews or dismisses a review, and the resolve
 command is the only comment it posts.
 """
 import argparse
@@ -46,6 +54,7 @@ REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 CHECKS_FILE = Path(__file__).with_name("required_checks.txt")
 REVIEWER = "coderabbitai"            # CodeRabbit's login in GraphQL, as a Bot
 REVIEWER_REST = "coderabbitai[bot]"  # and in REST
+ACTIONS_APP = 15368                  # GitHub Actions, the app main's ruleset names for every required check
 RESOLVE_COMMAND = "@coderabbitai resolve"
 # CodeRabbit answers a reply up to 22 minutes later (PR #13: 1324 s), often
 # after first marking the finding addressed; its last word must be final.
@@ -55,8 +64,12 @@ QUIET = timedelta(minutes=30)
 MARKED = re.compile(r"✅ (Addressed in commits? [0-9a-f]{7,40}( to [0-9a-f]{7,40})?|Addressed in the latest update"
                     r"|Confirmed as addressed by @[\w-]+)")
 WITHDRAWN = "<!-- <review_comment_withdrawn> -->"  # counts only at the top level of a reply
-CONCEDES = re.compile(r"✅ Addressed in commit|Review thread resolved|\bLGTM\b"
-                      r"|\b(is|are|has been|have been) (now )?(addressed|resolved)\b")
+# A reply concedes only when its whole visible text is one verdict on the whole
+# finding. A clause inside longer prose is not: CodeRabbit concedes one part and
+# raises another in the same reply (PRs #11, #14, #15), and its "Review thread
+# resolved." footer accompanies those replies too.
+CONCEDES = re.compile(r"(✅ Addressed in commits? [0-9a-f]{7,40}( to [0-9a-f]{7,40})?|LGTM"
+                      r"|(The finding|This finding|This|It) (is|has been) (now )?(addressed|resolved))[.!]?")
 OBJECTS = re.compile(r"(?i)\b(not|no longer|still|remains?|however|but|unverified|missing|unresolved"
                      r"|rate.limit\w*)\b|please|\?")
 # What a reader does not see as the comment's own word: code fences (an
@@ -70,6 +83,10 @@ COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
 # qualifier gone.
 CODE_OWNER_REVIEW_ENFORCED = False
 DEFER = re.compile(r"^(\d+)=(\d+)$")
+# CodeRabbit's consent to a deferral, as it wrote it on PR #14: "I do not see
+# another code or plan change needed in this PR".
+CONSENTS = re.compile(r"(?i)\b(I do not see (another|any)|no (further|other|more)) ([\w-]+ ){0,3}"
+                      r"change (is )?needed in this PR\b")
 THREADS = """query($owner: String!, $name: String!, $n: Int!, $after: String) {
   repository(owner: $owner, name: $name) { pullRequest(number: $n) {
     reviewThreads(first: 100, after: $after) {
@@ -90,19 +107,36 @@ def _show(args) -> str:
     return " ".join(a if len(a) <= 60 else a[:57] + "..." for a in args)
 
 
+# A network blip against api.github.com (2026-11-14). The same read is retried,
+# bounded; a write never is, because a lost answer may mean it happened.
+TRANSIENT = re.compile(r"error connecting to api\.github\.com|i/o timeout|TLS handshake timeout"
+                       r"|connection reset by peer|unexpected EOF|HTTP 50[234]")
+
+
+def _is_write(args: tuple[str, ...]) -> bool:
+    return args[:2] in (("pr", "merge"), ("pr", "comment")) or any(a.startswith("query=mutation") for a in args)
+
+
 def gh(*args: str) -> str:
     """Run gh; any failure to get a clean answer refuses."""
     cmd = shlex.split(os.environ.get("MERGEGATE_GH", "gh")) + list(args)
     timeout = float(os.environ.get("MERGEGATE_TIMEOUT", "120"))
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise Refused(f"gh {_show(args)}: timed out after {timeout:g} s") from None
-    except OSError as e:
-        raise Refused(f"gh {_show(args)}: could not run: {e}") from None
-    if p.returncode != 0:
+    retries = 0 if _is_write(args) else int(os.environ.get("MERGEGATE_RETRIES", "4"))
+    wait = float(os.environ.get("MERGEGATE_RETRY_WAIT", "10"))
+    for attempt in range(retries + 1):
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise Refused(f"gh {_show(args)}: timed out after {timeout:g} s") from None
+        except OSError as e:
+            raise Refused(f"gh {_show(args)}: could not run: {e}") from None
+        if p.returncode == 0:
+            return p.stdout
+        if attempt < retries and TRANSIENT.search(p.stderr):
+            time.sleep(wait * (attempt + 1))
+            continue
         raise Refused(f"gh {_show(args)}: exit {p.returncode}: {p.stderr.strip() or '(no stderr)'}")
-    return p.stdout
+    raise AssertionError("unreachable")
 
 
 def gh_json(*args: str) -> Any:
@@ -163,7 +197,7 @@ def expected_checks() -> list[str]:
 
 def check_pr(repo: str, pr: int) -> dict:
     v = gh_json("pr", "view", str(pr), "--repo", repo, "--json",
-                "number,state,isDraft,baseRefName,headRefOid,mergeable,title,author")
+                "number,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,title,author")
     what = f"PR #{pr}"
     if get(v, "number", int, what) != pr:
         raise Refused(f"{what}: GitHub answered for another PR")
@@ -181,8 +215,9 @@ def check_pr(repo: str, pr: int) -> dict:
     head = get(v, "headRefOid", str, what)
     if not SHA.match(head):
         raise Refused(f"{what}: the head commit is unreadable ({head!r})")
-    return {"head": head, "title": get(v, "title", str, what),
-            "author": get(get(v, "author", dict, what), "login", str, what)}
+    return {"head": head, "head_ref": get(v, "headRefName", str, what), "title": get(v, "title", str, what),
+            "author": get(get(v, "author", dict, what), "login", str, what),
+            "merge_state": v.get("mergeStateStatus")}  # judged only under O-2
 
 
 def check_ruleset(repo: str, expected: list[str]) -> dict[str, Any]:
@@ -297,30 +332,84 @@ def requests_changes(mine: list[dict]) -> bool:
     return bool(decisive) and decisive[-1] == "CHANGES_REQUESTED"
 
 
-def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> bool:
-    """CodeRabbit's latest review is of head, and (if quiet) it has been
-    quiet for QUIET. Returns whether its latest decisive review requests
-    changes."""
+def check_review(repo: str, pr: int, head: str, quiet: bool = True, head_ref: str = "") -> tuple[bool, str | None]:
+    """Whether CodeRabbit's latest review is of head, and (if quiet) that it
+    has been quiet for QUIET. A head it has not reviewed must be at least
+    QUIET old by when GitHub received it (O-2), so the gate never races a review
+    that has just started. Returns whether its latest decisive review
+    requests changes, and why the head is unreviewed (None if reviewed)."""
     mine = coderabbit_reviews(repo, pr)
     # A thread reply or a command approval is a review with an empty body,
     # stamped with whatever the head was: it is not a review of the code.
     real = [r for r in mine if visible(get(r, "body", str, "a CodeRabbit review")).strip()]
-    if not real:
-        raise Refused(f"CodeRabbit has not reviewed PR #{pr}")
-    if (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
-        raise Refused(f"CodeRabbit's latest review is of {commit[:7]}, not the head {head[:7]} "
-                      "(rate-limited or not reviewed yet); re-run once it has reviewed the head")
+    unreviewed = None
+    if not summary_reviewed(repo, pr, head, mine):
+        if not real:
+            unreviewed = "never reviewed"
+        elif (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
+            unreviewed = f"latest review is of {commit[:7]}"
+    if unreviewed:
+        # When GitHub received the push: the head's first check suite from the
+        # Actions app, created by GitHub. The committer date is set by whoever
+        # commits, so a backdated commit could skip the wait (security review).
+        # Only suites for this PR's head branch, and the newest of them: an
+        # older suite for the same SHA on another branch must not make a head
+        # that just became this PR's look old (security review).
+        pushed = when(gh("api", f"repos/{repo}/commits/{head}/check-suites?per_page=100", "--jq",
+                         f"[.check_suites[] | select(.app.id == {ACTIONS_APP} and .head_branch == "
+                         f"{json.dumps(head_ref)}) | .created_at] | max").strip())
+        if (age := now() - pushed) < QUIET:
+            raise Refused(f"CodeRabbit has not reviewed the head {head[:7]} ({unreviewed}), pushed "
+                          f"{int(age.total_seconds())} s ago; wait until CodeRabbit has had "
+                          f"{int(QUIET.total_seconds() // 60)} minutes to review")
     if not quiet:
-        return requests_changes(mine)
+        return requests_changes(mine), unreviewed
     times = [when(r["submitted_at"]) for r in mine]
     for path in (f"repos/{repo}/pulls/{pr}/comments?per_page=100", f"repos/{repo}/issues/{pr}/comments?per_page=100"):
         for cm in items(path):
             if login(cm) == REVIEWER_REST:
                 times += [when(cm.get("created_at")), when(cm.get("updated_at"))]
-    if (ago := now() - max(times)) < QUIET:
+    # Only an unreviewed head can have no CodeRabbit activity at all: then it has been quiet.
+    if times and (ago := now() - max(times)) < QUIET:
         raise Refused(f"CodeRabbit was active {int(ago.total_seconds())} s ago; "
                       f"re-run after {int(QUIET.total_seconds() // 60)} quiet minutes")
-    return requests_changes(mine)
+    return requests_changes(mine), unreviewed
+
+
+def check_mergeable(info: dict, unreviewed: str, allowed: tuple[str, ...] = ("CLEAN", "UNSTABLE")) -> None:
+    """Owner decision O-2: an unreviewed head merges only if GitHub reports
+    the PR mergeable: CLEAN, or UNSTABLE (a check outside the pipeline
+    failed; the required checks were verified above, and O-1 lets it warn). BLOCKED is allowed before the gate's writes, which clear
+    what blocks it: a request for changes, or settled threads unresolved."""
+    if (state := info["merge_state"]) not in allowed:
+        raise Refused(f"CodeRabbit has not reviewed the head {info['head'][:7]} ({unreviewed}), and GitHub "
+                      f"reports the PR {state or 'with no merge state'}, not CLEAN or UNSTABLE (owner decision O-2)")
+
+
+def o2_warning(head: str, unreviewed: str) -> str:
+    return (f"WARNING: CodeRabbit has not reviewed the head {head[:7]} ({unreviewed}); "
+            "merging under owner decision O-2 because GitHub reports the PR mergeable")
+
+
+WALKTHROUGH = "<!-- walkthrough_start -->"
+REVIEWED_RANGE = re.compile(r"^Reviewing files that changed from the base of the PR and "
+                            r"between ([0-9a-f]{40}) and ([0-9a-f]{40})\.[ \t]*$", re.M)
+
+
+def summary_reviewed(repo: str, pr: int, head: str, reviews: list[dict]) -> bool:
+    """CodeRabbit's walkthrough records the commits it reviewed. An incremental
+    review that finds nothing leaves only that record and an empty-body review
+    stamped at the head (PR #17). It counts as a review of the head only when:
+    the latest CodeRabbit walkthrough comment's own sentence, outside code
+    fences and not quoted, records a range ending at the full head SHA, and a
+    CodeRabbit review is stamped at the head to corroborate it."""
+    walks = [cm for cm in items(f"repos/{repo}/issues/{pr}/comments?per_page=100")
+             if login(cm) == REVIEWER_REST and isinstance(cm.get("body"), str) and WALKTHROUGH in cm["body"]]
+    if not walks:
+        return False
+    # The sentence is anchored to the start of its line, so a quoted copy ("> …") never matches.
+    ranges = REVIEWED_RANGE.findall(FENCE.sub("", max(walks, key=lambda cm: when(cm.get("updated_at")))["body"]))
+    return bool(ranges) and ranges[-1][1] == head and any(r.get("commit_id") == head for r in reviews)
 
 
 def visible(body: str, keep_markers: bool = False) -> str:
@@ -361,8 +450,8 @@ def last_words(thread: dict) -> list[tuple[int, dict, bool]]:
 def judge_thread(thread: dict) -> bool:
     """True when the thread is settled: every latest word is CodeRabbit's and
     concedes. On its finding (the first comment), its own edit must end the
-    visible text with its mark. In a reply, its visible text must concede,
-    or carry its top-level withdrawal marker, and must not object.
+    visible text with its mark. A reply must be one whole concession and
+    nothing else, or carry its top-level withdrawal marker and not object.
     Deliberately conservative: any other wording is open, and a person reads
     it. Resolution is not a word: the resolve command resolves every thread,
     objections included."""
@@ -377,8 +466,8 @@ def judge_thread(thread: dict) -> bool:
                 return False
         else:
             said = " ".join(visible(cm["body"]).split())
-            conceded = WITHDRAWN in visible(cm["body"], keep_markers=True) or CONCEDES.search(said)
-            if not conceded or OBJECTS.search(said):
+            withdrawn = WITHDRAWN in visible(cm["body"], keep_markers=True) and not OBJECTS.search(said)
+            if not (withdrawn or CONCEDES.fullmatch(said)):
                 return False
     return bool(words)
 
@@ -425,6 +514,9 @@ def deferral(repo: str, t: dict, issue: int) -> str:
     if len(words) != 1 or words[0][0] == 0 or not words[0][2] or re.search(r"(?i)rate.limit", said):
         raise Refused(f"--defer: the last word in {url} is not a CodeRabbit reply that evaluated it; "
                       "a deferral rests on what CodeRabbit itself said")
+    if not CONSENTS.search(said):
+        raise Refused(f"--defer: CodeRabbit's last word in {url} does not say that no further change is needed "
+                      "in this PR; a deferral needs its consent")
     v = gh_json("issue", "view", str(issue), "--repo", repo, "--json", "number,state")
     if get(v, "number", int, f"issue #{issue}") != issue or get(v, "state", str, f"issue #{issue}") != "OPEN":
         raise Refused(f"--defer: issue #{issue} for {url} is not an open issue")
@@ -517,12 +609,13 @@ def say(msg: str) -> None:
 
 
 def verify(repo: str, pr: int, expected: list[str], deferrals: dict[int, int], dry_run: bool,
-           again: str | None = None) -> tuple[dict, list[str], list[str], bool]:
+           again: str | None = None) -> tuple[dict, list[str], list[str], bool, str | None]:
     """Every read, in order. `again` is the head judged before the resolve
     command: the head must not have moved, and the quiet window is skipped,
     because CodeRabbit has just answered the command. Returns the PR, the
-    settled threads to resolve, the deferral records, and whether CodeRabbit's
-    latest decisive review requests changes."""
+    settled threads to resolve, the deferral records, whether CodeRabbit's
+    latest decisive review requests changes, and why the head is unreviewed
+    (None if CodeRabbit reviewed it)."""
     info = check_pr(repo, pr)
     head = info["head"]
     if again and head != again:
@@ -535,14 +628,19 @@ def verify(repo: str, pr: int, expected: list[str], deferrals: dict[int, int], d
     for w in check_checks(repo, head, required):
         say(f"WARNING: {w} (not a required check; it does not block)")
     say(f"every required check passed on {head[:7]}")
-    changes_requested = check_review(repo, pr, head, quiet=not again)
-    say(f"CodeRabbit reviewed {head[:7]}" + ("" if again else
-        f" and has been quiet for {int(QUIET.total_seconds() // 60)} minutes"))
+    changes_requested, unreviewed = check_review(repo, pr, head, quiet=not again, head_ref=info["head_ref"])
+    quiet = "" if again else f" and has been quiet for {int(QUIET.total_seconds() // 60)} minutes"
+    if unreviewed:
+        check_mergeable(info, unreviewed, ("CLEAN", "UNSTABLE", "BLOCKED"))
+        say(f"CodeRabbit has not reviewed {head[:7]} ({unreviewed}){quiet}; the head is at least "
+            f"{int(QUIET.total_seconds() // 60)} minutes old; GitHub reports the PR {info['merge_state']}")
+    else:
+        say(f"CodeRabbit reviewed {head[:7]}{quiet}")
     to_resolve, deferred = check_threads(repo, pr, dry_run, deferrals)
     say(f"every review thread is settled ({len(deferred)} deferred)")
     for d in deferred:
         say(f"deferred: {d}")
-    return info, to_resolve, deferred, changes_requested
+    return info, to_resolve, deferred, changes_requested, unreviewed
 
 
 def main(argv: list[str]) -> int:
@@ -556,6 +654,7 @@ def main(argv: list[str]) -> int:
                          "#<ISSUE>, on CodeRabbit's own last word; recorded in the merge commit")
     args = ap.parse_args(argv)
     repo, pr = args.repo, args.pr
+    failed = None
     try:
         if not REPO.match(repo):
             raise Refused(f"--repo {repo!r} is not OWNER/NAME")
@@ -565,7 +664,8 @@ def main(argv: list[str]) -> int:
                 raise Refused(f"--defer {d!r} is not COMMENT=ISSUE (two numbers)")
             deferrals[int(m.group(1))] = int(m.group(2))
         expected = expected_checks()
-        info, to_resolve, deferred, changes_requested = verify(repo, pr, expected, deferrals, args.dry_run)
+        info, to_resolve, deferred, changes_requested, unreviewed = verify(repo, pr, expected, deferrals,
+                                                                           args.dry_run)
         head = info["head"]
         if changes_requested and args.dry_run:
             say(f"CodeRabbit still requests changes: would post `{RESOLVE_COMMAND}`, "
@@ -575,26 +675,55 @@ def main(argv: list[str]) -> int:
                 raise Refused("the head moved during the run; re-run")
             post_resolve(repo, pr)
             say("CodeRabbit no longer requests changes; verifying again")
-            info, to_resolve, deferred, changes_requested = verify(repo, pr, expected, deferrals, False, again=head)
+            info, to_resolve, deferred, changes_requested, unreviewed = verify(repo, pr, expected, deferrals,
+                                                                               False, again=head)
             if changes_requested:
                 raise Refused(f"CodeRabbit requests changes again after `{RESOLVE_COMMAND}`; "
                               "read its latest review, then re-run after the quiet window")
         if check_pr(repo, pr)["head"] != head:
             raise Refused("the head moved during the run; re-run")
         if args.dry_run:
+            if unreviewed and info["merge_state"] == "BLOCKED":
+                say(f"GitHub reports the PR {info['merge_state']}: under owner decision O-2 the gate would merge "
+                    "only if GitHub then reports it CLEAN, once its writes have cleared the block")
+            elif unreviewed:
+                say(o2_warning(head, unreviewed))
             say(f"would merge #{pr} at {head[:7]}")
             return 0
         for tid in to_resolve:
             set_resolved(tid, True)
+        # GitHub resolves a thread by its ID alone: judge what the writes resolved, as it is now.
+        _, deferred = check_threads(repo, pr, False, deferrals)
+        if requests_changes(coderabbit_reviews(repo, pr)):
+            raise Refused("CodeRabbit requested changes during the run; re-run")
         body = f"Merged by tools/mergegate (ADR-0042) at {head[:7]}."
+        if unreviewed:
+            check_mergeable(check_pr(repo, pr), unreviewed)
+            say(o2_warning(head, unreviewed))
+            body += "\n\n" + o2_warning(head, unreviewed)
         if deferred:
             body += "\n\nDeferred review threads:\n" + "\n".join(f"- {d}" for d in deferred)
-        gh("pr", "merge", str(pr), "--repo", repo, "--merge", "--match-head-commit", head,
-           "--subject", f"Merge PR #{pr}: {info['title']}", "--body", body)
-        say(f"merged #{pr} at {head[:7]}")
+        try:
+            gh("pr", "merge", str(pr), "--repo", repo, "--merge", "--match-head-commit", head,
+               "--subject", f"Merge PR #{pr}: {info['title']}", "--body", body)
+            say(f"merged #{pr} at {head[:7]}")
+        except Refused as e:
+            failed = e
     except Refused as e:
         print(f"mergegate: REFUSED: {e}", file=sys.stderr)
         return 2
+    if failed:
+        # A failed or lost answer does not prove that nothing merged: GitHub's own state decides.
+        try:
+            state = get(gh_json("pr", "view", str(pr), "--repo", repo, "--json", "state,mergeCommit"),
+                        "state", str, f"PR #{pr}")
+        except Refused as e:
+            print(f"mergegate: MAY HAVE MERGED: {failed}; then the PR's state was unreadable: {e}", file=sys.stderr)
+            return 3
+        if state != "MERGED":
+            print(f"mergegate: REFUSED: {failed}", file=sys.stderr)
+            return 2
+        say(f"GitHub reports #{pr} merged, although the merge command failed: {failed}")
     try:
         say(f"main's CI passed on {verify_main(repo, pr)[:7]}")
         return 0
