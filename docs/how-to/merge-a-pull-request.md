@@ -68,10 +68,10 @@ Run the gate without `--dry-run`. Nobody approves the PR first (owner decision O
 python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR>
 ```
 
-If you deferred a thread in the dry run, give the same `--defer` arguments again. The dry run recorded nothing, so without them the gate refuses the deferred thread:
+If you deferred or accepted a thread in the dry run, give every `--defer` and `--accept` argument again. The dry run recorded nothing, so without them the gate refuses those threads:
 
 ```bash
-python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR> --defer <COMMENT_ID>=<ISSUE>
+python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR> --defer <COMMENT_ID>=<ISSUE> --accept <COMMENT_ID>
 ```
 
 | Exit code | Meaning |
