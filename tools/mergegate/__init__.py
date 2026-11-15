@@ -472,6 +472,24 @@ def judge_thread(thread: dict) -> bool:
     return bool(words)
 
 
+FOOTER_LINE = re.compile(r"-{3,}|<sub>.*</sub>")
+
+
+def resolved_by_reviewer(body: str) -> bool:
+    """CodeRabbit ends a reply with "Review thread resolved." when it resolves
+    the thread on its own judgment (PR #19). The resolve command resolves
+    threads without a per-thread reply, so this line, as the last visible
+    line of CodeRabbit's reply apart from its separator and footer, is that
+    judgment; anything after it, or a copy in a quote, fence or collapsed
+    section, is not. CodeRabbit also writes it under a new defect (PR #15),
+    so it settles nothing by itself: an operator who has read the reply
+    accepts the thread with --accept, which requires this line."""
+    lines = [ln.strip() for ln in visible(body).splitlines() if ln.strip()]
+    while lines and FOOTER_LINE.fullmatch(lines[-1]):
+        lines.pop()
+    return bool(lines) and lines[-1] == "Review thread resolved."
+
+
 def review_threads(repo: str, pr: int) -> list[dict]:
     owner, name = repo.split("/")
     what = "the review-thread query"
@@ -533,6 +551,20 @@ def set_resolved(tid: str, resolved: bool) -> None:
         raise Refused(f"{what} did not take effect")
 
 
+def acceptance(t: dict) -> str:
+    """A thread an operator has read and accepts as settled (--accept): only
+    on CodeRabbit's own last reply, which must end with its own resolution.
+    Returns the record of it, for the merge commit."""
+    url = thread_url(t)
+    words = last_words(t)
+    if len(words) != 1 or words[0][0] == 0 or not words[0][2] or not resolved_by_reviewer(words[0][1]["body"]):
+        raise Refused(f"--accept: the last word in {url} is not a CodeRabbit reply ending with its own "
+                      "\"Review thread resolved.\"; an operator accepts only what CodeRabbit itself resolved")
+    said = " ".join(visible(words[0][1]["body"]).split())
+    quote = said if len(said) <= 240 else said[:237] + "..."
+    return f'{url} accepted by the operator on CodeRabbit\'s own resolution; CodeRabbit: "{quote}"'
+
+
 def check_threads(repo: str, pr: int, dry_run: bool, deferrals: dict[int, int]) -> tuple[list[str], list[str]]:
     """Judge every thread. Open threads that are resolved are reopened, so
     GitHub's own rule blocks a merge from the web page too, and refuse.
@@ -545,8 +577,8 @@ def check_threads(repo: str, pr: int, dry_run: bool, deferrals: dict[int, int]) 
         if key in deferrals:
             named.add(key)
             if judge_thread(t):
-                raise Refused(f"--defer {key}: {url} is already settled; drop the deferral")
-            records.append(deferral(repo, t, deferrals[key]))
+                raise Refused(f"--defer/--accept {key}: {url} is already settled; drop it")
+            records.append(deferral(repo, t, deferrals[key]) if deferrals[key] else acceptance(t))
         elif not judge_thread(t):
             open_.append(t)
             continue
@@ -649,6 +681,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--repo", required=True, help="OWNER/NAME")
     ap.add_argument("pr", type=int)
     ap.add_argument("--dry-run", action="store_true", help="read everything, write nothing, merge nothing")
+    ap.add_argument("--accept", action="append", default=[], metavar="COMMENT",
+                    help="settle the thread that starts at discussion_r<COMMENT>, which an operator has read, "
+                         "on CodeRabbit's own last reply ending with its own resolution; recorded in the merge commit")
     ap.add_argument("--defer", action="append", default=[], metavar="COMMENT=ISSUE",
                     help="settle the thread that starts at discussion_r<COMMENT> by deferring it to open issue "
                          "#<ISSUE>, on CodeRabbit's own last word; recorded in the merge commit")
@@ -659,9 +694,17 @@ def main(argv: list[str]) -> int:
         if not REPO.match(repo):
             raise Refused(f"--repo {repo!r} is not OWNER/NAME")
         deferrals = {}
+        for a in args.accept:
+            if not a.isdigit():
+                raise Refused(f"--accept {a!r} is not a comment number")
+            deferrals[int(a)] = 0  # 0: accepted by the operator, not deferred to an issue
         for d in args.defer:
             if not (m := DEFER.match(d)):
                 raise Refused(f"--defer {d!r} is not COMMENT=ISSUE (two numbers)")
+            if int(m.group(2)) == 0:
+                raise Refused(f"--defer {d!r}: issue 0 does not exist")
+            if int(m.group(1)) in deferrals:
+                raise Refused(f"--defer {d!r}: that thread is already named by --accept or --defer")
             deferrals[int(m.group(1))] = int(m.group(2))
         expected = expected_checks()
         info, to_resolve, deferred, changes_requested, unreviewed = verify(repo, pr, expected, deferrals,

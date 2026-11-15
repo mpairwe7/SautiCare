@@ -691,6 +691,51 @@ class MergeGateTest(unittest.TestCase):
             "argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(SETTLED, cursor="CUR1"))}})
         self.assertRefused(g, "cursor")
 
+    # PR #19: CodeRabbit conceded ("This finding is addressed. ... I did not
+    # run the tests.") and ended its reply with its own "Review thread
+    # resolved." It writes that line under new defects too (PR #15), so the
+    # line settles nothing by itself; an operator who has read the reply
+    # accepts the thread with --accept, which requires the line.
+    FOOTER = "\n\n---\n\n<sub><i>You are interacting with an AI system.</i></sub>"
+    CONCEDED = ("`@dev` This finding is addressed. At `abc1234`, V-06 matches Task 4.3. The controls are planned "
+                "work; I did not run the tests.\n\n---\n\nReview thread resolved.")
+
+    def resolved_thread(self, body, author=CR):
+        return thread("PRRT_9", c(CR, FINDING, "2026-11-14T09:00:00Z", n=901),
+                      c("dev", "Fixed in abc1234.", "2026-11-14T09:10:00Z"), c(author, body, "2026-11-14T09:20:00Z"))
+
+    def test_codeRabbits_resolution_line_alone_does_not_settle(self):
+        self.assertTrue(mergegate.resolved_by_reviewer(self.CONCEDED + self.FOOTER))
+        self.assertFalse(mergegate.judge_thread(self.resolved_thread(self.CONCEDED + self.FOOTER)))
+        g = self.gate(self.threads(self.resolved_thread(self.CONCEDED + self.FOOTER)))
+        self.assertRefused(g, "discussion_r901")
+
+    def test_an_operator_accepts_a_thread_codeRabbit_resolved(self):
+        g = self.gate(self.threads(self.resolved_thread(self.CONCEDED + self.FOOTER)), "--accept", "901")
+        self.assertEqual(g.code, 0, g.err + g.out)
+        [merge] = g.merges()
+        self.assertTrue(any("accepted by the operator on CodeRabbit's own resolution" in a for a in merge), merge)
+
+    def test_an_operator_cannot_accept_what_codeRabbit_did_not_resolve(self):
+        cases = {
+            "an objection after the line": "Review thread resolved.\n\nHowever, one point remains: please fix X.",
+            "inside a quote": "> Review thread resolved.\n\nI am not marking this addressed.",
+            "inside a code fence": "```\nReview thread resolved.\n```\nStill open.",
+            "inside a collapsed section": "Not addressed.\n<details>\nReview thread resolved.\n</details>",
+            "by someone else": "Review thread resolved.",
+        }
+        for name, body in cases.items():
+            with self.subTest(name):
+                t = self.resolved_thread(body + self.FOOTER, author="dev" if name == "by someone else" else CR)
+                self.assertFalse(mergegate.resolved_by_reviewer(body + self.FOOTER) and name != "by someone else")
+                self.assertRefused(self.gate(self.threads(t), "--accept", "901"), "--accept")
+
+    def test_accept_and_defer_flags_are_checked(self):
+        for args, reason in ((("--accept", "x"), "not a comment number"), (("--defer", "901=0"), "issue 0"),
+                             (("--accept", "901", "--defer", "901=16"), "already named")):
+            with self.subTest(args):
+                self.assertRefused(self.gate(self.threads(self.resolved_thread(self.CONCEDED)), *args), reason)
+
     def test_judge_thread(self):
         t0, t1, t2, t3 = ("2026-11-14T09:00:00Z", "2026-11-14T09:10:00Z", "2026-11-14T09:20:00Z",
                           "2026-11-14T09:30:00Z")
