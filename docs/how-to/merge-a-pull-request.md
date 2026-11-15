@@ -55,6 +55,12 @@ Run the gate without `--dry-run`. Nobody approves the PR first (owner decision O
 python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR>
 ```
 
+If you deferred a thread in the dry run, give the same `--defer` arguments again. The dry run recorded nothing, so without them the gate refuses the deferred thread:
+
+```bash
+python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR> --defer <COMMENT_ID>=<ISSUE>
+```
+
 | Exit code | Meaning |
 |---|---|
 | 0 | merged, and `main`'s CI passed on the merge commit |
@@ -63,4 +69,6 @@ python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR>
 
 ## Adding a CI job
 
-A new required job goes into `tools/mergegate/required_checks.txt` and into the ruleset in the same pull request. `test_required_checks_match_the_ci_jobs` fails if the file and `.github/workflows/ci.yml` disagree.
+1. Add the job to `.github/workflows/ci.yml` and its name to `tools/mergegate/required_checks.txt` in the same pull request. `test_required_checks_match_the_ci_jobs` fails if the two disagree.
+2. The ruleset is a GitHub setting, not a file, so the pull request cannot change it. Once the job has passed on the pull request, ask an administrator to add it to ruleset 27260742 as a required check. Do this before the merge: the gate refuses while the ruleset does not require every name in `required_checks.txt`.
+3. Run the gate. Other open pull requests then need the job too, and they get it when they update from `main`, as the ruleset's up-to-date rule already requires.

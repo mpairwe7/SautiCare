@@ -62,24 +62,24 @@ The gate never submits a review or dismisses one. The resolve command is the onl
 * Code-owner review is not required (ruleset 27260742 has `require_code_owner_review: false`). `CODE_OWNER_REVIEW_ENFORCED = False` in the tool, and a docs test requires every document that mentions code-owner approval to say that it is not enforced, by this decision.
 * Nobody submits a review as `mpairwe7`.
 
-This supersedes ADR-0014 in part: the compensating control for "the amendment gate cannot protect its own code" is now the ruleset plus this gate.
+This supersedes ADR-0014 in part. Only the ruleset is enforced: GitHub requires the CI pipeline's checks and resolved review threads on every merge, by any path, and it counts a thread resolved by anyone. The gate's other checks run only when an operator runs it: CodeRabbit's review of the head, the quiet window, the thread verdicts, the deferrals and `main`'s CI. A merge through GitHub's web page or a plain `gh pr merge` skips them. So for "the amendment gate cannot protect its own code", the enforced control is the ruleset. The gate is the merge procedure, not an enforced control, for changes to its own code or to anything else.
 
 ### Consequences
 
 * Good: a change merges only on evidence that was actually read. Every refusal names its reason, and a deferral is visible in the merge commit.
-* Good: the gate is versioned and reviewed, and 37 tests run against a stub `gh`. Among them are the five fault cases that broke the old scripts, spoofing cases for the thread verdict, and the resolve command: posted once after clean verdicts, never with a thread open, never in a dry run.
+* Good: the gate is versioned and reviewed, and 45 tests check it, most of them against a stub `gh`. Among them are the five fault cases that broke the old scripts, spoofing cases for the thread verdict, and the resolve command: posted once after clean verdicts, never with a thread open, never in a dry run.
 * Good: a PR whose threads are all settled no longer waits for a person to post the resolve command.
 * Bad: no human reads a change before it merges (V-03, accepted by the owner in O-1). The evidence is CI and CodeRabbit.
 * Bad: a failing check outside the CI pipeline, such as GitGuardian, no longer stops a merge. It is a warning that a person may miss. Real secrets are still blocked by `secret scan (full history)`.
 * Bad: the resolve command resolves every thread. The gate posts it only after its own verdicts are clean, and reads the threads again after it resolves them, just before it merges. A comment posted between that last read and the merge is not seen. A new thread is unresolved, so the ruleset refuses the merge, and `--match-head-commit` still pins the code that was judged.
 * Bad: merging is slow. Allow the 30-minute quiet window, plus CodeRabbit's hourly quota, plus up to 15 minutes for its approval.
 * Bad: an unrecognised CodeRabbit wording means "open", so a person reads it. That conservatism is deliberate.
-* Neutral: a new CI job must be added to `required_checks.txt` and to the ruleset in the same pull request. A test keeps the file in step with `.github/workflows/ci.yml`.
+* Neutral: a new CI job is added to `required_checks.txt` in its pull request, and a test keeps the file in step with `.github/workflows/ci.yml`. The ruleset is a GitHub setting outside the repository, so no pull request can change it. An administrator adds the job to the ruleset before that pull request merges, because the gate refuses while the ruleset does not require every name in the file it reads.
 
 ### Confirmation
 
 * `python3 -m unittest governance.tests.test_mergegate` runs in the governance CI job.
-* Each fault case, the head-pinned merge, the dry run that writes nothing, the spoofing cases, the warning for a check outside the pipeline, and the resolve command are tests. Mutation checks were applied by hand and caught: 8 of 8 in the merge stage, 12 of 12 for the thread verdict, 6 of 6 for the required checks, and 11 of 11 for the resolve command.
+* Each fault case, the head-pinned merge, the dry run that writes nothing, the spoofing cases, the warning for a check outside the pipeline, and the resolve command are tests. Mutation checks were applied by hand and caught: 8 of 8 in the merge stage, 12 of 12 for the thread verdict, 6 of 6 for the required checks, 11 of 11 for the resolve command, and 11 of 11 for the fixes from the review of PR #20.
 * A dry run against a live PR before each merge (`--dry-run`), described in [Merge a pull request](../how-to/merge-a-pull-request.md).
 
 ## More Information
