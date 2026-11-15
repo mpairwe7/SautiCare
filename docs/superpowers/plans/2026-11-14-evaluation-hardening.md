@@ -492,16 +492,17 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 4.3: What a voice caller hears is inside the signature too
 
-`ivr.Sounds` (`internal/platform/ivr/sounds.go`) names each recording after its screen and the option's value (`sauti/en/danger-yes`), and `TestPromptCatalogueIsComplete` keeps `telephony/prompts/catalogue.yaml` in step, so which code a recording stands for is fixed in code. What can differ is the audio: a "No" recorded as `danger-yes` makes a voice caller give the opposite answer, and Task 4.2's digest cannot see it. The recordings are not in the repository and not yet made.
+`ivr.Sounds` (`internal/platform/ivr/sounds.go`) names each recording after its screen and the option's value (`sauti/en/danger-yes`), and `TestPromptCatalogueIsComplete` keeps `telephony/prompts/catalogue.yaml` in step, so the recording an option's code names is fixed in code. Two things can still differ, and Task 4.2's digest sees neither: the audio (a "No" recorded as `danger-yes` makes a voice caller give the opposite answer), and the digit-to-code mapping, including the shared `press-<digit>` recordings (below). The recordings are not in the repository and not yet made.
 
 **Files:**
-- Modify: `telephony/prompts/catalogue.yaml` (each sound gains `sha256:`, empty until the recording is made and approved; the `-update` path keeps existing digests), `internal/platform/ivr/` (load the catalogue; the check), `triage-rules/tool1.yaml` (each input gains `recordings_sha256: {en: <hex>, lg: <hex>}`), `triage-rules/tool1.yaml.sig`, `config/gated/triage.yaml` (the new `approved_sha256`), `cmd/sautictl/main.go` (`prompts verify`), `cmd/ivr-controller/main.go`.
+- Modify: `telephony/prompts/catalogue.yaml` (each sound gains `sha256:`, empty until the recording is made and approved; the `-update` path keeps existing digests), `internal/platform/ivr/` (load the catalogue; the check), `triage-rules/tool1.yaml` (each input gains `recordings_sha256: {en: <hex>, lg: <hex>}` and `keys: [{digit, code, sound}]`; the bundle gains `digit_recordings_sha256: {en: <hex>, lg: <hex>}`), `triage-rules/tool1.yaml.sig`, `config/gated/triage.yaml` (the new `approved_sha256`), `cmd/sautictl/main.go` (`prompts verify`), `cmd/ivr-controller/main.go`.
 - Test: `internal/platform/ivr/catalogue_test.go`, `cmd/sautictl/` tests, `cmd/ivr-controller/` tests.
 
 **The digit prompts and the key mapping are bound too** (CodeRabbit on #19). Before each option `ivr.Sounds` plays a shared `press-<digit>` recording (`internal/platform/ivr/sounds.go:62`). A `press-1` that says "press 2" sends the caller to the other answer just as surely, and the catalogue test compares ID sets only. So the signed bundle also records, per language, each `press-<digit>` recording's `sha256`, and per input the exact mapping key digit → answer code → recording ID that the IVR plays. `ivr-controller` refuses to start, and `sautictl prompts verify` fails, if the deployed digit recordings or the mapping in code differ from the signed ones. Tests: `TestASwappedDigitRecordingIsRefused` (two `press-` digests exchanged) and `TestASwappedKeyMappingIsRefused` (two options' digits exchanged in code), each failing until the binding covers it.
 
 **Rules:**
 - `recordings_sha256` is `ScreenDigest`'s encoding over the `(sound ID, sha256)` pairs of the screen's question and option recordings, so the clinicians and translators who sign the bundle sign which audio voices which code (P-3).
+- `digit_recordings_sha256` is the same encoding over a language's `(press-<digit> ID, sha256)` pairs. Each input's `keys` lists, in menu order, the digit `ivr.Sounds` announces, the answer code that digit selects (`MenuOption.Digit` to `Value`) and the option's recording ID. ivr-controller rebuilds `keys` from the running machine and compares both with the bundle.
 - ivr-controller compares the catalogue with the bundle at start-up, as intake-gw compares the screens, in every environment. In production it also refuses a `placeholder` catalogue or a screen 2 to 5 recording with no `sha256`.
 - `sautictl prompts verify --catalogue telephony/prompts/catalogue.yaml --sounds <dir>` hashes each file the catalogue names and fails on a missing file or a different digest, naming each. The P0 deployment runs it on the Asterisk host before Asterisk starts (deferred list).
 
@@ -509,11 +510,13 @@ From then on every merge goes through `tools/mergegate`.
   - `TestRecordingsAreBoundToTheBundle`: a catalogue whose `danger-yes` digest differs from the one the bundle binds is refused, naming `danger` and the language; the committed catalogue passes.
   - `TestPromptsVerifyRefusesASwappedRecording`: a temporary sounds directory with the `danger-yes` and `danger-no` files swapped fails, naming both.
   - `TestProductionRefusesUnapprovedRecordings`: a `placeholder` catalogue, and an approved one with an empty `sha256` on a screen 2 to 5 recording, each stop ivr-controller under `SAUTI_ENV=production`.
+  - `TestASwappedDigitRecordingIsRefused`: the `press-1` and `press-2` digests of one language exchanged; refused, naming both.
+  - `TestASwappedKeyMappingIsRefused`: two options' digits exchanged in the machine, so digit 1 selects `no`; refused, naming the screen.
 
-  Run `go test ./internal/platform/ivr/ ./cmd/sautictl/ ./cmd/ivr-controller/ -run 'Recording' -count=1`. Expected: FAIL.
+  Run `go test ./internal/platform/ivr/ ./cmd/sautictl/ ./cmd/ivr-controller/ -run 'Recording|KeyMapping' -count=1`. Expected: FAIL.
 - [ ] **Step 2:** Implement; paste the digests; re-sign; update `approved_sha256`.
 - [ ] **Step 3:** Run the same command and the unit suite. Expected: PASS.
-- [ ] **Step 4:** Commit `feat(ivr): the signed bundle binds the approved recordings (EV-4 Task 3; ES-3)`.
+- [ ] **Step 4:** Commit `feat(ivr): the signed bundle binds the approved recordings and the key mapping (EV-4 Task 3; ES-3)`.
 
 ### Task 4.4: EV-4 docs: ADR-0044
 
