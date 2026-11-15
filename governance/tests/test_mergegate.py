@@ -124,6 +124,20 @@ DEFERRABLE = thread("PRRT_2", c(CR, FINDING, "2026-11-14T09:30:00Z", n=201),
                     c("dev", "The staging drill cannot run before staging exists.", "2026-11-14T09:40:00Z"),
                     c(CR, "<details>analysis</details>`@dev` I do not see another code or plan change needed "
                           "in this PR. The staging drill remains a go-live gate.", "2026-11-14T09:50:00Z"))
+# CodeRabbit's real consent to a deferral on PR #14 (discussion_r4572453339), its prose verbatim.
+PR14_CONSENT = (
+    "<details>\n<summary>Analysis chain</summary>\nScript executed\n</details>\n\n"
+    "`@dev` For this finding, I do not see another code or plan change needed in this PR. The existing review "
+    "guidance also distinguishes the planned controls from deployed controls.\n\n"
+    "One follow-up remains in `#16`: its written acceptance criteria do not explicitly include the "
+    "**unnamed-`TRUNCATE` risk**. Task 5.2 and R-16 require the operator and DPO to accept that risk before "
+    "go-live. Please add it to the issue.\n\n"
+    "The staging records and bastion attribution remain unverified. I am not marking this finding as addressed "
+    "until that evidence is available. The plan also requires all CodeRabbit findings to be resolved before "
+    "merging; I have not checked the other findings.\n\n"
+    "At the time of the check, the reported CI checks passed and CodeRabbit was neutral. I did not verify "
+    "approval or mergeability.\n\n---\n\n<sub><i>You are interacting with an AI system.</i></sub>\n\n"
+    "<!-- This is an auto-generated reply by CodeRabbit -->")
 
 
 def resolved_answer(name, state=True):
@@ -394,7 +408,7 @@ class MergeGateTest(unittest.TestCase):
 
     # Owner decision O-2 (2026-11-15): "when no coderabbitai reviews /limits
     # reached merge pr if mergeable". A head CodeRabbit has not reviewed
-    # merges only when GitHub reports the PR CLEAN and the head is at least
+    # merges only when GitHub reports the PR CLEAN or UNSTABLE and the head is at least
     # QUIET old; the quiet window, the threads and the checks rule as before.
 
     def o2_warning(self, reason):
@@ -507,7 +521,7 @@ class MergeGateTest(unittest.TestCase):
     def test_the_head_age_comes_from_github_not_the_committer(self):
         """Security review: the committer date is set by whoever commits, so a
         backdated commit could skip the wait. The age is read from the head's
-        first GitHub Actions check suite, which GitHub creates on the push."""
+        newest GitHub Actions check suite on the PR's branch, which GitHub creates on the push."""
         g = self.gate(self.reviews(review(commit=self.OLD)))
         ages = [c for c in g.calls if any("/check-suites" in a for a in c)]
         self.assertEqual(len(ages), 1, g.calls)
@@ -516,7 +530,7 @@ class MergeGateTest(unittest.TestCase):
         self.assertEqual([c for c in g.calls if any("committer" in a for a in c)], [])
 
     def test_an_unreviewed_head_needs_its_age_read(self):
-        """When GitHub received the head (its first Actions check suite) decides its age; unreadable refuses."""
+        """When GitHub received the head (its newest Actions check suite on the PR's branch) decides its age; unreadable refuses."""
         cases = {
             "29 minutes old": ({"stdout": "2026-11-14T11:31:00Z\n"}, "pushed 1740 s ago"),
             "dated in the future": ({"stdout": "2026-11-14T13:00:00Z\n"}, "wait until CodeRabbit"),
@@ -691,6 +705,84 @@ class MergeGateTest(unittest.TestCase):
             "argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(SETTLED, cursor="CUR1"))}})
         self.assertRefused(g, "cursor")
 
+    # PR #19: CodeRabbit conceded ("This finding is addressed. ... I did not
+    # run the tests.") and ended its reply with its own "Review thread
+    # resolved." It writes that line under new defects too (PR #15), so the
+    # line settles nothing by itself; an operator who has read the reply
+    # accepts the thread with --accept, which requires the line.
+    FOOTER = "\n\n---\n\n<sub><i>You are interacting with an AI system.</i></sub>"
+    CONCEDED = ("`@dev` This finding is addressed. At `abc1234`, V-06 matches Task 4.3. The controls are planned "
+                "work; I did not run the tests.\n\n---\n\nReview thread resolved.")
+
+    def resolved_thread(self, body, author=CR):
+        return thread("PRRT_9", c(CR, FINDING, "2026-11-14T09:00:00Z", n=901),
+                      c("dev", "Fixed in abc1234.", "2026-11-14T09:10:00Z"), c(author, body, "2026-11-14T09:20:00Z"))
+
+    def test_codeRabbits_resolution_line_alone_does_not_settle(self):
+        self.assertTrue(mergegate.resolved_by_reviewer(self.CONCEDED + self.FOOTER))
+        self.assertFalse(mergegate.judge_thread(self.resolved_thread(self.CONCEDED + self.FOOTER)))
+        g = self.gate(self.threads(self.resolved_thread(self.CONCEDED + self.FOOTER)))
+        self.assertRefused(g, "discussion_r901")
+
+    def test_an_operator_accepts_a_thread_codeRabbit_resolved(self):
+        g = self.gate(self.threads(self.resolved_thread(self.CONCEDED + self.FOOTER)), "--accept", "901")
+        self.assertEqual(g.code, 0, g.err + g.out)
+        [merge] = g.merges()
+        self.assertTrue(any("accepted by the operator on CodeRabbit's own resolution" in a for a in merge), merge)
+
+    def test_an_acceptance_holds_only_for_the_reply_first_read(self):
+        """PR #20 review: --accept settles the reply the gate read first. A
+        reply CodeRabbit adds or edits after that, even one that ends with its
+        own resolution, was not accepted, and the gate refuses."""
+        resolution = "\n\n---\n\nReview thread resolved." + self.FOOTER
+        long = "`@dev` This finding is addressed. " + "The controls are planned work. " * 9
+        first = self.resolved_thread(long + resolution)
+        nodes = first["comments"]["nodes"]
+        later = {
+            "a reply added": thread("PRRT_9", *nodes, c(CR, "The retry path still fails." + resolution,
+                                                        "2026-11-14T11:59:00Z")),
+            # The edit lies past the record's 240-character quote: only the reply's edit time shows it.
+            "the reply edited": thread("PRRT_9", *nodes[:-1], c(CR, long + "The retry path still fails." + resolution,
+                                                                "2026-11-14T09:20:00Z", "2026-11-14T11:59:00Z", CR)),
+        }
+        for name, t in later.items():
+            with self.subTest(name):
+                g = self.gate({"threads": {"argv": ["api", "graphql", "reviewThreads"], "times": 1,
+                                           **ok(threads_page(first))},
+                               "threads-later": {"argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(t))}},
+                              "--accept", "901")
+                self.assertRefused(g, "since the gate first read it")
+                self.assertEqual(len(g.mutations("resolveReviewThread")), 1, "refused after the writes")
+        with self.subTest("a reply added while CodeRabbit answers the resolve command"):
+            flow = self.reviews_in_turn(requested(), requested(), requested(), requested(APPROVED))
+            g = self.gate({**flow, "threads": {"argv": ["api", "graphql", "reviewThreads"], "times": 1,
+                                               **ok(threads_page(first))},
+                           "threads-later": {"argv": ["api", "graphql", "reviewThreads"],
+                                             **ok(threads_page(later["a reply added"]))}},
+                          "--accept", "901", env={"MERGEGATE_APPROVAL_WAIT": "20"})
+            self.assertRefused(g, "since the gate first read it")
+            self.assertEqual(g.posts(), [RESOLVE_POST])
+
+    def test_an_operator_cannot_accept_what_codeRabbit_did_not_resolve(self):
+        cases = {
+            "an objection after the line": "Review thread resolved.\n\nHowever, one point remains: please fix X.",
+            "inside a quote": "> Review thread resolved.\n\nI am not marking this addressed.",
+            "inside a code fence": "```\nReview thread resolved.\n```\nStill open.",
+            "inside a collapsed section": "Not addressed.\n<details>\nReview thread resolved.\n</details>",
+            "by someone else": "Review thread resolved.",
+        }
+        for name, body in cases.items():
+            with self.subTest(name):
+                t = self.resolved_thread(body + self.FOOTER, author="dev" if name == "by someone else" else CR)
+                self.assertFalse(mergegate.resolved_by_reviewer(body + self.FOOTER) and name != "by someone else")
+                self.assertRefused(self.gate(self.threads(t), "--accept", "901"), "--accept")
+
+    def test_accept_and_defer_flags_are_checked(self):
+        for args, reason in ((("--accept", "x"), "not a comment number"), (("--defer", "901=0"), "issue 0"),
+                             (("--accept", "901", "--defer", "901=16"), "already named")):
+            with self.subTest(args):
+                self.assertRefused(self.gate(self.threads(self.resolved_thread(self.CONCEDED)), *args), reason)
+
     def test_judge_thread(self):
         t0, t1, t2, t3 = ("2026-11-14T09:00:00Z", "2026-11-14T09:10:00Z", "2026-11-14T09:20:00Z",
                           "2026-11-14T09:30:00Z")
@@ -783,6 +875,12 @@ class MergeGateTest(unittest.TestCase):
             "withdrawal marker inside a quote": replied(f"> {withdrawn}\nThanks."),
             "a withdrawal, then a point that remains": replied(f"{withdrawn}\nI withdraw that part. One point remains."),
             "a concession only inside a quote": replied("> This is addressed.\n\nSee the earlier note."),
+            # CommonMark: a longer run of the same character closes a fence, and a backtick
+            # line with a backtick after its run is inline code, not a fence (PR #20 review).
+            "a fence closed by a longer fence, then an objection, then a fenced concession":
+                replied("```\nexample\n````\nPlease fix the retry path.\n```\nThe finding is addressed.\n```\n"),
+            "inline code with three backticks is not a fence":
+                replied("The finding is addressed.\n``` x ```\nPlease fix the retry path.\n"),
             "a concession by a user account named like the bot": replied("This is addressed.", kind="User"),
         }
         for name, t in open_.items():
@@ -837,6 +935,12 @@ class MergeGateTest(unittest.TestCase):
             self.assertIn(text, g.out)
         self.assertNotIn("analysis", body, "the quote is CodeRabbit's prose, not its collapsed analysis")
         self.assertEqual(len(g.mutations("resolveReviewThread")), 2)
+        with self.subTest("PR #14's real consent, which also says remains, not, Please and before merging"):
+            t = thread("PRRT_14", c(CR, FINDING, "2026-11-14T09:30:00Z", n=1401),
+                       c("dev", "Tracked in #16.", "2026-11-14T09:40:00Z"), c(CR, PR14_CONSENT, "2026-11-14T09:50:00Z"))
+            g = self.gate(self.threads(t), "--defer", "1401=16")
+            self.assertEqual(g.code, 0, g.err)
+            self.assertEqual(len(g.merges()), 1)
 
     def test_a_deferral_is_explicit_and_checked(self):
         author_last = thread("PRRT_3", c(CR, FINDING, "2026-11-14T09:30:00Z", n=301),
@@ -863,13 +967,26 @@ class MergeGateTest(unittest.TestCase):
             return thread(f"PRRT_{n}", c(CR, FINDING, "2026-11-14T09:30:00Z", n=n),
                           c("dev", "Tracked in #16.", "2026-11-14T09:40:00Z"), c(CR, said, "2026-11-14T09:50:00Z"))
         no_consent = "does not say that no further change is needed in this PR"
+        consent = "`@dev` I do not see another code or plan change needed in this PR"
+        objects = "objects as well as consenting"
         for name, t, n, reason in (("the author had the last word", author_last, 301, "not a CodeRabbit reply"),
                                    ("the last word is a rate-limit notice", limited, 401, "not a CodeRabbit reply"),
                                    ("the thread is already settled", conceded, 601, "already settled"),
                                    ("CodeRabbit objects", answered(1001, "`@dev` Please fix this before merging."),
                                     1001, no_consent),
                                    ("CodeRabbit gives no verdict", answered(1002, "`@dev` The staging drill remains "
-                                                                            "a go-live gate."), 1002, no_consent)):
+                                                                            "a go-live gate."), 1002, no_consent),
+                                   # PR #20 review: a consent and an objection in the same reply.
+                                   ("consent, then a fix asked for before merging", answered(
+                                       1004, f"{consent}. However, please fix this security issue before merging."),
+                                    1004, objects),
+                                   ("consent, then a sentence that turns against it", answered(
+                                       1005, f"{consent}. However, the retry path fails on cancellation."), 1005, objects),
+                                   ("consent, then a change that must land before the merge", answered(
+                                       1006, f"{consent}. The retry fix must land before merging."), 1006, objects),
+                                   ("consent and a request in the same sentence", answered(
+                                       1007, "`@dev` I do not see another code change needed in this PR, but please add "
+                                             "the test in this PR."), 1007, objects)):
             with self.subTest(name):
                 g = self.gate(self.threads(t), "--defer", f"{n}=16")
                 self.assertRefused(g, f"discussion_r{n}")
@@ -931,6 +1048,17 @@ class MergeGateTest(unittest.TestCase):
             g = self.gate(self.reviews_in_turn(
                 [review()], [review(), review(state="CHANGES_REQUESTED", at="2026-11-14T11:59:30Z")]))
             self.assertRefused(g, "CodeRabbit requested changes during the run")
+
+    def test_the_quiet_window_is_read_again_after_the_writes(self):
+        """PR #20 review: CodeRabbit may write while the gate resolves the
+        threads. The quiet window is the last read before the merge. It is
+        skipped only after the resolve command, which CodeRabbit has just
+        answered (test_clean_verdicts_and_changes_requested_...)."""
+        g = self.gate({"inline": {"argv": ["api", "pulls/9999/comments"], "times": 1, **ok([[activity()]])},
+                       "inline-later": {"argv": ["api", "pulls/9999/comments"],
+                                        **ok([[activity(updated="2026-11-14T11:59:00Z")]])}})
+        self.assertRefused(g, "CodeRabbit was active 60 s ago")
+        self.assertEqual(len(g.mutations("resolveReviewThread")), 1, "the activity was read after the writes")
 
     def test_a_failed_merge_command_is_reconciled_with_github(self):
         """A merge command that fails, or whose answer is lost, may still have
