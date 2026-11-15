@@ -1,6 +1,6 @@
 # Traceability matrix
 
-**Type:** Reference (Diátaxis) · **Last updated:** 2026-11-14 (UX-1) · **Checked by:** `python3 -m tools.freshness --check` (every test pointer must name a test function that exists)
+**Type:** Reference (Diátaxis) · **Last updated:** 2026-11-14 (edge-case verification) · **Checked by:** `python3 -m tools.freshness --check` (every test pointer must name a test function that exists)
 
 This matrix maps each policy requirement (MVP stack doc, 15 requirements), each of the 14 hard constraints (Build Prompt §3) and each of the 17 scenarios (Build Prompt §16) to the automated test or drill that proves it.
 
@@ -10,6 +10,8 @@ This matrix maps each policy requirement (MVP stack doc, 15 requirements), each 
 - **Planned:** a later milestone delivers it.
 
 Policy documents are cited by section only (they are confidential, ADR-0008).
+
+The 22 edge cases of the Scalable MVP Stack, with the resilience and security failure modes a test can exercise, are mapped case by case in [Edge-case verification](reference/edge-case-verification.md).
 
 ## Policy requirements
 
@@ -137,3 +139,15 @@ The M0 demo is `tests/e2e/m0_fixture_test.go::TestM0FixtureIncident`. Every scen
 | PR #14 review: a failed read, a merged call's hand-over, every merged pair, the watchdog's pages, a refused answer, a term's timers, adoption retry, the call ID on a failed start, a refusal at shutdown, tier rounds per seq, a sibling Asterisk keeps, the fake's Stasis model | `cmd/intake-gw/main_test.go::TestAFailedReadMarksTheGaugesStale`; `internal/intake/ivr_test.go::TestHandOverEscalatesTheSurvivorOfAMergedCall`; `internal/platform/pg/opstore/coordinator_integration_test.go::TestIVRCallIncident`, `::TestUnacknowledgedEscalations`; `internal/intake/dedup_test.go::TestMergedUnacknowledgedEscalationRingsOnTheSurvivor`; `internal/intake/watchdog_test.go::TestWatchdogReadsEveryPageOfOverdueTimers`; `internal/platform/ivr/alerts_test.go::TestARefusedAnswerReplaysTheMenu`, `::TestTheLeaderTermEndStopsTheAlertTimers`; `internal/platform/ivr/controller_test.go::TestAdoptRetriesAnOrphanItCouldNotMove`, `::TestAStartFailureEscalatesUnderTheCallID`, `::TestAnEscalationRefusedAtShutdownIsCountedBeforeExit`; `internal/platform/ivr/outbound_test.go::TestAnEarlyAcknowledgementStopsTheOtherCall`, `::TestAnOldRoundsAcknowledgementLeavesTheNewRoundRinging`, `::TestASiblingThatCannotBeHungUpKeepsItsLine`; `internal/platform/ari/client_test.go::TestAContinuedChannelLeavesTheApplication` |
 | PR #14 review, round 3: a late call to the line that cannot be hung up, a lost end of an alert prompt, a closing prompt or a store read that times out, an escalation in flight or queued at the shutdown deadline, an adoption after the flush, an alert timer after leadership is lost, a failed hand-over adopted again without a reconnect, a failed start's escalation in the store | `internal/platform/ivr/outbound_test.go::TestALateCallThatCannotBeHungUpKeepsItsLine`, `::TestAForwardCallWhoseFactsTimeOutIsHungUp`; `internal/platform/ivr/alerts_test.go::TestALostEndOfAnAlertPromptStillCloses`, `::TestAClosingPromptThatTimesOutStillHangsUp`; `internal/platform/ivr/controller_test.go::TestAFirstAttemptInFlightAtTheDeadlineIsReported`, `::TestAdoptAfterTheFlushReportsItsOrphansLost`, `::TestTheFlushReportsOrphansStillQueuedInAdopt`; `cmd/ivr-controller/main_test.go::TestATimerFiringWhileTheTermWaitsForItsLoopsDoesNothing`; `internal/platform/ivr/controller_test.go::TestAFailedHandOverIsRetriedWhileTheStreamStaysUp`, `::TestTheReadoptionStopsAtShutdown`; `tests/e2e/m1_ivr_test.go::TestAStartThatFailsAfterItsSessionOpenedIsEscalated` |
 | PR #14 review, round 5: a refused final hang-up, a timer's request when leadership is lost, re-adoptions sharing one escalation recorder, a flush during orphan discovery | `internal/platform/ivr/alerts_test.go::TestARefusedFinalHangUpIsRetried`, `::TestAFinalHangUpRefusedForGoodIsGivenUp`, `::TestLeadershipLostAbortsATimersRequest`, `::TestLeadershipLostDuringTheClosingPromptHangsUpNothing`; `internal/platform/ivr/controller_test.go::TestReadoptionsShareOneEscalationRecorder`, `::TestTheFlushWaitsForOrphansBeingDiscovered` |
+
+## Review focus (edge-case verification; [reference](reference/edge-case-verification.md))
+
+| Input class | Proof |
+|---|---|
+| Africa's Talking retries a callback after the first answer (row 4) | `internal/platform/pg/intake_integration_test.go::TestRetriedAnswerReturnsSameScreenNoSecondWrite` |
+| A Luganda screen alone over the operator limit (row 5) | `internal/intake/machine_test.go::TestALugandaScreenOverTheLimitFailsTheGate` |
+| A withheld caller ID on the voice line (row 6) | `internal/platform/ivr/controller_test.go::TestAWithheldNumberStartsTheCallAsUnknown` |
+| The same number calling again and again (row 9) | `internal/intake/service_test.go::TestARepeatCallerIsNeverBlocked` |
+| A responder who loses the accept race on a voice alert (row 11) | `internal/platform/ivr/alerts_test.go::TestALateVoiceAcceptHearsAlreadyTaken` |
+| More incidents than free responders, in protocol mode (row 14) | `internal/dispatch/plan_test.go::TestAnIncidentWithNobodyFreeKeepsWaiting` |
+| A new signed triage bundle while an incident is open (row 16) | `internal/intake/service_test.go::TestAnOpenIncidentKeepsItsLogicVersion` |
