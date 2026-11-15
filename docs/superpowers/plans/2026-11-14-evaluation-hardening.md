@@ -773,9 +773,11 @@ From then on every merge goes through `tools/mergegate`.
 
 ### Task 10.1: The USSD adapter answers within its budget
 
-**Files:** Test `internal/platform/africastalking/ussd_test.go`.
-- [ ] **Step 1:** Write `TestATAnswersTheVoiceLineWithinTheBudget`: the port blocks until its context ends; the reply arrives in under 1 s and is `END` with the configured error text. The audit's mutant M1 (`ussd.go:74`, 60 s) must fail it. Run `go test ./internal/platform/africastalking/ -run Budget -count=1`. Expected: PASS on `main`.
-- [ ] **Step 2:** Commit `test(africastalking): the reply arrives within the budget (EV-10 Task 1; EO-2)`.
+**Files:** Modify `internal/platform/africastalking/ussd.go` (`serve`). Test `internal/platform/africastalking/ussd_test.go`.
+- [ ] **Step 1:** Write `TestATAnswersTheVoiceLineWithinTheBudget`, with two cases: the port blocks until its context ends; the port blocks and never returns (it ignores cancellation until the test's cleanup releases it). In each, the reply arrives in under 1 s and is `END` with the configured error text. The audit's mutant M1 (`ussd.go:74`, 60 s) must fail both. Run `go test ./internal/platform/africastalking/ -run Budget -count=1`. Expected: the first case PASSES on `main`; the second FAILS, because `serve` waits for `HandleUSSD` to return.
+- [ ] **Step 2:** In `serve`, call `HandleUSSD` on its own goroutine, which sends its result on a channel buffered for one, and answer with whichever comes first: the result, or the end of the budget's context (then the error text, logged without input or number as today). The call left behind holds the cancelled context, never blocks on its send, and its result is dropped.
+- [ ] **Step 3:** Run the same command. Expected: PASS.
+- [ ] **Step 4:** Commit `fix(africastalking): the reply arrives within the budget even if the port never returns (EV-10 Task 1; EO-2)`.
 
 ### Task 10.2: The poll the binary uses is the poll the test uses
 
