@@ -180,7 +180,7 @@ From then on every merge goes through `tools/mergegate`.
 
 **Rules:**
 - **Review of the head:** `gh api repos/R/pulls/<pr>/reviews --paginate --jq '.[] | {user: .user.login, commit_id, state, submitted_at}'`. Require at least one review by `coderabbitai[bot]` with `commit_id` equal to the head. Of its reviews in state APPROVED or CHANGES_REQUESTED, the latest must not be CHANGES_REQUESTED. A rate-limited push leaves no review of the head, so it refuses.
-- **Quiet window:** the newest of CodeRabbit's inline comments (`pulls/<pr>/comments`) and issue comments (`issues/<pr>/comments`), by `created_at` and `updated_at`, and of its reviews' `submitted_at`, must be at least `QUIET` before `now()`. Otherwise refuse: "CodeRabbit was active <n> s ago; re-run after five quiet minutes". The gate does not wait: the operator re-runs it.
+- **Quiet window:** the newest of CodeRabbit's inline comments (`pulls/<pr>/comments`) and issue comments (`issues/<pr>/comments`), by `created_at` and `updated_at`, and of its reviews' `submitted_at`, must be at least `QUIET` before `now()`. Otherwise refuse: "CodeRabbit was active <n> s ago; re-run after 30 quiet minutes (`QUIET`)". The gate does not wait: the operator re-runs it.
 - **Threads:** a GraphQL query with variables `owner`, `name`, `n` and `after`, paginating `reviewThreads(first: 100, after: $after)` and reading for each thread `id`, `isResolved`, and `comments(first: 100) { pageInfo { hasNextPage } nodes { author { login __typename } editor { login __typename } body url createdAt lastEditedAt } }`. A thread whose comments have a next page refuses (fail closed rather than judge a partial thread).
 - **`judge_thread`:** a thread is settled only by CodeRabbit's own visible concession. The thread's latest words (by the later of written and last edited) must all be CodeRabbit's: a `Bot` with login `REVIEWER`, edited by no one else. Each must concede, in one of three ways:
   1. CodeRabbit's edit of its own finding ends the visible text with its addressed mark (`✅ Addressed in commit <sha>`, `✅ Addressed in the latest update`, `✅ Confirmed as addressed by @<login>`); or
@@ -268,7 +268,7 @@ From then on every merge goes through `tools/mergegate`.
 
 **ADR-0042 decides:** the gate's rules (Tasks 1.1 to 1.3); the ruleset as a second gate, and the gate's check of it; CodeRabbit's review required and its status check not; no approval by command; the owner's recorded decision on each PR until a second human can approve (O-1). It supersedes ADR-0014 in part: the compensating control for "the amendment gate cannot protect its own code" is the ruleset plus this gate, and code-owner review stays the owner's decision.
 
-**The how-to:** run the gate with `--dry-run`; read each refusal; answer each open thread in the thread, never by resolving it; re-run after five quiet minutes; then run without `--dry-run` once the owner has recorded the merge decision.
+**The how-to:** run the gate with `--dry-run`; read each refusal; answer each open thread in the thread, never by resolving it; re-run after 30 quiet minutes (`QUIET`); then run without `--dry-run` once the owner has recorded the merge decision.
 
 - [ ] **Step 1:** Write `test_the_docs_name_no_enforced_codeowners_approval`. Run `python3 -m unittest governance.tests.test_mergegate -v`. Expected: FAIL on the four claims.
 - [ ] **Step 2:** Write the docs.
