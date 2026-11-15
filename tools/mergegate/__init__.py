@@ -28,7 +28,9 @@ Any gh error, timeout, empty or unreadable answer refuses: exit 2, with the
 reason on stderr, and nothing merged. Exit 0: merged and main's CI passed on
 the merge commit (or, with --dry-run, every read passed and nothing was
 written). Exit 3: merged, but main's CI on the merge commit failed or could
-not be confirmed. It never reviews or dismisses a review, and the resolve
+not be confirmed. If the merge command itself fails, GitHub's state of the
+PR decides: open is exit 2, merged goes on to main's CI, and unreadable is
+exit 3 (MAY HAVE MERGED). It never reviews or dismisses a review, and the resolve
 command is the only comment it posts.
 """
 import argparse
@@ -608,6 +610,7 @@ def main(argv: list[str]) -> int:
                          "#<ISSUE>, on CodeRabbit's own last word; recorded in the merge commit")
     args = ap.parse_args(argv)
     repo, pr = args.repo, args.pr
+    failed = None
     try:
         if not REPO.match(repo):
             raise Refused(f"--repo {repo!r} is not OWNER/NAME")
@@ -645,12 +648,27 @@ def main(argv: list[str]) -> int:
         body = f"Merged by tools/mergegate (ADR-0042) at {head[:7]}."
         if deferred:
             body += "\n\nDeferred review threads:\n" + "\n".join(f"- {d}" for d in deferred)
-        gh("pr", "merge", str(pr), "--repo", repo, "--merge", "--match-head-commit", head,
-           "--subject", f"Merge PR #{pr}: {info['title']}", "--body", body)
-        say(f"merged #{pr} at {head[:7]}")
+        try:
+            gh("pr", "merge", str(pr), "--repo", repo, "--merge", "--match-head-commit", head,
+               "--subject", f"Merge PR #{pr}: {info['title']}", "--body", body)
+            say(f"merged #{pr} at {head[:7]}")
+        except Refused as e:
+            failed = e
     except Refused as e:
         print(f"mergegate: REFUSED: {e}", file=sys.stderr)
         return 2
+    if failed:
+        # A failed or lost answer does not prove that nothing merged: GitHub's own state decides.
+        try:
+            state = get(gh_json("pr", "view", str(pr), "--repo", repo, "--json", "state,mergeCommit"),
+                        "state", str, f"PR #{pr}")
+        except Refused as e:
+            print(f"mergegate: MAY HAVE MERGED: {failed}; then the PR's state was unreadable: {e}", file=sys.stderr)
+            return 3
+        if state != "MERGED":
+            print(f"mergegate: REFUSED: {failed}", file=sys.stderr)
+            return 2
+        say(f"GitHub reports #{pr} merged, although the merge command failed: {failed}")
     try:
         say(f"main's CI passed on {verify_main(repo, pr)[:7]}")
         return 0

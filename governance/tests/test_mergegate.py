@@ -134,7 +134,7 @@ def clean():
     return {
         "pr-merged": {"argv": ["pr", "view", "mergeCommit"],
                       **ok({"state": "MERGED", "mergeCommit": {"oid": MERGED}})},
-        "pr": {"argv": ["pr", "view", "9999"], **ok(pr())},
+        "pr": {"argv": ["pr", "view", "9999", "number,state"], **ok(pr())},
         "ruleset": {"argv": ["api", "rules/branches/main"], **ok(ruleset())},
         "main": {"argv": ["api", "repos/o/r/branches/main"], **ok({"name": "main", "commit": {"sha": MAIN}})},
         "main-run": {"argv": ["run", "list", "--commit", MAIN],
@@ -772,10 +772,29 @@ class MergeGateTest(unittest.TestCase):
                 [review()], [review(), review(state="CHANGES_REQUESTED", at="2026-11-14T11:59:30Z")]))
             self.assertRefused(g, "CodeRabbit requested changes during the run")
 
-    def test_a_refused_merge_refuses(self):
-        g = self.gate({"merge": {"argv": ["pr", "merge", "--match-head-commit"], "exit": 1, "stderr": "Head branch was modified"}})
-        self.assertEqual(g.code, 2, g.err)
-        self.assertIn("Head branch was modified", g.err)
+    def test_a_failed_merge_command_is_reconciled_with_github(self):
+        """A merge command that fails, or whose answer is lost, may still have
+        merged: GitHub's own state of the PR decides the exit code."""
+        def failed(stderr):
+            return {"merge": {"argv": ["pr", "merge", "--match-head-commit"], "exit": 1, "stderr": stderr}}
+        still_open = {"pr-merged": {"argv": ["pr", "view", "mergeCommit"], **ok({"state": "OPEN", "mergeCommit": None})}}
+        unreadable = {"pr-merged": {"argv": ["pr", "view", "mergeCommit"], "exit": 1, "stderr": "HTTP 502"}}
+        cases = {
+            "GitHub refused it: refused": ({**failed("Head branch was modified"), **still_open}, 2,
+                                           "REFUSED: gh pr merge"),
+            "the answer was lost, and GitHub reports it open: refused": ({**failed(self.NET), **still_open}, 2,
+                                                                         "REFUSED: gh pr merge"),
+            "the answer was lost, but GitHub reports it merged: main's CI is verified": (
+                failed(self.NET), 0, "main's CI passed on bbbbbbb"),
+            "the answer was lost, and the PR is unreadable: it may have merged": (
+                {**failed(self.NET), **unreadable}, 3, "MAY HAVE MERGED"),
+        }
+        for name, (over, code, text) in cases.items():
+            with self.subTest(name):
+                g = self.gate(over)
+                self.assertEqual(g.code, code, g.err + g.out)
+                self.assertEqual(len(g.merges()), 1, "a merge command is never resent")
+                self.assertIn(text, g.err + g.out)
 
     # A network blip against api.github.com (seen on 2026-11-14: "error
     # connecting to api.github.com", "i/o timeout") retries the same read,
@@ -808,7 +827,6 @@ class MergeGateTest(unittest.TestCase):
 
     def test_a_write_is_never_retried(self):
         g = Gate(self.blip(argv=("pr", "merge", "--match-head-commit")), env={"MERGEGATE_RETRY_WAIT": "0"})
-        self.assertEqual(g.code, 2, g.err)
         self.assertEqual(len(g.merges()), 1, "a merge whose answer was lost may have happened: never resent")
 
     def test_dry_run_writes_nothing(self):

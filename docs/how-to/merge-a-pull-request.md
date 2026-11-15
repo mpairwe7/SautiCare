@@ -58,8 +58,8 @@ python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR>
 | Exit code | Meaning |
 |---|---|
 | 0 | merged, and `main`'s CI passed on the merge commit |
-| 2 | refused; nothing merged |
-| 3 | merged, but `main`'s CI on the merge commit failed or could not be confirmed. Treat `main` as broken until it is green. |
+| 2 | refused; nothing merged. After a failed merge command, this means that GitHub reports the PR still open. |
+| 3 | merged, but `main`'s CI on the merge commit failed or could not be confirmed. Treat `main` as broken until it is green. `MAY HAVE MERGED` means that the merge command failed and the PR's state could not be read: check the PR on GitHub before you run the gate again. |
 
 ## Adding a CI job
 
