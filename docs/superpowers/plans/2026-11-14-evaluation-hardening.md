@@ -172,7 +172,7 @@ From then on every merge goes through `tools/mergegate`.
 **Interfaces:**
 - Consumes Task 1.1's `gh`, `gh_json`, `gh_lines`, `Refused`.
 - Produces:
-  - `REVIEWER = "coderabbitai"` (the GraphQL login; the REST login is `"coderabbitai[bot]"`), `QUIET = timedelta(minutes=5)`.
+  - `REVIEWER = "coderabbitai"` (the GraphQL login; the REST login is `"coderabbitai[bot]"`), `QUIET = timedelta(minutes=30)` (CodeRabbit has answered a reply up to 22 minutes later, on PR #13).
   - `def now() -> datetime`: `MERGEGATE_NOW` parsed as ISO 8601 if set, else UTC now.
   - `def check_review(repo: str, pr: int, head: str) -> None`
   - `def judge_thread(thread: dict) -> bool`: True means settled. It takes no PR author: nothing the author writes settles a thread.
@@ -194,7 +194,7 @@ From then on every merge goes through `tools/mergegate`.
 - [ ] **Step 1: Write the failing tests:**
   - `test_a_head_without_a_coderabbit_review_refuses`, with subtests: no CodeRabbit review; a review of an older commit only (the rate-limited case).
   - `test_changes_requested_refuses`: the latest decisive CodeRabbit review requests changes.
-  - `test_activity_inside_the_quiet_window_refuses`, with subtests: an inline comment created 4 minutes before `MERGEGATE_NOW`; an issue comment updated 1 minute before.
+  - `test_activity_inside_the_quiet_window_refuses`, with subtests: an inline comment created 6 minutes before `MERGEGATE_NOW`; an issue comment updated 1 minute before; a review submitted 29 minutes before. Each exits 2 naming the quiet window. CodeRabbit activity 31 minutes before passes, and so does another account's comment 1 minute before.
   - `test_a_thread_query_error_refuses`: the GraphQL call exits 1 with "HTTP 403: API rate limit exceeded".
   - `test_a_thread_with_a_second_page_of_comments_refuses`.
   - `test_judge_thread`, a table calling `judge_thread` directly:
