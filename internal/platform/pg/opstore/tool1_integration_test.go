@@ -72,9 +72,49 @@ func TestProjectionParityTool1(t *testing.T) {
 	}
 }
 
-// Whatever incident.Apply refuses, the database refuses too, so a stored
-// history always folds and no identifier reaches a payload through SQL.
-func TestSQLRejectsWhatFoldRejects(t *testing.T) {
+// refusedInIntake and refusedWhenTriaged are payloads that the SQL write
+// path and incident.Apply each refuse, by the state they are sent in.
+var refusedInIntake = map[incident.EventType][]string{
+	incident.EvScreenAnswered: {
+		`{}`,
+		`{"screen":2,"answer":"1"}`,
+		`{"screen":9,"field":"danger","value":"yes"}`,
+		`{"screen":0,"field":"language","value":"en"}`,
+		`{"screen":2.5,"field":"danger","value":"yes"}`,
+		`{"screen":"2","field":"danger","value":"yes"}`,
+		`{"screen":3,"field":"danger","value":"yes"}`,
+		`{"screen":2,"field":"danger","value":""}`,
+		`{"screen":2,"field":"colour","value":"red"}`,
+		`{"screen":8,"field":"callback","value":"0772123456"}`,
+		`{"screen":7,"field":"landmark","value":"Kawempe market"}`,
+		`{"screen":2,"field":"danger","value":"yes","phone":"0772123456"}`,
+		`{"screen":8,"field":"callback","value":"provided"}`,
+		`{"screen":7,"field":"landmark","value":"other","identifier_id":"not-a-uuid"}`,
+		`{"screen":2,"field":"danger","value":"yes","identifier_id":"0195f3a2-7c1e-7d4b-9a10-2b3c4d5e6f70"}`,
+	},
+	incident.EvSessionResumed: {`{}`, `{"channel":"sms"}`, `{"channel":"ivr","phone":"0772123456"}`},
+	// Evaluation audit V-04 (EA-11, mutant I1): the fold accepted a
+	// classification with no valid severity that the SQL refused.
+	incident.EvClassified: {`{}`, `{"severity":""}`, `{"severity":"purple"}`, `{"severity":3}`, `{"severity":"RED"}`, `[]`},
+	incident.EvFlagged:    {`{}`, `{"flag":""}`, `{"flag":3}`, `{"flag":null}`, `[]`},
+}
+
+var refusedWhenTriaged = map[incident.EventType][]string{
+	incident.EvDispatchReady: {
+		`{"zone":{"col":1,"row":2},"location_quality":"guess"}`,
+		`{"zone":{"col":1},"location_quality":"ward"}`,
+		`{"location_quality":"ward"}`,
+		`{"zone":{"col":1.5,"row":2},"location_quality":"ward"}`,
+		`{"zone":{"col":1,"row":2,"lat":0.3},"location_quality":"ward"}`,
+	},
+}
+
+// sendRefused opens an incident and appends every payload of the corpus in
+// its state, classifying it red between the two parts. For each it calls
+// check with the stored history before the append, the event as sent (at
+// the last stored event's time: server time) and the write path's answer.
+func sendRefused(t *testing.T, check func(history []incident.Event, e incident.Event, err error)) {
+	t.Helper()
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
 	ctx := context.Background()
@@ -82,50 +122,55 @@ func TestSQLRejectsWhatFoldRejects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := map[incident.EventType][]string{
-		incident.EvScreenAnswered: {
-			`{}`,
-			`{"screen":2,"answer":"1"}`,
-			`{"screen":9,"field":"danger","value":"yes"}`,
-			`{"screen":0,"field":"language","value":"en"}`,
-			`{"screen":2.5,"field":"danger","value":"yes"}`,
-			`{"screen":"2","field":"danger","value":"yes"}`,
-			`{"screen":3,"field":"danger","value":"yes"}`,
-			`{"screen":2,"field":"danger","value":""}`,
-			`{"screen":2,"field":"colour","value":"red"}`,
-			`{"screen":8,"field":"callback","value":"0772123456"}`,
-			`{"screen":7,"field":"landmark","value":"Kawempe market"}`,
-			`{"screen":2,"field":"danger","value":"yes","phone":"0772123456"}`,
-			`{"screen":8,"field":"callback","value":"provided"}`,
-			`{"screen":7,"field":"landmark","value":"other","identifier_id":"not-a-uuid"}`,
-			`{"screen":2,"field":"danger","value":"yes","identifier_id":"0195f3a2-7c1e-7d4b-9a10-2b3c4d5e6f70"}`,
-		},
-		incident.EvSessionResumed: {`{}`, `{"channel":"sms"}`, `{"channel":"ivr","phone":"0772123456"}`},
-	}
-	for typ, payloads := range cases {
-		for i, p := range payloads {
-			_, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: typ, Payload: json.RawMessage(p),
-				ActorKind: incident.ActorSystem, IdemKey: fmt.Sprintf("bad:%s:%d", typ, i)})
-			if !errors.Is(err, incident.ErrIllegalTransition) {
-				t.Errorf("%s %s: err = %v, want ErrIllegalTransition", typ, p, err)
+	send := func(cases map[incident.EventType][]string) {
+		for typ, payloads := range cases {
+			for i, p := range payloads {
+				history, err := s.Events(ctx, o.IncidentID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				params := incident.AppendParams{IncidentID: o.IncidentID, Type: typ, Payload: json.RawMessage(p),
+					ActorKind: incident.ActorSystem, IdemKey: fmt.Sprintf("bad:%s:%d", typ, i)}
+				if typ == incident.EvClassified {
+					params.LogicVersion = testLogic // refused for its payload, not for a missing version
+				}
+				_, err = s.Append(ctx, params)
+				last := history[len(history)-1]
+				check(history, incident.Event{IncidentID: o.IncidentID, Seq: last.Seq + 1, Type: typ, RecordedAt: last.RecordedAt,
+					ActorKind: params.ActorKind, Payload: params.Payload, IdemKey: params.IdemKey, LogicVersion: params.LogicVersion}, err)
 			}
 		}
 	}
-	// dispatch_ready validation, from a triaged incident.
+	send(refusedInIntake)
 	appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"red"}`, "tool1-test+sha256:000000000000")
-	for i, p := range []string{
-		`{"zone":{"col":1,"row":2},"location_quality":"guess"}`,
-		`{"zone":{"col":1},"location_quality":"ward"}`,
-		`{"location_quality":"ward"}`,
-		`{"zone":{"col":1.5,"row":2},"location_quality":"ward"}`,
-		`{"zone":{"col":1,"row":2,"lat":0.3},"location_quality":"ward"}`,
-	} {
-		_, err := s.Append(ctx, incident.AppendParams{IncidentID: o.IncidentID, Type: incident.EvDispatchReady,
-			Payload: json.RawMessage(p), ActorKind: incident.ActorSystem, IdemKey: fmt.Sprintf("bad:dr:%d", i)})
+	send(refusedWhenTriaged)
+}
+
+// Whatever incident.Apply refuses, the database refuses too, so a stored
+// history always folds and no identifier reaches a payload through SQL.
+func TestSQLRejectsWhatFoldRejects(t *testing.T) {
+	sendRefused(t, func(_ []incident.Event, e incident.Event, err error) {
 		if !errors.Is(err, incident.ErrIllegalTransition) {
-			t.Errorf("dispatch_ready %s: err = %v, want ErrIllegalTransition", p, err)
+			t.Errorf("%s %s: err = %v, want ErrIllegalTransition", e.Type, e.Payload, err)
 		}
-	}
+	})
+}
+
+// Whatever the database refuses, incident.Apply refuses too, on the stored
+// history (evaluation audit V-04, EA-11: parity was tested one way only).
+func TestFoldRejectsWhatSQLRejects(t *testing.T) {
+	sendRefused(t, func(history []incident.Event, e incident.Event, err error) {
+		if err == nil {
+			return // TestSQLRejectsWhatFoldRejects reports it
+		}
+		p, ferr := incident.Fold(history)
+		if ferr != nil {
+			t.Fatalf("stored history does not fold: %v", ferr)
+		}
+		if got, aerr := incident.Apply(p, e); aerr == nil {
+			t.Errorf("%s %s: the database refused it (%v), the fold accepted it as %+v", e.Type, e.Payload, err, got)
+		}
+	})
 }
 
 // CodeRabbit PR #6: the database refuses a screen answer that changes an

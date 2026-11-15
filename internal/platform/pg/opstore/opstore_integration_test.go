@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -227,6 +228,59 @@ func TestAppendRejectsSeverityLowering(t *testing.T) {
 	}
 	if err := appendErr(s, o.IncidentID, incident.EvClassified, `{"severity":"green"}`, 0); !errors.Is(err, incident.ErrSeverityLowered) {
 		t.Fatalf("err = %v, want ErrSeverityLowered", err)
+	}
+}
+
+// The severity ratchet through the real write path, for every pair of
+// severities and both events that set one (evaluation audit V-04, ES-1),
+// with the expectations of internal/incident TestNoEventLowersSeverity: a
+// classification may keep or raise the severity, severity_raised must raise
+// it. A classification meets an incident still in intake that a merged call
+// raised to from; severity_raised meets an incident classified from that
+// absorbed a call classified to. A refused append leaves the severity alone.
+func TestAppendRejectsEverySeverityLowering(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	sevs := []incident.Severity{incident.SevGreen, incident.SevYellow, incident.SevRed}
+	for _, typ := range []incident.EventType{incident.EvClassified, incident.EvSeverityRaised} {
+		for _, from := range sevs {
+			for _, to := range sevs {
+				var survivor incident.Opened
+				var params incident.AppendParams
+				switch typ {
+				case incident.EvClassified:
+					var err error
+					if survivor, err = s.OpenIncident(ctx, openParams(t)); err != nil {
+						t.Fatal(err)
+					}
+					member := dispatchedAs(t, s, from)
+					absorb(t, s, survivor, member)
+					appendEv(t, s, survivor.IncidentID, incident.EvSeverityRaised, fmt.Sprintf(`{"severity":%q,"from":%q}`, from, member.IncidentID), "")
+					params = incident.AppendParams{Type: typ, Payload: json.RawMessage(fmt.Sprintf(`{"severity":%q}`, to)), LogicVersion: testLogic}
+				case incident.EvSeverityRaised:
+					survivor = dispatchedAs(t, s, from)
+					member := dispatchedAs(t, s, to)
+					absorb(t, s, survivor, member)
+					params = incident.AppendParams{Type: typ, Payload: json.RawMessage(fmt.Sprintf(`{"severity":%q,"from":%q}`, to, member.IncidentID))}
+				}
+				params.IncidentID, params.ActorKind, params.IdemKey = survivor.IncidentID, incident.ActorSystem, "ratchet"
+				_, err := s.Append(ctx, params)
+				got, perr := s.Projection(ctx, survivor.IncidentID)
+				if perr != nil {
+					t.Fatal(perr)
+				}
+				accepted := to.Rank() > from.Rank() || (typ == incident.EvClassified && to == from)
+				switch {
+				case accepted && (err != nil || got.Severity != to):
+					t.Errorf("%s %s -> %s: severity %s, err %v; want accepted", typ, from, to, got.Severity, err)
+				case !accepted && !errors.Is(err, incident.ErrSeverityLowered) && !errors.Is(err, incident.ErrIllegalTransition):
+					t.Errorf("%s %s -> %s: err = %v, want ErrSeverityLowered or ErrIllegalTransition", typ, from, to, err)
+				case !accepted && got.Severity != from:
+					t.Errorf("%s %s -> %s: refused, but the stored severity is %s", typ, from, to, got.Severity)
+				}
+			}
+		}
 	}
 }
 
