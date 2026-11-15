@@ -5,7 +5,7 @@
 | Owner | On-call engineer |
 | Severity | SEV-1 (tier 3 cannot page while this lasts) |
 | Alert / trigger | `SautiEscalationSignalStale`: `max(sauti_escalation_gauges_leader) < 1 or absent(sauti_escalation_gauges_leader)` for 2 minutes (`build/prometheus/sauti-rules.yml`) |
-| Last reviewed: | 2026-11-14 |
+| Last reviewed: | 2026-11-15 |
 | Last drilled | not yet drilled |
 
 ## Summary
@@ -15,7 +15,7 @@ intake-gw's leader exports the age of the oldest unacknowledged escalation: the 
 `SautiEscalationSignalStale` pages the on-call engineer after 2 minutes of any of these:
 - No intake-gw target is scraped, because every instance is down or Prometheus cannot reach them. The series is absent.
 - No instance leads: no intake-gw holds advisory lock 7347003, and every instance exports `sauti_escalation_gauges_leader 0`.
-- The leader's read of the escalations fails. The leader gauge is 0 until a read succeeds, and the log shows `escalation gauges not updated`.
+- The leader's read of the escalations fails, or does not answer within 10 seconds (a hung database connection). The leader gauge is 0 from that moment until a read succeeds, and the log shows `escalation gauges not updated` once the read returns.
 
 When the leader stops or restarts cleanly, the standby takes the lock within about 5 seconds, and nothing pages. A leader whose host dies keeps the lock until PostgreSQL drops its session. If that takes longer than 2 minutes, the alert pages, because the signal really is stale.
 

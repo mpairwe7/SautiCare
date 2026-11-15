@@ -214,3 +214,38 @@ func TestAFailedReadMarksTheGaugesStale(t *testing.T) {
 		t.Fatalf("after a failed read:\n%s", rec.Body.String())
 	}
 }
+
+// CodeRabbit on #19: a read that hangs, even one that ignores its context,
+// drops the leader gauge to 0 within gaugeReadTimeout, so the staleness
+// alert fires instead of the last age looking fresh; an answer after the
+// bound is not taken.
+func TestAHungReadMarksTheGaugesStale(t *testing.T) {
+	if gaugeReadTimeout >= sweepEvery {
+		t.Fatalf("a %s read bound lets reads pile up at a %s interval", gaugeReadTimeout, sweepEvery)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		reg := metrics.NewRegistry()
+		g := newEscalationGauges(reg)
+		leader := func(v string) bool {
+			rec := httptest.NewRecorder()
+			reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			return hasSample(rec.Body.String(), "sauti_escalation_gauges_leader "+v)
+		}
+		if err := g.update(t.Context(), escalationAgeFunc(func(context.Context) (float64, int, error) { return 30, 1, nil })); err != nil || !leader("1") {
+			t.Fatalf("a fresh read: %v", err)
+		}
+		release := make(chan struct{})
+		hung := escalationAgeFunc(func(context.Context) (float64, int, error) { <-release; return 30, 1, nil })
+		errc := make(chan error, 1)
+		go func() { errc <- g.update(t.Context(), hung) }()
+		time.Sleep(gaugeReadTimeout)
+		synctest.Wait()
+		if !leader("0") {
+			t.Error("a read hung for the whole bound still exports leader 1")
+		}
+		close(release)
+		if err := <-errc; err == nil || !leader("0") {
+			t.Fatalf("an answer after the bound was taken as fresh: %v", err)
+		}
+	})
+}

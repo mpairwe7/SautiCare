@@ -57,6 +57,10 @@ const sweeperLeaderKey = 7347003
 // sweepEvery is how often the leader looks for abandoned sessions.
 const sweepEvery = 15 * time.Second
 
+// gaugeReadTimeout bounds one dead-man read: under sweepEvery, so reads do
+// not pile up, and far under the staleness alert's 2 m `for` window.
+const gaugeReadTimeout = 10 * time.Second
+
 func main() {
 	log := slog.New(logging.NewHandler(os.Stderr, slog.LevelInfo))
 	if err := run(log); err != nil && !errors.Is(err, context.Canceled) {
@@ -255,7 +259,14 @@ func newEscalationGauges(reg *metrics.Registry) escalationGauges {
 }
 
 func (g escalationGauges) update(ctx context.Context, r escalationAges) error {
-	secs, n, err := r.OldestUnacknowledgedEscalation(ctx)
+	rctx, cancel := context.WithTimeout(ctx, gaugeReadTimeout)
+	defer cancel()
+	// At the bound the signal goes stale even if the read never returns.
+	inTime := context.AfterFunc(rctx, func() { g.leader.Set(0) })
+	secs, n, err := r.OldestUnacknowledgedEscalation(rctx)
+	if !inTime() && err == nil {
+		err = fmt.Errorf("escalation gauge read answered after %s: %w", gaugeReadTimeout, rctx.Err())
+	}
 	if err != nil {
 		g.leader.Set(0) // nothing fresh is exported until a read succeeds
 		return err
