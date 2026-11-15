@@ -47,6 +47,7 @@ Chosen option: **a digest, a trigger and property tests.** This supersedes ADR-0
 * Good: an older or withdrawn bundle signed by a trusted key no longer starts. Every stored classification names its rule set.
 * Bad: every re-signed bundle needs a second gated edit, the new digest, or intake refuses to start. EV-4 re-signs the bundle and updates the digest in the same change.
 * Bad: a writer that classifies without a logic version now fails, in Go and in SQL. No production path does; the unit fixtures of `internal/incident` now stamp a version.
+* Bad: a history stored before 0039 that holds an unversioned classification no longer folds, so `sautictl verify-projections` reports it and a retried append to it fails. No release path wrote one. The release counts them before migrating ([database-migrations.md](../runbooks/database-migrations.md), item 7).
 * Neutral: the configuration fingerprint changes, because `config/gated/triage.yaml` changed. With the study window inactive, the amendment gate passes it.
 
 ### Confirmation
