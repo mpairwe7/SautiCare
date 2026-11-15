@@ -151,7 +151,7 @@ From then on every merge goes through `tools/mergegate`.
 **The stub `gh`.** `stub_gh.py` reads a JSON scenario from `STUB_GH_SCENARIO`: a list of `{"argv": [tokens], "exit": int, "stdout": str, "stderr": str}`. It answers with the first rule whose tokens all appear in its own arguments in order, and appends its arguments as one JSON line to `STUB_GH_LOG`. With no matching rule it exits 99 with "stub gh: no rule for …", so an unexpected call fails closed. A helper in the test module builds a clean scenario (every answer a mergeable PR, head `"a" * 40`, title "T", author "dev") that each test overrides one rule of. Tests run `python3 -m tools.mergegate --repo o/r 9999` as a subprocess with `MERGEGATE_GH` set to `<sys.executable> governance/tests/stub_gh.py` and `MERGEGATE_NOW` set to a fixed UTC time.
 
 - [ ] **Step 1: Write the failing tests** in `governance/tests/test_mergegate.py`:
-  - `test_a_clean_pr_merges_with_the_head_pinned`: exit 0; the log holds `["pr", "merge", "9999", "--repo", "o/r", "--merge", "--match-head-commit", "a"*40, "--subject", "Merge PR #9999: T"]`.
+  - `test_a_clean_pr_merges_with_the_head_pinned`: exit 0; the log holds `["pr", "merge", "9999", "--repo", "o/r", "--merge", "--match-head-commit", "a"*40, "--subject", "Merge PR #9999: T", "--body", "Merged by tools/mergegate (ADR-0042) at aaaaaaa."]`.
   - `test_an_unreadable_pr_refuses`: `pr view` exits 1 with "HTTP 502". Exit 2; no `pr merge` in the log.
   - `test_an_unreadable_check_list_refuses`: `pr checks` exits 1 with "no checks reported". Exit 2.
   - `test_a_missing_required_check_refuses`: the check list lacks "governance and living docs". Exit 2, and stderr names it.
@@ -229,7 +229,7 @@ From then on every merge goes through `tools/mergegate`.
 
 **Rules:**
 - After the threads, re-read `headRefOid`. If it moved, refuse: "the head moved during the run".
-- Merge with `gh pr merge <pr> --repo R --merge --match-head-commit <head> --subject "Merge PR #<pr>: <title>"`. A non-zero exit refuses. On success print `mergegate: merged #<pr> at <head[:7]>`.
+- Merge with `gh pr merge <pr> --repo R --merge --match-head-commit <head> --subject "Merge PR #<pr>: <title>" --body "<body>"`. `<body>` is `Merged by tools/mergegate (ADR-0042) at <head[:7]>.`; when threads were deferred, it continues with `Deferred review threads:` and one line for each deferral: its thread URL, its issue and CodeRabbit's quoted words. A non-zero exit refuses. On success print `mergegate: merged #<pr> at <head[:7]>`.
 - The gate never calls `pr comment`, `pr review`, any `dismissals` endpoint, `--admin` or `--auto`.
 - `--dry-run` performs every read, prints `mergegate: would merge #<pr> at <head[:7]>` and returns 0, with no mutation and no merge.
 
