@@ -322,11 +322,12 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> bool:
     # A thread reply or a command approval is a review with an empty body,
     # stamped with whatever the head was: it is not a review of the code.
     real = [r for r in mine if visible(get(r, "body", str, "a CodeRabbit review")).strip()]
-    if not real:
-        raise Refused(f"CodeRabbit has not reviewed PR #{pr}")
-    if (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
-        raise Refused(f"CodeRabbit's latest review is of {commit[:7]}, not the head {head[:7]} "
-                      "(rate-limited or not reviewed yet); re-run once it has reviewed the head")
+    if not summary_reviewed(repo, pr, head):
+        if not real:
+            raise Refused(f"CodeRabbit has not reviewed PR #{pr}")
+        if (commit := get(real[-1], "commit_id", str, "a CodeRabbit review")) != head:
+            raise Refused(f"CodeRabbit's latest review is of {commit[:7]}, not the head {head[:7]} "
+                          "(rate-limited or not reviewed yet); re-run once it has reviewed the head")
     if not quiet:
         return requests_changes(mine)
     times = [when(r["submitted_at"]) for r in mine]
@@ -338,6 +339,23 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True) -> bool:
         raise Refused(f"CodeRabbit was active {int(ago.total_seconds())} s ago; "
                       f"re-run after {int(QUIET.total_seconds() // 60)} quiet minutes")
     return requests_changes(mine)
+
+
+REVIEWED_RANGE = re.compile(r"\bbetween ([0-9a-f]{40}) and ([0-9a-f]{40})\b")
+
+
+def summary_reviewed(repo: str, pr: int, head: str) -> bool:
+    """CodeRabbit's walkthrough records the commits it reviewed. An incremental
+    review that finds nothing leaves only that record and an empty-body
+    approval (PR #17), so its last range ending at the full head SHA counts as
+    a review of the head. Only CodeRabbit's own comments count."""
+    for cm in items(f"repos/{repo}/issues/{pr}/comments?per_page=100"):
+        body = cm.get("body")
+        if login(cm) == REVIEWER_REST and isinstance(body, str):
+            ranges = REVIEWED_RANGE.findall(body)
+            if ranges and ranges[-1][1] == head:
+                return True
+    return False
 
 
 def visible(body: str, keep_markers: bool = False) -> str:

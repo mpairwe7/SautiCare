@@ -342,6 +342,38 @@ class MergeGateTest(unittest.TestCase):
     def threads(self, *ts):
         return {"threads": {"argv": ["api", "graphql", "reviewThreads"], **ok(threads_page(*ts))}}
 
+    # PR #17: an incremental review that finds nothing leaves an empty-body
+    # approval plus the walkthrough's record of the commits it reviewed. A
+    # range CodeRabbit wrote that ends at the full head SHA is its review of
+    # the head; any other range, or one written by anyone else, is not.
+    OLD = "c" * 40
+
+    def summary(self, end, user=CR_REST, start=None):
+        body = ("<!-- walkthrough_start -->\n<details><summary>Review details</summary>\nReviewing files that "
+                f"changed from the base of the PR and between {start or self.OLD} and {end}.\n</details>")
+        return {"argv": ["api", "issues/9999/comments"],
+                **ok([[{**activity("2026-11-14T09:00:00Z", "2026-11-14T10:05:00Z", user), "body": body}]])}
+
+    def test_a_summary_range_ending_at_the_head_counts_as_its_review(self):
+        g = self.gate({"reviews": {"argv": ["api", "pulls/9999/reviews"],
+                                   **ok([[review(commit=self.OLD),
+                                          review(state="APPROVED", at="2026-11-14T10:10:00Z", body="")]])},
+                       "issue-comments": self.summary(HEAD)})
+        self.assertEqual(g.code, 0, g.err)
+        self.assertEqual(len(g.merges()), 1)
+
+    def test_a_summary_range_that_misses_the_head_does_not_count(self):
+        for name, rule in {"ends at an older commit": self.summary(self.OLD, start="e" * 40),
+                           "a short SHA": self.summary(HEAD[:7]),
+                           "another commit with the head's short SHA": self.summary(HEAD[:7] + "f" * 33),
+                           "written by someone else": self.summary(HEAD, user="dev")}.items():
+            with self.subTest(name):
+                g = self.gate({"reviews": {"argv": ["api", "pulls/9999/reviews"],
+                                           **ok([[review(commit=self.OLD),
+                                                  review(state="APPROVED", at="2026-11-14T10:10:00Z", body="")]])},
+                               "issue-comments": rule})
+                self.assertRefused(g, "not the head")
+
     def test_a_head_without_a_coderabbit_review_refuses(self):
         cases = {
             "no CodeRabbit review": [review(user="dev")],
