@@ -3,6 +3,7 @@ package incident
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 	"uuid"
@@ -14,11 +15,14 @@ var (
 	t0         = time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 )
 
+// fixtureLogic is the logic version every fixture classification carries.
+const fixtureLogic = "tr-test+sha256:0123456789ab"
+
 func ev(seq int64, typ EventType, payload string) Event {
 	if payload == "" {
 		payload = "{}"
 	}
-	return Event{
+	e := Event{
 		ID:         uuid.NewV7(),
 		IncidentID: fixtureID,
 		Seq:        seq,
@@ -28,6 +32,10 @@ func ev(seq int64, typ EventType, payload string) Event {
 		Payload:    json.RawMessage(payload),
 		IdemKey:    string(typ),
 	}
+	if typ == EvClassified {
+		e.LogicVersion = fixtureLogic
+	}
+	return e
 }
 
 // FixtureLifecycle is the M0 fixture: a red incident from call to closure.
@@ -115,6 +123,89 @@ func TestApplyRejectsSeverityLowering(t *testing.T) {
 	p.State = StateIntake // allow a second classification attempt structurally
 	if _, err := Apply(p, ev(4, EvClassified, `{"severity":"green"}`)); !errors.Is(err, ErrSeverityLowered) {
 		t.Fatalf("lowering red->green: err = %v, want ErrSeverityLowered", err)
+	}
+}
+
+var severities = []Severity{SevGreen, SevYellow, SevRed}
+
+// atSeverity returns a projection at severity from that can take an event of
+// type typ, and that event raising or lowering it to to. A classification
+// meets an incident still in intake that a merged call raised to from; a
+// severity_raised meets an incident classified from with a call merged in.
+func atSeverity(t *testing.T, typ EventType, from, to Severity) (Projection, Event) {
+	t.Helper()
+	src := uuid.MustParse("0195f3a2-7c1e-7d4b-9a10-0000000000c1")
+	raise := func(seq int64, s Severity) Event {
+		return ev(seq, EvSeverityRaised, fmt.Sprintf(`{"severity":%q,"from":%q}`, s, src))
+	}
+	var history []Event
+	var next Event
+	switch typ {
+	case EvClassified:
+		history = []Event{started(), absorbed(2, src, t0), raise(3, from)}
+		next = ev(4, EvClassified, fmt.Sprintf(`{"severity":%q}`, to))
+	case EvSeverityRaised:
+		history = []Event{started(), ev(2, EvClassified, fmt.Sprintf(`{"severity":%q}`, from)), absorbed(3, src, t0)}
+		next = raise(4, to)
+	}
+	p, err := Fold(history)
+	if err != nil || p.Severity != from {
+		t.Fatalf("%s at %s: %+v %v", typ, from, p, err)
+	}
+	return p, next
+}
+
+// No event lowers a severity (hard constraint 3), for every pair of
+// severities and both events that set one (evaluation audit V-04, ES-1):
+// a classification may keep or raise the severity, severity_raised must
+// raise it, and a refused event leaves the projection's severity as it was.
+// internal/platform/pg/opstore TestAppendRejectsEverySeverityLowering is the
+// same table through the SQL write path.
+func TestNoEventLowersSeverity(t *testing.T) {
+	for _, typ := range []EventType{EvClassified, EvSeverityRaised} {
+		for _, from := range severities {
+			for _, to := range severities {
+				p, e := atSeverity(t, typ, from, to)
+				accepted := to.Rank() > from.Rank() || (typ == EvClassified && to == from)
+				got, err := Apply(p, e)
+				switch {
+				case accepted && (err != nil || got.Severity != to):
+					t.Errorf("%s %s -> %s: severity %s, err %v; want accepted", typ, from, to, got.Severity, err)
+				case !accepted && !errors.Is(err, ErrSeverityLowered) && !errors.Is(err, ErrIllegalTransition):
+					t.Errorf("%s %s -> %s: err = %v, want ErrSeverityLowered or ErrIllegalTransition", typ, from, to, err)
+				case !accepted && got.Severity != from:
+					t.Errorf("%s %s -> %s: refused, but the projection's severity is %s", typ, from, to, got.Severity)
+				}
+			}
+		}
+	}
+}
+
+// Every payload the SQL write path refuses for these event types, the fold
+// refuses too (evaluation audit V-04, EA-11: mutant I1 lived because only
+// the SQL refused a classification with no valid severity).
+func TestApplyRejectsMalformedPayloads(t *testing.T) {
+	src := uuid.NewV7()
+	intake, err := Fold([]Event{started(), absorbed(2, src, t0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for typ, payloads := range map[EventType][]string{
+		EvClassified: {`{}`, `{"severity":""}`, `{"severity":"purple"}`, `{"severity":3}`, `{"severity":"RED"}`, `[]`, `null`},
+		EvFlagged:    {`{}`, `{"flag":""}`, `{"flag":3}`, `{"flag":null}`, `[]`},
+		EvSeverityRaised: {
+			`{"from":"` + src.String() + `"}`,
+			`{"severity":"red"}`,
+			`{"severity":"","from":"` + src.String() + `"}`,
+			`{"severity":"red","from":""}`,
+		},
+	} {
+		for _, pl := range payloads {
+			got, err := Apply(intake, ev(3, typ, pl))
+			if err == nil {
+				t.Errorf("%s %s: accepted as %+v", typ, pl, got)
+			}
+		}
 	}
 }
 
