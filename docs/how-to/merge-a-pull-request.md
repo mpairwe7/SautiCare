@@ -45,7 +45,7 @@ The dry run reads everything and writes nothing. It prints one line per gate tha
 python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR> --dry-run --defer <COMMENT_ID>=<ISSUE>
 ```
 
-`COMMENT_ID` is the number in the thread's `discussion_r…` link. The gate accepts a deferral only to an open issue, and only on CodeRabbit's own last word. The merge commit records it.
+`COMMENT_ID` is the number in the thread's `discussion_r…` link. The gate accepts a deferral only to an open issue, and only when CodeRabbit's own last word in the thread says that no further change is needed in this PR, for example `I do not see another code or plan change needed in this PR`. The merge commit records it.
 
 ## 3. Merge
 

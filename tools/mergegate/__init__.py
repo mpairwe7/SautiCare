@@ -15,7 +15,8 @@ evaluation audit V-02).
     been quiet for QUIET;
   * every review thread is settled by its last word: CodeRabbit's, and a
     concession; or it is deferred explicitly (--defer) to an open issue,
-    on CodeRabbit's own last word, and the merge commit records it.
+    on CodeRabbit's own last word that no further change is needed in this
+    PR, and the merge commit records it.
 If CodeRabbit's latest decisive review still requests changes once every
 thread is settled, it posts `@coderabbitai resolve` (never while a thread is
 open), waits up to 15 minutes for CodeRabbit to stop requesting changes, and
@@ -74,6 +75,10 @@ COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
 # qualifier gone.
 CODE_OWNER_REVIEW_ENFORCED = False
 DEFER = re.compile(r"^(\d+)=(\d+)$")
+# CodeRabbit's consent to a deferral, as it wrote it on PR #14: "I do not see
+# another code or plan change needed in this PR".
+CONSENTS = re.compile(r"(?i)\b(I do not see (another|any)|no (further|other|more)) ([\w-]+ ){0,3}"
+                      r"change (is )?needed in this PR\b")
 THREADS = """query($owner: String!, $name: String!, $n: Int!, $after: String) {
   repository(owner: $owner, name: $name) { pullRequest(number: $n) {
     reviewThreads(first: 100, after: $after) {
@@ -468,6 +473,9 @@ def deferral(repo: str, t: dict, issue: int) -> str:
     if len(words) != 1 or words[0][0] == 0 or not words[0][2] or re.search(r"(?i)rate.limit", said):
         raise Refused(f"--defer: the last word in {url} is not a CodeRabbit reply that evaluated it; "
                       "a deferral rests on what CodeRabbit itself said")
+    if not CONSENTS.search(said):
+        raise Refused(f"--defer: CodeRabbit's last word in {url} does not say that no further change is needed "
+                      "in this PR; a deferral needs its consent")
     v = gh_json("issue", "view", str(issue), "--repo", repo, "--json", "number,state")
     if get(v, "number", int, f"issue #{issue}") != issue or get(v, "state", str, f"issue #{issue}") != "OPEN":
         raise Refused(f"--defer: issue #{issue} for {url} is not an open issue")

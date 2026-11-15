@@ -699,9 +699,17 @@ class MergeGateTest(unittest.TestCase):
                 self.assertRefused(self.gate({**self.threads(SETTLED, DEFERRABLE), **over}, *args), reason)
         conceded = thread("PRRT_6", c(CR, FINDING, "2026-11-14T09:30:00Z", n=601),
                           c(CR, "✅ Addressed in commit abc1234", "2026-11-14T09:40:00Z"))
+        def answered(n, said):
+            return thread(f"PRRT_{n}", c(CR, FINDING, "2026-11-14T09:30:00Z", n=n),
+                          c("dev", "Tracked in #16.", "2026-11-14T09:40:00Z"), c(CR, said, "2026-11-14T09:50:00Z"))
+        no_consent = "does not say that no further change is needed in this PR"
         for name, t, n, reason in (("the author had the last word", author_last, 301, "not a CodeRabbit reply"),
                                    ("the last word is a rate-limit notice", limited, 401, "not a CodeRabbit reply"),
-                                   ("the thread is already settled", conceded, 601, "already settled")):
+                                   ("the thread is already settled", conceded, 601, "already settled"),
+                                   ("CodeRabbit objects", answered(1001, "`@dev` Please fix this before merging."),
+                                    1001, no_consent),
+                                   ("CodeRabbit gives no verdict", answered(1002, "`@dev` The staging drill remains "
+                                                                            "a go-live gate."), 1002, no_consent)):
             with self.subTest(name):
                 g = self.gate(self.threads(t), "--defer", f"{n}=16")
                 self.assertRefused(g, f"discussion_r{n}")
