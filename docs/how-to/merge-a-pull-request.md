@@ -48,7 +48,7 @@ The dry run reads everything and writes nothing. It prints one line per gate tha
 python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR> --dry-run --defer <COMMENT_ID>=<ISSUE>
 ```
 
-`COMMENT_ID` is the number in the thread's `discussion_r…` link. The gate accepts a deferral only to an open issue, and only when CodeRabbit's own last word in the thread says that no further change is needed in this PR, for example `I do not see another code or plan change needed in this PR`. The merge commit records it.
+`COMMENT_ID` is the number in the thread's `discussion_r…` link. The gate accepts a deferral only to an open issue, and only when CodeRabbit's own last word in the thread says that no further change is needed in this PR, for example `I do not see another code or plan change needed in this PR`, and no sentence of that reply objects to the merge: none opens with "However" or "But", and none asks for a change before the merge or in this PR. The merge commit records it.
 
 **When CodeRabbit has resolved a thread itself but the gate still reads it as open.** The gate settles a reply automatically only when the whole reply is a concession. CodeRabbit often adds neutral detail ("the tests are planned; I did not run them") and ends with its own "Review thread resolved.". It also writes that line under a new defect, though, so the line settles nothing by itself. Read CodeRabbit's last reply:
 - If it raises nothing new, or you have already fixed what it asked, accept the thread:
@@ -57,7 +57,7 @@ python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR> --dry-run --defer <COM
   python3 -m tools.mergegate --repo mpairwe7/SautiCare <PR> --dry-run --accept <COMMENT_ID>
   ```
 
-  The gate accepts it only if CodeRabbit has the last word and that reply ends with its own resolution line. The merge commit records the acceptance with CodeRabbit's words.
+  The gate accepts it only if CodeRabbit has the last word and that reply ends with its own resolution line. The merge commit records the acceptance with the reply's link, its time and CodeRabbit's words. If CodeRabbit adds or edits a reply in that thread while the gate runs, the acceptance no longer applies and the gate refuses: read the new reply, then run the gate again.
 - If it states a new defect, fix it and reply in the thread. Do not accept it.
 
 ## 3. Merge

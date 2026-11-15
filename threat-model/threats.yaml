@@ -637,3 +637,5 @@ threats:
       - governance/tests/test_mergegate.py::test_the_docs_name_no_enforced_codeowners_approval
       - governance/tests/test_mergegate.py::test_a_head_without_a_coderabbit_review_merges_only_when_clean_and_old
       - governance/tests/test_mergegate.py::test_an_unreviewed_head_refuses_unless_github_reports_it_clean
+      - governance/tests/test_mergegate.py::test_an_acceptance_holds_only_for_the_reply_first_read
+      - governance/tests/test_mergegate.py::test_the_quiet_window_is_read_again_after_the_writes
