@@ -6,6 +6,8 @@
 //	R3  network, process and database packages appear only in
 //	    internal/platform, cmd, tests and tools
 //	R4  only cmd/pseudonymiser links both the operational and analytic stores
+//	R5  only internal/intake, internal/platform/wiring and cmd/sautictl
+//	    import internal/triage (test files exempt)
 //
 // Usage: go run ./tools/archcheck
 package main

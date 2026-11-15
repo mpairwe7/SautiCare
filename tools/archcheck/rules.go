@@ -36,3 +36,10 @@ var ioLocations = []string{"internal/platform/", "cmd/", "tests/", "tools/"}
 var storeJoin = [2]string{"internal/platform/pg/opstore", "internal/platform/pg/analyticstore"}
 
 const pseudonymiser = "cmd/pseudonymiser"
+
+// triagePkg classifies severity; only triageImporters (and their
+// subpackages) may import it, so no other package can classify (R5;
+// evaluation audit V-04, V-33). Test files are not checked.
+const triagePkg = "internal/triage"
+
+var triageImporters = []string{"internal/triage", "internal/intake", "internal/platform/wiring", "cmd/sautictl"}

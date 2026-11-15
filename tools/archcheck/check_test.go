@@ -2,6 +2,8 @@ package main
 
 import (
 	"os/exec"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -62,6 +64,41 @@ func TestR4OnlyPseudonymiserJoinsStores(t *testing.T) {
 	})
 	if got := rules(vs)["R4"]; got != 1 || vs[0].Package != mod+"/cmd/console-api" {
 		t.Fatalf("violations = %v, want one R4 for console-api", vs)
+	}
+}
+
+// Only intake, the wiring and sautictl may import triage (R5; evaluation
+// audit V-04, V-33, ES-10): a future package, such as the P2 speech assist,
+// cannot classify. Test files are exempt: `go list` reports their imports
+// separately (TestImports, XTestImports), so Decode never sees them.
+func TestOnlyIntakeWiringAndSautictlImportTriage(t *testing.T) {
+	triage := mod + "/internal/triage"
+	vs := Check(mod, []Package{
+		pkg("internal/assist", triage),
+		pkg("internal/platform/asr", triage),
+		pkg("cmd/intake-gw", triage),
+		pkg("tools/triagelint", triage),
+		pkg("internal/intake", triage),
+		pkg("internal/platform/wiring", triage),
+		pkg("cmd/sautictl", triage),
+	})
+	var r5 []string
+	for _, v := range vs {
+		if v.Rule == "R5" {
+			r5 = append(r5, strings.TrimPrefix(v.Package, mod+"/"))
+		}
+	}
+	if want := []string{"internal/assist", "internal/platform/asr", "cmd/intake-gw", "tools/triagelint"}; !slices.Equal(r5, want) {
+		t.Fatalf("R5 violations for %v, want %v (all: %v)", r5, want, vs)
+	}
+	listed := `{"ImportPath":"` + mod + `/internal/dispatch","Imports":["` + mod + `/internal/incident"],` +
+		`"TestImports":["` + triage + `"],"XTestImports":["` + triage + `"]}`
+	pkgs, err := Decode([]byte(listed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vs := Check(mod, pkgs); len(vs) != 0 {
+		t.Fatalf("a test file's import of triage: %v, want none", vs)
 	}
 }
 
