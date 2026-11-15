@@ -62,7 +62,7 @@ Each bounded context in `internal/` holds pure domain logic and application serv
 - `location`: the UTM 36N grid and the gazetteer port (M1, ADR-0020).
 - `pii`: masked identifier types.
 
-Adapters live in `internal/platform/`; `cmd/` holds the composition roots, and `internal/platform/wiring` composes intake with every start-up check so all processes and tests build it the same way. A context never imports an adapter, and contexts import each other only along declared edges. `tools/archcheck` enforces both rules in CI ([ADR-0002](../adr/ADR-0002-hexagonal-modular-monolith.md)).
+Adapters live in `internal/platform/`; `cmd/` holds the composition roots, and `internal/platform/wiring` composes intake with every start-up check so all processes and tests build it the same way. A context never imports an adapter, and contexts import each other only along declared edges. `tools/archcheck` enforces both rules in CI ([ADR-0002](../adr/ADR-0002-hexagonal-modular-monolith.md)). Its rule R5 lets only `intake`, the wiring and `sautictl` import `triage`, so no other package can classify ([ADR-0043](../adr/ADR-0043-approved-bundle-and-logic-version.md)).
 
 ## The write path
 

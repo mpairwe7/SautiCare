@@ -24,7 +24,7 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0016](ADR-0016-living-documentation-mapping.md) | Living-documentation mapping of the global engineering rules | Accepted | 2026-11-12 |
 | [ADR-0017](ADR-0017-metrics-exposition.md) | In-house Prometheus metrics until the OpenTelemetry SDK | Accepted | 2026-11-12 |
 | [ADR-0018](ADR-0018-session-state-in-postgresql.md) | Tool 1 session state in PostgreSQL; Valkey deferred | Accepted | 2026-11-12 |
-| [ADR-0019](ADR-0019-signed-triage-decision-table.md) | Triage as a signed CEL decision table | Accepted | 2026-11-12 |
+| [ADR-0019](ADR-0019-signed-triage-decision-table.md) | Triage as a signed CEL decision table | Accepted; superseded in part by ADR-0043 | 2026-11-12 |
 | [ADR-0020](ADR-0020-location-grid-and-gazetteer.md) | UTM 36N grid in Go and a frozen gazetteer with pg_trgm matching | Accepted | 2026-11-12 |
 | [ADR-0021](ADR-0021-sealed-answers-and-keyed-step-keys.md) | Screen-answer identifiers sealed; USSD step keys keyed hashes | Accepted | 2026-11-12 |
 | [ADR-0022](ADR-0022-deduplication-merge-and-split.md) | Deduplication at T2 into the incident already dispatching; coordinator split | Accepted | 2026-11-12 |
@@ -40,5 +40,6 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 | [ADR-0040](ADR-0040-repository-layout-follows-the-reference-architecture.md) | Repository layout follows the reference architecture | Accepted | 2026-11-14 |
 | [ADR-0041](ADR-0041-evaluation-strategy-and-quality-gates.md) | Evaluation strategy and quality gates: test what a person receives, properties for safety invariants, mutation testing, complete clinical expectations, provider contracts, binary smoke tests, run-proven pointers, tested alert rules, a fail-closed merge gate, drill freshness, severity by consequence | Accepted | 2026-11-14 |
 | [ADR-0042](ADR-0042-fail-closed-merge-gate.md) | A fail-closed merge gate: the CI pipeline's required checks on the head from the ruleset's app (any other check warns), CodeRabbit's review of the head and a quiet window, each thread settled by CodeRabbit's last word or an explicit deferral, the resolve command posted only after clean verdicts, the head pinned, main verified after the merge; owner decision O-1: no human review; O-2: an unreviewed head merges if GitHub reports it CLEAN or UNSTABLE | Accepted | 2026-11-15 |
+| [ADR-0043](ADR-0043-approved-bundle-and-logic-version.md) | Only the approved bundle runs, and every classification names it: an approved digest pins the signed bundle; migration 0039 and the fold refuse a classification without a logic version; the severity ratchet, fold-SQL parity and fail-safe red as property tests; archcheck R5 keeps triage to intake | Accepted | 2026-11-15 |
 
 ADR-0030 to ADR-0038 are reserved by the M3 and UX-hardening plans (`docs/superpowers/plans/`).

@@ -53,13 +53,23 @@ threats:
     asset: incident classification and logic version
     hard_constraints: [3, 11]
     mitigations:
-      - Severity ratchet in the Go reducer and in the SQL write path
+      - Severity ratchet in the Go reducer and in the SQL write path, tested over every pair of severities in both and over generated event histories in Go, so a later copy of the append function that weakens the guard by one step fails CI
+      - The fold refuses every payload the SQL write path refuses, and the reverse
       - Versioned, fingerprinted configuration behind the amendment gate
-      - Signed CEL decision tables with clinical scenarios (M1)
+      - Signed CEL decision tables with clinical scenarios (M1); only the bundle whose sha256 is the gated approved_sha256 runs, so an older or withdrawn bundle signed by a trusted key is refused (ADR-0043)
+      - A classification without a logic version is refused in Go and by an event-log trigger (migration 0039)
+      - Only intake, the wiring and sautictl may import triage (archcheck R5)
       - An answered Tool 1 field never changes (Go fold and an event-log trigger), so the answers a classification read cannot be rewritten
     verified_by:
       - internal/incident/fold_test.go::TestApplyRejectsSeverityLowering
       - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering
+      - internal/incident/fold_test.go::TestNoEventLowersSeverity
+      - internal/incident/fuzz_test.go::TestFoldSeverityNeverFallsProperty
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsEverySeverityLowering
+      - internal/platform/pg/opstore/tool1_integration_test.go::TestFoldRejectsWhatSQLRejects
+      - internal/platform/wiring/intake_test.go::TestBuildIntakeRefusesAnUnapprovedBundle
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRequiresLogicVersionOnClassification
+      - tools/archcheck/check_test.go::TestOnlyIntakeWiringAndSautictlImportTriage
       - internal/incident/tool1_test.go::TestApplyRefusesAChangedAnswer
       - internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRefusesAChangedAnswer
       - tools/amendgate/check_test.go::TestCheckFailsGatedChangeWithoutAmendment
