@@ -74,8 +74,11 @@ OBJECTS = re.compile(r"(?i)\b(not|no longer|still|remains?|however|but|unverifie
                      r"|rate.limit\w*)\b|please|\?")
 # What a reader does not see as the comment's own word: code fences (an
 # unclosed one runs to the end), collapsed sections (innermost first; an
-# unclosed one hides the rest), HTML comments, and quoted lines.
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[ \t]*$|\Z)", re.M | re.S)
+# unclosed one hides the rest), HTML comments, and quoted lines. As in CommonMark,
+# a fence closes on a run of its own character at least as long as its opener, and
+# a backtick opener's info string has no backtick (otherwise it is inline code).
+FENCE = re.compile(r"^ {0,3}(?:(`{3,})[^`\n]*|(~{3,})[^\n]*)\n.*?(?:^ {0,3}(?(1)\1`*|\2~*)[ \t]*$|\Z)",
+                   re.M | re.S)
 DETAILS = re.compile(r"<details\b[^>]*>(?:(?!<details\b).)*?</details>", re.S)
 COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
 # Ruleset 27260742 does not require code-owner review, by the owner's decision

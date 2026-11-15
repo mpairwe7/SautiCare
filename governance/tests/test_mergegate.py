@@ -828,6 +828,12 @@ class MergeGateTest(unittest.TestCase):
             "withdrawal marker inside a quote": replied(f"> {withdrawn}\nThanks."),
             "a withdrawal, then a point that remains": replied(f"{withdrawn}\nI withdraw that part. One point remains."),
             "a concession only inside a quote": replied("> This is addressed.\n\nSee the earlier note."),
+            # CommonMark: a longer run of the same character closes a fence, and a backtick
+            # line with a backtick after its run is inline code, not a fence (PR #20 review).
+            "a fence closed by a longer fence, then an objection, then a fenced concession":
+                replied("```\nexample\n````\nPlease fix the retry path.\n```\nThe finding is addressed.\n```\n"),
+            "inline code with three backticks is not a fence":
+                replied("The finding is addressed.\n``` x ```\nPlease fix the retry path.\n"),
             "a concession by a user account named like the bot": replied("This is addressed.", kind="User"),
         }
         for name, t in open_.items():
