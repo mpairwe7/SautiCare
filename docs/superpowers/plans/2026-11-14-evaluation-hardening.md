@@ -782,7 +782,7 @@ From then on every merge goes through `tools/mergegate`.
 ### Task 10.2: The poll the binary uses is the poll the test uses
 
 **Files:** Modify `internal/dispatch/` (export `const DefaultPoll = time.Second`), `cmd/dispatch-worker/main.go:58`. Test `internal/platform/wiring/dispatch_integration_test.go`.
-- [ ] **Step 1:** Write `TestFirstAlertWithinTenSecondsOfT2`: `Engine.Run` with `dispatch.DefaultPoll` on a red incident; T3 − T2, both read from `recorded_at`, is under 10 s. With `DefaultPoll` at 60 s, and at 15 s, it fails. Run `go test -tags integration ./internal/platform/wiring/ -run FirstAlert -count=1`. Expected: PASS.
+- [ ] **Step 1:** Write `TestFirstAlertWithinTenSecondsOfT2`: start `Engine.Run` with `dispatch.DefaultPoll`, and record the red incident only after its first pass has run. `Run`'s first pass is immediate, so an incident recorded before it is alerted at once whatever the poll. A first red incident recorded before `Run` marks the pass: once its T3 is recorded, record the second. The second's T3 − T2, both read from `recorded_at`, is under 10 s; the test waits at most 15 s for that T3. With `DefaultPoll` at 60 s, and at 15 s, it fails. Run `go test -tags integration ./internal/platform/wiring/ -run FirstAlert -count=1`. Expected: PASS.
 - [ ] **Step 2:** Commit `test(dispatch): first alert within 10 s of T2 at the binary's poll (EV-10 Task 2; EO-2)`.
 
 ### Task 10.3: A first-alert histogram and the service-level page
