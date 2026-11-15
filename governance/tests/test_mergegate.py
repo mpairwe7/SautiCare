@@ -124,6 +124,20 @@ DEFERRABLE = thread("PRRT_2", c(CR, FINDING, "2026-11-14T09:30:00Z", n=201),
                     c("dev", "The staging drill cannot run before staging exists.", "2026-11-14T09:40:00Z"),
                     c(CR, "<details>analysis</details>`@dev` I do not see another code or plan change needed "
                           "in this PR. The staging drill remains a go-live gate.", "2026-11-14T09:50:00Z"))
+# CodeRabbit's real consent to a deferral on PR #14 (discussion_r4572453339), its prose verbatim.
+PR14_CONSENT = (
+    "<details>\n<summary>Analysis chain</summary>\nScript executed\n</details>\n\n"
+    "`@dev` For this finding, I do not see another code or plan change needed in this PR. The existing review "
+    "guidance also distinguishes the planned controls from deployed controls.\n\n"
+    "One follow-up remains in `#16`: its written acceptance criteria do not explicitly include the "
+    "**unnamed-`TRUNCATE` risk**. Task 5.2 and R-16 require the operator and DPO to accept that risk before "
+    "go-live. Please add it to the issue.\n\n"
+    "The staging records and bastion attribution remain unverified. I am not marking this finding as addressed "
+    "until that evidence is available. The plan also requires all CodeRabbit findings to be resolved before "
+    "merging; I have not checked the other findings.\n\n"
+    "At the time of the check, the reported CI checks passed and CodeRabbit was neutral. I did not verify "
+    "approval or mergeability.\n\n---\n\n<sub><i>You are interacting with an AI system.</i></sub>\n\n"
+    "<!-- This is an auto-generated reply by CodeRabbit -->")
 
 
 def resolved_answer(name, state=True):
@@ -888,6 +902,12 @@ class MergeGateTest(unittest.TestCase):
             self.assertIn(text, g.out)
         self.assertNotIn("analysis", body, "the quote is CodeRabbit's prose, not its collapsed analysis")
         self.assertEqual(len(g.mutations("resolveReviewThread")), 2)
+        with self.subTest("PR #14's real consent, which also says remains, not, Please and before merging"):
+            t = thread("PRRT_14", c(CR, FINDING, "2026-11-14T09:30:00Z", n=1401),
+                       c("dev", "Tracked in #16.", "2026-11-14T09:40:00Z"), c(CR, PR14_CONSENT, "2026-11-14T09:50:00Z"))
+            g = self.gate(self.threads(t), "--defer", "1401=16")
+            self.assertEqual(g.code, 0, g.err)
+            self.assertEqual(len(g.merges()), 1)
 
     def test_a_deferral_is_explicit_and_checked(self):
         author_last = thread("PRRT_3", c(CR, FINDING, "2026-11-14T09:30:00Z", n=301),
@@ -914,13 +934,26 @@ class MergeGateTest(unittest.TestCase):
             return thread(f"PRRT_{n}", c(CR, FINDING, "2026-11-14T09:30:00Z", n=n),
                           c("dev", "Tracked in #16.", "2026-11-14T09:40:00Z"), c(CR, said, "2026-11-14T09:50:00Z"))
         no_consent = "does not say that no further change is needed in this PR"
+        consent = "`@dev` I do not see another code or plan change needed in this PR"
+        objects = "objects as well as consenting"
         for name, t, n, reason in (("the author had the last word", author_last, 301, "not a CodeRabbit reply"),
                                    ("the last word is a rate-limit notice", limited, 401, "not a CodeRabbit reply"),
                                    ("the thread is already settled", conceded, 601, "already settled"),
                                    ("CodeRabbit objects", answered(1001, "`@dev` Please fix this before merging."),
                                     1001, no_consent),
                                    ("CodeRabbit gives no verdict", answered(1002, "`@dev` The staging drill remains "
-                                                                            "a go-live gate."), 1002, no_consent)):
+                                                                            "a go-live gate."), 1002, no_consent),
+                                   # PR #20 review: a consent and an objection in the same reply.
+                                   ("consent, then a fix asked for before merging", answered(
+                                       1004, f"{consent}. However, please fix this security issue before merging."),
+                                    1004, objects),
+                                   ("consent, then a sentence that turns against it", answered(
+                                       1005, f"{consent}. However, the retry path fails on cancellation."), 1005, objects),
+                                   ("consent, then a change that must land before the merge", answered(
+                                       1006, f"{consent}. The retry fix must land before merging."), 1006, objects),
+                                   ("consent and a request in the same sentence", answered(
+                                       1007, "`@dev` I do not see another code change needed in this PR, but please add "
+                                             "the test in this PR."), 1007, objects)):
             with self.subTest(name):
                 g = self.gate(self.threads(t), "--defer", f"{n}=16")
                 self.assertRefused(g, f"discussion_r{n}")

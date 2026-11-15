@@ -20,7 +20,7 @@ evaluation audit V-02).
   * every review thread is settled by its last word: CodeRabbit's, and a
     concession; or it is deferred explicitly (--defer) to an open issue,
     on CodeRabbit's own last word that no further change is needed in this
-    PR, and the merge commit records it.
+    PR, with no objection beside it, and the merge commit records it.
 If CodeRabbit's latest decisive review still requests changes once every
 thread is settled, it posts `@coderabbitai resolve` (never while a thread is
 open), waits up to 15 minutes for CodeRabbit to stop requesting changes, and
@@ -90,6 +90,11 @@ DEFER = re.compile(r"^(\d+)=(\d+)$")
 # another code or plan change needed in this PR".
 CONSENTS = re.compile(r"(?i)\b(I do not see (another|any)|no (further|other|more)) ([\w-]+ ){0,3}"
                       r"change (is )?needed in this PR\b")
+# A sentence beside that consent which objects to the merge: it opens with a contrast, or
+# asks for a change before the merge or in this PR. Not a word list: the PR #14 consent
+# also says "remains", "not", "Please add it to the issue" and "resolved before merging".
+DEFER_OBJECTS = re.compile(r"(?i)^(however|but)\b|^(?=.*\b(please|must|should|needs? to|ha(s|ve) to)\b)"
+                           r"(?=.*(\bbefore (the |this )?merg|\bthis (PR|pull request)\b))")
 THREADS = """query($owner: String!, $name: String!, $n: Int!, $after: String) {
   repository(owner: $owner, name: $name) { pullRequest(number: $n) {
     reviewThreads(first: 100, after: $after) {
@@ -538,6 +543,9 @@ def deferral(repo: str, t: dict, issue: int) -> str:
     if not CONSENTS.search(said):
         raise Refused(f"--defer: CodeRabbit's last word in {url} does not say that no further change is needed "
                       "in this PR; a deferral needs its consent")
+    if objection := next((s for s in re.split(r"(?<=[.!?;])\s+", said) if DEFER_OBJECTS.search(s)), None):
+        raise Refused(f'--defer: CodeRabbit\'s last word in {url} objects as well as consenting: "{objection}"; '
+                      "a deferral needs its consent and no objection")
     v = gh_json("issue", "view", str(issue), "--repo", repo, "--json", "number,state")
     if get(v, "number", int, f"issue #{issue}") != issue or get(v, "state", str, f"issue #{issue}") != "OPEN":
         raise Refused(f"--defer: issue #{issue} for {url} is not an open issue")
