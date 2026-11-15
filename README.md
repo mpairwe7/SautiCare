@@ -33,6 +33,10 @@ See [the local development tutorial](docs/tutorials/local-development.md) for th
 | `governance/`, `threat-model/` | AI risk register and AIBOM, amendment records, STRIDE/LINDDUN threat model and their gates |
 | `scripts/ci/` | CI logic shared by GitHub Actions now and Forgejo Actions (P0) |
 | `tools/` | `archcheck` (module boundaries), `amendgate` (protocol change control), `freshness` (docs as code) |
+| `triage-rules/`, `telephony/`, `tests/`, `build/` | signed triage decision tables; Asterisk dialplan and prompts; end-to-end tests, with load and drill scripts planned for M7; the pinned tool module |
+| `api/`, `web/`, `analytics/`, `deploy/` | planned homes with placeholder READMEs: console contracts and app (M5), enclave analytics (M6), infrastructure as code (P0) |
+
+[Repository layout](docs/reference/repository-layout.md) maps every path to the reference architecture, with each planned location's milestone and each deviation's reason.
 
 ## Engineering rules
 

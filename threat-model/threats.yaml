@@ -32,6 +32,9 @@ threats:
     verified_by:
       - internal/platform/africastalking/ussd_test.go::TestATInternalErrorGivesVoiceLine
       - internal/platform/pg/intake_integration_test.go::TestRetriedCallbackReturnsSameScreenNoSecondEvent
+      - internal/platform/pg/intake_integration_test.go::TestRetriedAnswerReturnsSameScreenNoSecondWrite
+      - internal/platform/ivr/controller_test.go::TestAWithheldNumberStartsTheCallAsUnknown
+      - internal/intake/service_test.go::TestARepeatCallerIsNeverBlocked
       - internal/intake/atomicity_test.go::TestEveryWriteFailureConverges
       - internal/intake/atomicity_test.go::TestRedialAfterLostT2Dispatches
       - internal/intake/atomicity_test.go::TestCompleteWithoutT2IsAnError

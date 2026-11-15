@@ -346,6 +346,23 @@ func TestNoEligibleEscalatesImmediately(t *testing.T) {
 	}
 }
 
+// More emergencies than free responders (Scalable MVP Stack, §Edge cases,
+// row 14), in protocol mode, the configured default: an incident that finds
+// nobody free is escalated and keeps waking every ring interval, so a
+// responder freed by another incident is alerted to it. Nothing is dropped.
+func TestAnIncidentWithNobodyFreeKeepsWaiting(t *testing.T) {
+	m := newSim(t, incident.SevYellow, makePool(map[int]int{}), protocol)
+	m.run(t0.Add(5 * time.Minute))
+	if !HasEscalation(m.s.Escalations, ReasonExhausted) || !m.now.Equal(t0.Add(5*time.Minute)) {
+		t.Fatalf("escalations %v; last wake %v, want the planner still waking at %v", m.s.Escalations, m.now, t0.Add(5*time.Minute))
+	}
+	m.p = makePool(map[int]int{1: 1}) // a responder is free again
+	m.run(t0.Add(6 * time.Minute))
+	if as := m.alerts(responder.RoleVHT); len(as) != 1 || as[0].SentAt.Before(t0.Add(5*time.Minute)) {
+		t.Fatalf("alerts %v, want the freed responder alerted once it is free", as)
+	}
+}
+
 // First acceptance wins per role: the role's other pending alerts are stood
 // down, the caller is told help is on the way, and no further alerts go out
 // for that role.
