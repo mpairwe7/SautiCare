@@ -209,6 +209,28 @@ func TestApplyRejectsMalformedPayloads(t *testing.T) {
 	}
 }
 
+// A classification names the rule set that made it, or the study cannot
+// attribute it (evaluation audit V-29, ES-9). The SQL write path refuses it
+// too (migration 0039).
+func TestApplyRequiresLogicVersionOnClassification(t *testing.T) {
+	p, err := Fold([]Event{started()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unversioned := ev(2, EvClassified, `{"severity":"red"}`)
+	unversioned.LogicVersion = ""
+	got, err := Apply(p, unversioned)
+	if !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("classification without a logic version: err = %v, want ErrIllegalTransition", err)
+	}
+	if got.Severity != "" || got.State != StateIntake || got.Version != 1 {
+		t.Fatalf("projection changed by a refused classification: %+v", got)
+	}
+	if got, err := Apply(p, ev(2, EvClassified, `{"severity":"red"}`)); err != nil || got.LogicVersion != fixtureLogic {
+		t.Fatalf("versioned classification: %+v, %v", got, err)
+	}
+}
+
 func TestTerminalStatesRejectStarEvents(t *testing.T) {
 	p, err := Fold(FixtureLifecycle())
 	if err != nil {

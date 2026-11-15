@@ -62,6 +62,11 @@ func Apply(p Projection, e Event) (Projection, error) {
 		if err := json.Unmarshal(e.Payload, &pl); err != nil || pl.Severity.Rank() == 0 {
 			return p, fmt.Errorf("%w: classification needs a valid severity", ErrIllegalTransition)
 		}
+		// The study attributes every classification to its rule set
+		// (migration 0039 refuses the same in SQL).
+		if e.LogicVersion == "" {
+			return p, fmt.Errorf("%w: a classification needs a logic version", ErrIllegalTransition)
+		}
 		if pl.Severity.Rank() < p.Severity.Rank() {
 			return p, fmt.Errorf("%w: %s -> %s", ErrSeverityLowered, p.Severity, pl.Severity)
 		}

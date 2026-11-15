@@ -284,6 +284,40 @@ func TestAppendRejectsEverySeverityLowering(t *testing.T) {
 	}
 }
 
+// A classification without a logic version is refused (evaluation audit
+// V-29, ES-9: the audit's probe stored one, because the store sends an
+// empty version as NULL and NULL passes the format check). The refusal is a
+// trigger on the event log (migration 0039), so it holds for any write path:
+// a direct insert as the owner is refused too.
+func TestAppendRequiresLogicVersionOnClassification(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := context.Background()
+	o, err := s.OpenIncident(ctx, openParams(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendErr(s, o.IncidentID, incident.EvClassified, `{"severity":"yellow"}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
+		t.Fatalf("classification without a logic version: err = %v, want ErrIllegalTransition", err)
+	}
+	owner := c.Owner(t, pg.StoreOperational)
+	for _, v := range []*string{nil, new("")} {
+		_, err := owner.Exec(ctx, `INSERT INTO op.incident_events (incident_id, seq, type, actor_kind, payload, idem_key, logic_version)
+			VALUES ($1, 2, 'incident.classified', 'system', '{"severity":"yellow"}', 'direct', $2)`, o.IncidentID, v)
+		var pe *pgconn.PgError
+		if !errors.As(err, &pe) || pe.Code != "SA422" || !strings.Contains(pe.Message, "logic version") {
+			t.Errorf("direct insert with logic version %v: err = %v, want SA422 naming the logic version", v, err)
+		}
+	}
+	got, err := s.Projection(ctx, o.IncidentID)
+	if err != nil || got.Severity != "" || got.Version != 1 {
+		t.Fatalf("after refused classifications: %+v, %v", got, err)
+	}
+	if a := appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"yellow"}`, testLogic); a.Event.LogicVersion != testLogic {
+		t.Fatalf("versioned classification: %+v", a.Event)
+	}
+}
+
 // CodeRabbit PR #3: the write path rejects a logic version that the audit
 // ledger would reject, so free text never reaches the event log, the
 // projection or the outbox (and can never stall the relay).
