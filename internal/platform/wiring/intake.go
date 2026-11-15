@@ -1,13 +1,15 @@
 // Package wiring composes the intake service from configuration and the
 // operational store. intake-gw, ivr-controller, the M0/M1 demo and the
 // end-to-end tests all build intake through BuildIntake, so every one of
-// them runs the same checks: the signed triage bundle, the gazetteer in
-// force, the screen-length gate, the catalogue/triage domain match, and the
-// production refusal of placeholder content.
+// them runs the same checks: the signed and approved triage bundle, the
+// gazetteer in force, the screen-length gate, the catalogue/triage domain
+// match, and the production refusal of placeholder content.
 package wiring
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -33,7 +35,8 @@ type IntakeOptions struct {
 	TriageDoc []byte
 	TriageSig []byte
 	// Production refuses placeholder Tool 1 wording, a placeholder
-	// gazetteer, and a pending or dev-signed triage bundle.
+	// gazetteer, a pending or dev-signed triage bundle, and a configuration
+	// with no approved bundle digest.
 	Production bool
 }
 
@@ -69,6 +72,17 @@ func BuildIntake(ctx context.Context, o IntakeOptions) (Intake, error) {
 	engine, err := triage.Load(o.TriageDoc, o.TriageSig, trusted)
 	if err != nil {
 		return Intake{}, err
+	}
+	// The signature says who signed the bundle; the approved digest says
+	// which signed bundle may run, so an older or withdrawn one is refused
+	// (ADR-0043).
+	sum := sha256.Sum256(o.TriageDoc)
+	switch approved := cfg.Triage.ApprovedSHA256; {
+	case approved != "" && approved != hex.EncodeToString(sum[:]):
+		return Intake{}, fmt.Errorf("wiring: triage bundle %s has sha256 %x, not the approved_sha256 %s in config/gated/triage.yaml",
+			cfg.Triage.RulesFile, sum, approved)
+	case approved == "" && o.Production:
+		return Intake{}, errors.New("wiring: refusing production start: config/gated/triage.yaml has no approved_sha256")
 	}
 	gaz, err := o.Store.Snapshot(ctx)
 	if err != nil {

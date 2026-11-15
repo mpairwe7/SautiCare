@@ -219,6 +219,28 @@ func TestLoadRejectsUnknownGatedFile(t *testing.T) {
 	}
 }
 
+// approved_sha256 pins one bundle by its sha256 (ADR-0043): a value that is
+// not 64 lower-case hex digits is refused at load, an absent one reads empty.
+func TestLoadRefusesAMalformedApprovedDigest(t *testing.T) {
+	const good = "fdf0014e2b2853a3786a7877d8f44fdf84e087a95a406b9aa1b3dc505209d82d"
+	triage := func(digest string) fstest.MapFS {
+		fs := minimalFS()
+		fs["gated/triage.yaml"] = &fstest.MapFile{Data: []byte("rules_file: triage-rules/tool1.yaml\ntrusted_keys: {clinical-1: \"AAAA\"}\napproved_sha256: \"" + digest + "\"\n")}
+		return fs
+	}
+	if b, err := Load(triage(good)); err != nil || b.Triage.ApprovedSHA256 != good {
+		t.Fatalf("a well-formed digest: %+v, %v", b.Triage, err)
+	}
+	if b, err := Load(minimalFS()); err != nil || b.Triage.ApprovedSHA256 != "" {
+		t.Fatalf("no digest: %+v, %v", b.Triage, err)
+	}
+	for _, bad := range []string{"fdf0014e", strings.ToUpper(good), good + "0", "sha256:" + good, strings.Replace(good, "f", "g", 1), " " + good} {
+		if _, err := Load(triage(bad)); err == nil || !strings.Contains(err.Error(), "approved_sha256") {
+			t.Errorf("approved_sha256 %q: err = %v, want a refusal naming approved_sha256", bad, err)
+		}
+	}
+}
+
 // The triage trust anchors are gated and fingerprinted: changing who may
 // sign clinical rules is itself a protocol change.
 func TestLoadReadsTriageTrustAnchors(t *testing.T) {
