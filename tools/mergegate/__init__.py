@@ -27,7 +27,8 @@ open), waits up to 15 minutes for CodeRabbit to stop requesting changes, and
 reads everything again except the quiet window (CodeRabbit just answered).
 Then it re-reads the head, resolves the settled threads, judges every thread
 and CodeRabbit's review again (a thread now open is reopened, and refuses),
-merges with `--match-head-commit`, and waits for main's CI on the merge commit.
+reads the quiet window again (unless it posted the resolve command), merges
+with `--match-head-commit`, and waits for main's CI on the merge commit.
 Any gh error, timeout, empty or unreadable answer refuses: exit 2, with the
 reason on stderr, and nothing merged. Exit 0: merged and main's CI passed on
 the merge commit (or, with --dry-run, every read passed and nothing was
@@ -370,8 +371,13 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True, head_ref: st
             raise Refused(f"CodeRabbit has not reviewed the head {head[:7]} ({unreviewed}), pushed "
                           f"{int(age.total_seconds())} s ago; wait until CodeRabbit has had "
                           f"{int(QUIET.total_seconds() // 60)} minutes to review")
-    if not quiet:
-        return requests_changes(mine), unreviewed
+    if quiet:
+        check_quiet(repo, pr, mine)
+    return requests_changes(mine), unreviewed
+
+
+def check_quiet(repo: str, pr: int, mine: list[dict]) -> None:
+    """CodeRabbit has reviewed, posted and edited nothing for QUIET."""
     times = [when(r["submitted_at"]) for r in mine]
     for path in (f"repos/{repo}/pulls/{pr}/comments?per_page=100", f"repos/{repo}/issues/{pr}/comments?per_page=100"):
         for cm in items(path):
@@ -381,7 +387,6 @@ def check_review(repo: str, pr: int, head: str, quiet: bool = True, head_ref: st
     if times and (ago := now() - max(times)) < QUIET:
         raise Refused(f"CodeRabbit was active {int(ago.total_seconds())} s ago; "
                       f"re-run after {int(QUIET.total_seconds() // 60)} quiet minutes")
-    return requests_changes(mine), unreviewed
 
 
 def check_mergeable(info: dict, unreviewed: str, allowed: tuple[str, ...] = ("CLEAN", "UNSTABLE")) -> None:
@@ -729,9 +734,8 @@ def main(argv: list[str]) -> int:
                 raise Refused("the head moved during the run; re-run")
             post_resolve(repo, pr)
             say("CodeRabbit no longer requests changes; verifying again")
-            info, to_resolve, deferred, changes_requested, unreviewed = verify(repo, pr, expected, deferrals,
-                                                                               False, again=head)
-            if changes_requested:
+            info, to_resolve, deferred, still, unreviewed = verify(repo, pr, expected, deferrals, False, again=head)
+            if still:
                 raise Refused(f"CodeRabbit requests changes again after `{RESOLVE_COMMAND}`; "
                               "read its latest review, then re-run after the quiet window")
         if check_pr(repo, pr)["head"] != head:
@@ -748,8 +752,11 @@ def main(argv: list[str]) -> int:
             set_resolved(tid, True)
         # GitHub resolves a thread by its ID alone: judge what the writes resolved, as it is now.
         _, deferred = check_threads(repo, pr, False, deferrals)
-        if requests_changes(coderabbit_reviews(repo, pr)):
+        mine = coderabbit_reviews(repo, pr)
+        if requests_changes(mine):
             raise Refused("CodeRabbit requested changes during the run; re-run")
+        if not changes_requested:  # else the gate posted the resolve command, which CodeRabbit has just answered
+            check_quiet(repo, pr, mine)
         body = f"Merged by tools/mergegate (ADR-0042) at {head[:7]}."
         if unreviewed:
             check_mergeable(check_pr(repo, pr), unreviewed)

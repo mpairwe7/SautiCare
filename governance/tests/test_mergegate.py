@@ -1016,6 +1016,17 @@ class MergeGateTest(unittest.TestCase):
                 [review()], [review(), review(state="CHANGES_REQUESTED", at="2026-11-14T11:59:30Z")]))
             self.assertRefused(g, "CodeRabbit requested changes during the run")
 
+    def test_the_quiet_window_is_read_again_after_the_writes(self):
+        """PR #20 review: CodeRabbit may write while the gate resolves the
+        threads. The quiet window is the last read before the merge. It is
+        skipped only after the resolve command, which CodeRabbit has just
+        answered (test_clean_verdicts_and_changes_requested_...)."""
+        g = self.gate({"inline": {"argv": ["api", "pulls/9999/comments"], "times": 1, **ok([[activity()]])},
+                       "inline-later": {"argv": ["api", "pulls/9999/comments"],
+                                        **ok([[activity(updated="2026-11-14T11:59:00Z")]])}})
+        self.assertRefused(g, "CodeRabbit was active 60 s ago")
+        self.assertEqual(len(g.mutations("resolveReviewThread")), 1, "the activity was read after the writes")
+
     def test_a_failed_merge_command_is_reconciled_with_github(self):
         """A merge command that fails, or whose answer is lost, may still have
         merged: GitHub's own state of the PR decides the exit code."""
