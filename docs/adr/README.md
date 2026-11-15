@@ -40,3 +40,4 @@ Each record has the mandatory sections *Context and Problem Statement*, *Decisio
 ADR-0030 to ADR-0038 are reserved by the M3 and UX-hardening plans (`docs/superpowers/plans/`).
 | [ADR-0039](ADR-0039-public-demo-on-hugging-face.md) | A public demo on a Hugging Face Space, with synthetic data only | Accepted | 2026-11-14 |
 | [ADR-0040](ADR-0040-repository-layout-follows-the-reference-architecture.md) | Repository layout follows the reference architecture | Accepted | 2026-11-14 |
+| [ADR-0041](ADR-0041-evaluation-strategy-and-quality-gates.md) | Evaluation strategy and quality gates: test what a person receives, properties for safety invariants, mutation testing, complete clinical expectations, provider contracts, binary smoke tests, run-proven pointers, tested alert rules, a fail-closed merge gate, drill freshness, severity by consequence | Accepted | 2026-11-14 |
