@@ -66,7 +66,7 @@ Each rule is confirmed by the mechanism its phase adds, named in the plan with i
 - Rule 1: EV-5's responder-screen, masking and ward-level tests; each must kill the audit's mutants R1, R2, P1, P2, L1, L2 and D3.
 - Rule 2: EV-1's `ParsePhone` re-parse property; EV-3's severity tables in Go and SQL, the fold fuzz property, fold-SQL parity in both directions and the strengthened `FuzzClassifyNeverPanics` oracle in `internal/triage/fuzz_test.go`. Today's single examples, `internal/incident/fold_test.go::TestApplyRejectsSeverityLowering` and `internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering`, stay.
 - Rule 3: EV-11's changed-lines mutation job and weekly run; the tool is pinned in `build/tools.mod` and listed in `docs/reference/dependencies.md`.
-- Rule 4: EV-4's expectations test, the test that a rules key cannot sign expectations, and the checks that bind the screens and the recordings; `internal/triage/triage_test.go::TestRepositoryBundleVerifies` keeps verifying the signature.
+- Rule 4: EV-4's expectations test, the test that a rules key cannot sign expectations, and the checks that bind the screens, the recordings and the key mapping; `internal/triage/triage_test.go::TestRepositoryBundleVerifies` keeps verifying the signature.
 - Rule 5: EV-9's Asterisk contract job and recorded fixtures.
 - Rule 6: EV-6's binary smoke test and production-refusal step.
 - Rule 7: EV-8's run-proof mode of `python3 -m tools.freshness`, fed by the integration job's saved results, and the status rules in `governance/compliance_check.py` and `threat-model/validate_threats.py`.

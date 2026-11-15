@@ -522,8 +522,8 @@ From then on every merge goes through `tools/mergegate`.
 ### Task 4.4: EV-4 docs: ADR-0044
 
 **Files:**
-- Create: `docs/adr/ADR-0044-signed-expectations-and-label-binding.md` (index it; supersedes ADR-0019 in part: expectations are signed clinical data under their own context and keys; the bundle binds questions, labels and recordings; production refuses pending expectations and unapproved recordings; the catch-all's severity is the co-investigators' choice, P-2).
-- Modify: `docs/MODEL_CARD.md` §3 and §4 (the expectations replace the "independent oracle"; screen and recording binding; what production refuses), `governance/ai_risk_manifest.yaml`, `threat-model/threats.yaml`, `docs/traceability.md` (hard constraint 3), `docs/reference/tool1-flow.md`, `docs/reference/cli-sautictl.md`, `docs/runbooks/triage-rule-error.md` (the screen and recording mismatch refusals), the audit's V-05 and V-06 status lines.
+- Create: `docs/adr/ADR-0044-signed-expectations-and-label-binding.md` (index it; supersedes ADR-0019 in part: expectations are signed clinical data under their own context and keys; the bundle binds questions, labels, recordings and the key mapping; production refuses pending expectations and unapproved recordings; the catch-all's severity is the co-investigators' choice, P-2).
+- Modify: `docs/MODEL_CARD.md` §3 and §4 (the expectations replace the "independent oracle"; screen, recording and key-mapping binding; what production refuses), `governance/ai_risk_manifest.yaml`, `threat-model/threats.yaml`, `docs/traceability.md` (hard constraint 3), `docs/reference/tool1-flow.md`, `docs/reference/cli-sautictl.md`, `docs/runbooks/triage-rule-error.md` (the screen and recording mismatch refusals), the audit's V-05 and V-06 status lines.
 - [ ] **Step 1:** Write the docs.
 - [ ] **Step 2:** Run the four gates. Expected: OK.
 - [ ] **Step 3:** Commit `docs: ADR-0044, model card, triage reference (EV-4 Task 4)`. Push, open the PR, gate, and **ask before merging**.
