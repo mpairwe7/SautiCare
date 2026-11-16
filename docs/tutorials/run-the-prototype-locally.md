@@ -120,8 +120,8 @@ Open **http://127.0.0.1:7860** in a browser. Under the banner, **Verify audit le
   - **Test Ward 1:** VHT 1, VHT 2, VHT 3, Transporter 1, Transporter 2;
   - **Test Ward 2:** VHT 4, Transporter 3;
   - **Test Wards 3 and 4:** nobody.
-- **Map of the wards.** The four placeholder wards and their landmarks. Each responder is a small square in their ward (`V1` is VHT 1, `T2` is Transporter 2). A key under the map explains the marks.
-- **Activity.** Every event and SMS, newest first, each tagged with the service that produced it: `intake-gw`, `dispatch-worker`, `outbox-relay` or `SMS`.
+- **Activity.** Beside the phones on a wide screen. It lists every event and SMS, newest first, each tagged with the service that produced it: `intake-gw`, `dispatch-worker`, `outbox-relay` or `SMS`.
+- **Map of the wards.** The four placeholder wards fill the map. Each ward is the area nearer its centre than any other ward's. Landmarks are small dots. Each dot's name shows beside it where there is room, and when you point at the dot. Each ward's responders sit in a group under the ward's name, one square each (`V1` is VHT 1, `T2` is Transporter 2). Incidents at the same landmark fan out around it, each joined to it by a thin line. A key beside the map explains the marks.
 - **3. Dispatch board.** It reads "No incidents yet" until a call comes in.
 
 Phone numbers are always shown masked (`+256•••••••••`). That is deliberate: the system never reveals a caller's number.
