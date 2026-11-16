@@ -60,6 +60,12 @@ test("ticks stay round and at most six intervals apart", () => {
   assert.deepEqual(ticks(1000), [0, 1000]);
   assert.deepEqual(ticks(95000), [0, 30000, 60000, 90000]);
   for (const span of [1500, 9000, 47000, 400000, 3600000]) assert.ok(ticks(span).length <= 7, `span ${span}`);
+  const hour = 3600000;
+  for (const span of [6 * hour + 1000, 24 * hour, 72 * hour]) {
+    const t = ticks(span);
+    assert.ok(t.length >= 2 && t.length <= 7, `span ${span / hour} h: ${t.length} ticks`);
+    assert.equal(t[1] % hour, 0, `span ${span / hour} h: a whole number of hours apart`);
+  }
 });
 
 test("the cascade groups alerts by wave, with how long each took to end", () => {

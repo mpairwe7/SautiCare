@@ -51,11 +51,13 @@ export const PHASES = [
   { from: "T6", to: "T7", label: "To the facility" },
 ];
 
+const HOUR = 3600000;
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].map((s) => s * 1000);
 
-// ticks are round times from 0 to span, at most six intervals apart.
+// ticks are round times from 0 to span, at most six intervals apart: past
+// six hours, a whole number of hours.
 export function ticks(span) {
-  const step = STEPS.find((s) => span / s <= 6) || STEPS[STEPS.length - 1];
+  const step = STEPS.find((s) => span / s <= 6) || Math.ceil(span / 6 / HOUR) * HOUR;
   const out = [];
   for (let t = 0; t <= span; t += step) out.push(t);
   return out;
