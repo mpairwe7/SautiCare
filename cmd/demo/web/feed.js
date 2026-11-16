@@ -68,6 +68,20 @@ export function feedItems(board, sms, phones, map) {
     }
   }
   const labels = Object.fromEntries((phones || []).map((p) => [p.id, p.label]));
+  // The arrival check: each question to a caller, and their answer.
+  const refOf = Object.fromEntries(board.incidents.map((i) => [i.id, i.reference]));
+  for (const a of board.arrival || []) {
+    (a.asks || []).forEach((q, n) => {
+      const who = labels[a.phone] || a.phone;
+      items.push({ key: `arrival:${a.incident}:${n}`, at: q.at, service: "Arrival check", ref: refOf[a.incident] || "", incident: a.incident,
+        text: `Asked ${who}: has a health worker arrived yet?`, relayedAt: null });
+      if (q.answeredAt) {
+        const said = q.answer === "yes" ? "Yes, help arrived" : "No, still waiting";
+        items.push({ key: `arrival:${a.incident}:${n}:answer`, at: q.answeredAt, service: "Arrival check", ref: refOf[a.incident] || "", incident: a.incident,
+          text: `${who} answered on ${q.via === "ussd" ? "USSD" : "the app"}: ${said}.${q.did ? " Sauti " + q.did + "." : ""}`, relayedAt: null });
+      }
+    });
+  }
   for (const [phone, list] of Object.entries(sms || {})) {
     for (const m of list) {
       const ref = (REF.exec(m.text) || [""])[0];

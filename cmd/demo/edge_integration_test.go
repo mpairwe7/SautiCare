@@ -337,8 +337,6 @@ func TestDemoEdgeCases(t *testing.T) {
 	})
 }
 
-var refPattern = regexp.MustCompile(`[0-9]{3} [0-9]{3} [0-9]{4}`)
-
 // path is Tool 1's eight answers: English, danger (1 yes, 2 no), the
 // category, 18 to 59, no, the ward, its landmark, this number.
 func path(danger, category, ward, landmark string) []string {

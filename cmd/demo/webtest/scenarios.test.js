@@ -164,7 +164,7 @@ test("a phone stays locked while any lock holds it, and shows the latest lock's 
 });
 
 test("every scenario is a table of known step kinds with a title, a description and a result", () => {
-  const kinds = new Set(["dial", "respond", "wait", "pause", "parallel", "share", "step"]);
+  const kinds = new Set(["dial", "respond", "wait", "pause", "parallel", "share", "step", "pace", "answer"]);
   const walk = (steps) => steps.every((s) => kinds.has(s.kind) && s.label && (!s.branches || s.branches.every(walk)));
   for (const s of SCENARIOS) assert.ok(s.title && s.description && typeof s.result === "function" && walk(s.steps), s.id);
   assert.equal(new Set(SCENARIOS.map((s) => s.id)).size, SCENARIOS.length);

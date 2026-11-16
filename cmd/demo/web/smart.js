@@ -100,6 +100,7 @@ export class SmartPhone {
     this.job = null; // the responder's open job, to say when it ends
     this.duty = true; // responders are seeded available
     this.alerted = new Set(); // phone|alert pairs already announced
+    this.asked = new Set(); // arrival questions already announced
     this.lastKey = "";
     this.bannerTimer = 0;
     this.lock = h("p", { class: "phone-lock", hidden: true });
@@ -257,6 +258,13 @@ export class SmartPhone {
   // refresh re-renders when the board, the clock or the inbox changed what
   // this phone shows (a poll or the second's tick calls it).
   refresh() {
+    if (this.p && this.kind === "caller") {
+      const ask = this.ctx.askFor(this.p.id);
+      if (ask && !this.asked.has(ask.session)) {
+        this.asked.add(ask.session);
+        this.showBanner("Sauti", `Has a health worker arrived yet? Incident ${ask.ref}.`);
+      }
+    }
     if (this.p && this.kind !== "caller") {
       const st = this.status();
       // A job that ends while on screen (the handover, or the coordinator's
@@ -362,7 +370,9 @@ export class SmartPhone {
     const ref = this.ctx.report.get(this.p.id);
     const inc = ref ? (this.ctx.board()?.incidents || []).find((i) => i.reference === ref) : null;
     const tracker = inc ? this.trackerOf(inc) : null;
-    const base = { sub: "Emergency help", gps: g, near: near.landmark?.name || "", ward: near.ward?.name || "", nearId: near.landmark?.id || "" };
+    const ask = this.ctx.askFor(this.p.id);
+    const base = { sub: "Emergency help", gps: g, near: near.landmark?.name || "", ward: near.ward?.name || "", nearId: near.landmark?.id || "",
+      ask: ask ? { incident: ask.incident, ref: ask.ref, session: ask.session } : null };
     if (this.mode === "idle") {
       return { ...base, view: this.tapped === "dial" ? "dialing" : "caller-home", picking: this.picking, ref, tracker, state: inc?.state || "" };
     }
@@ -401,12 +411,41 @@ export class SmartPhone {
     const id = at ? payload(at).facility : "";
     const name = (this.ctx.map()?.facilities || []).find((f) => f.id === id)?.name;
     if (name) t.steps = t.steps.map((s) => (s.key === "facility" ? { ...s, label: `At ${name}` } : s));
+    // The caller's own "yes" counts as help arrived, even before a responder records it.
+    const check = (this.ctx.board()?.arrival || []).find((a) => a.incident === inc.id);
+    if (check?.confirmedAt) {
+      t.steps = t.steps.map((s) => (s.key === "arrived" && !s.done ? { ...s, done: true, label: "Help has arrived (you said so)" } : s));
+      t.current = (t.steps.find((s) => !s.done) || {}).key || "";
+    }
     return t;
+  }
+
+  // askCard is the arrival question in the caller's app: the same question
+  // a basic phone gets as a USSD push, answered with a tap.
+  askCard(vm) {
+    if (!vm.ask) return null;
+    return h("section", { class: "sp-card ask", role: "group", "aria-label": "Question from Sauti" },
+      h("h3", { text: "Has a health worker arrived yet?" }),
+      h("p", { class: "sp-small", text: `Incident ${vm.ask.ref}. Sauti asks every few minutes until help arrives, so it knows when help came.` }),
+      h("div", { class: "sp-actions two" },
+        this.btn(vm, "Yes, help is here", () => this.answer(vm.ask, true), { focus: "ask-yes" }),
+        this.btn(vm, "No, still waiting", () => this.answer(vm.ask, false), { cls: "alt", focus: "ask-no" })));
+  }
+
+  async answer(ask, yes) {
+    if (this.busy) return;
+    this.busy = true;
+    this.render(true);
+    const { status, data } = await this.ctx.arrival({ phone: this.p.id, incident: ask.incident, answer: yes ? "yes" : "no" });
+    this.busy = false;
+    this.say(status === 200 ? data.text.replace(/^PENDING-[A-Z0-9-]+ /, "") : data.error || "The answer did not reach Sauti.", status !== 200);
+    this.render(true);
   }
 
   callerHome(vm) {
     const map = this.ctx.map();
     const out = [
+      this.askCard(vm),
       h("p", { class: "sp-title", text: "Need emergency help?" }),
       h("p", { class: "sp-sub", text: "Sauti finds the nearest trained health worker and transport. The questions take about a minute." }),
       this.btn(vm, "Report an emergency", () => this.dial(), { cls: "sos", key: "dial" }),
@@ -485,7 +524,7 @@ export class SmartPhone {
   }
 
   doneView(vm) {
-    const out = [];
+    const out = [this.askCard(vm)];
     if (vm.ref) {
       out.push(h("p", { class: "sp-title", text: "Help is coming" }), h("p", { class: "sp-sub num", text: `Incident ${vm.ref}` }));
       out.push(h("section", { class: "sp-card" }, h("h3", { text: "What Sauti said" }), h("p", { class: "sp-text", text: vm.text })));

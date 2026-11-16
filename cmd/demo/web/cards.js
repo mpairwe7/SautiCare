@@ -17,7 +17,7 @@ export const SEV_WORD = { red: "Red", yellow: "Yellow", green: "Green", none: "U
 
 export const since = (from, to) => mmss(to - from);
 
-function details(open, key, summary, body) {
+function details(open, key, summary, ...body) {
   const d = h("details", { open: open.has(key), "data-key": key, ontoggle: () => (d.open ? open.add(key) : open.delete(key)) },
     h("summary", { text: summary }), body);
   return d;
@@ -114,6 +114,7 @@ export function renderIncident(inc, ctx) {
     kids.push(details(ctx.open, inc.id + ":notices", "Caller notices (" + inc.notices.length + ")",
       table(["Notice", "Channel", "Status"], inc.notices.map((n) => [words(n.kind), n.channel, n.status + (n.delivery ? " (" + n.delivery + ")" : "")]))));
   }
+  if (ctx.arrival) kids.push(arrivalView(inc, ctx.arrival, ctx));
   kids.push(details(ctx.open, inc.id + ":events", "Event timeline (" + inc.events.length + ")",
     table(["#", "Time", "Event", "Actor", "Coded payload"], inc.events.map((e) => [
       String(e.seq), clock(new Date(e.at)), e.type, e.actor, h("span", { class: "payload", text: e.payload })]))));
@@ -138,6 +139,35 @@ export function renderIncident(inc, ctx) {
   actions,
   h("div", { class: "tl-mount", "data-tl": inc.id }),
   ttimes, cascadeView(inc), kids);
+}
+
+const ANSWER = { yes: "Yes, help arrived", no: "No, still waiting", none: "No answer" };
+
+// arrivalView is the arrival check of an incident: each time the caller was
+// asked whether help has arrived, their answer and what Sauti did, and, once
+// they said yes, the window the arrival falls in (a demo preview, arrival.go).
+function arrivalView(inc, a, ctx) {
+  const who = ctx.label ? ctx.label(a.phone) : a.phone;
+  const every = a.everySec >= 60 ? `${a.everySec / 60} min` : `${a.everySec} s`;
+  let lead;
+  if (a.confirmedAt) {
+    const t5 = inc.t.T5 ? ` The responder recorded the arrival (T5) at ${clock(new Date(inc.t.T5))}.` : "";
+    lead = h("p", { class: "arrival-lead ok" }, h("b", { text: `Help arrived between ${clock(new Date(a.after))} and ${clock(new Date(a.confirmedAt))}` }),
+      `, by ${who}'s answers.${t5}`);
+  } else if (a.open) {
+    lead = h("p", { class: "arrival-lead", text: `Asked ${who} at ${clock(new Date(a.open.at))}: waiting for the answer.` });
+  } else if (a.next) {
+    lead = h("p", { class: "arrival-lead", text: `${who} is asked every ${every} until they say yes. Next question at ${clock(new Date(a.next))}.` });
+  } else {
+    lead = h("p", { class: "arrival-lead", text: "The incident ended before the caller said help arrived." });
+  }
+  const asks = a.asks || [];
+  return details(ctx.open, inc.id + ":arrival", `Has help arrived? (${asks.length} asked)`,
+    lead,
+    asks.length ? table(["Asked", "Answer", "Answered", "What Sauti did"], asks.map((q) => [
+      clock(new Date(q.at)), q.answer ? ANSWER[q.answer] + (q.via ? ` (${q.via === "ussd" ? "USSD" : "app"})` : "") : "Waiting",
+      q.answeredAt ? clock(new Date(q.answeredAt)) : "—", q.did || "—"])) : null,
+    h("p", { class: "empty", text: "A demo preview of the caller's arrival check (Build Prompt §10.4): the answers stay in the demo." }));
 }
 
 // waitClock: the time since the call, live while open, as the detail's.

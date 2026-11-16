@@ -131,6 +131,15 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; font-weight: 600; }
 .run-status.failed { color: var(--t-red); font-weight: 600; }
 .autopilot { margin: 0; border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px 14px; min-width: 0; }
 .autopilot legend { font-weight: 700; padding: 0 4px; }
+/* The scenarios take the left column; the autopilot and the arrival
+   question's pace stack on the right. */
+.run-main { grid-row: span 2; }
+.arrival-pace { grid-column: 2; }
+.arrival-pace .ap-log { margin-top: 8px; }
+@media (max-width: 700px) { .run-main { grid-row: auto; } .arrival-pace { grid-column: auto; } }
+/* The arrival question in the caller's app. */
+.sp-card.ask { border-color: var(--brand); background: #f6fbe6; }
+.sp-actions.two { grid-template-columns: 1fr 1fr; }
 .ap-switch { display: flex; gap: 10px; align-items: center; font-weight: 600; font-size: 14px; }
 .ap-switch input { flex: none; width: 24px; height: 24px; accent-color: var(--brand); }
 .autopilot input[type="range"] { height: 24px; }
@@ -324,6 +333,9 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; font-weight: 600; }
 .svc-dispatch-worker { color: #1f5fb0; }
 .svc-outbox-relay { color: #5b3fb5; }
 .svc-sms { color: #8a5300; }
+.svc-arrival-check { color: #9a3412; }
+.arrival-lead { margin: 4px 0 10px; font-size: 14px; }
+.arrival-lead.ok b { color: #067647; }
 .svc-responder-app { color: var(--lime-text); }
 .feed .empty { grid-template-columns: 1fr; padding: 12px 4px; }
 @media (max-width: 700px) { .feed .item { grid-template-columns: auto 1fr; } .item-body { grid-column: 1 / -1; } }

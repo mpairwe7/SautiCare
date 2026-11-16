@@ -339,6 +339,7 @@ func (a *app) coordinate(st *stack) {
 		for _, m := range st.coord.due(b, time.Now(), st.phones, a.gaz, a.geo) {
 			st.sink.add(m.to, m.text)
 		}
+		a.arrivalTick(st, b, time.Now().UTC())
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -135,6 +136,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/reset", a.reset)
 	mux.HandleFunc("POST /api/progress", a.progress)
 	mux.HandleFunc("POST /api/share", a.share)
+	mux.HandleFunc("POST /api/arrival", a.arrival)
+	mux.HandleFunc("POST /api/arrival-pace", a.arrivalPace)
 	return headers(mux)
 }
 
@@ -194,6 +197,9 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 		out["phones"], out["down"] = phones, st.down()
+		if st.arrivals != nil { // a stand-in stack (tests) has none
+			out["arrivalEverySec"] = int(st.arrivals.pace() / time.Second)
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -210,6 +216,7 @@ func (a *app) board(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b.Shares = st.coord.views(b, st.phones, a.gaz, a.geo)
+	b.Arrival = st.arrivals.views(b)
 	writeJSON(w, http.StatusOK, b)
 }
 
@@ -295,9 +302,19 @@ func (a *app) ussd(w http.ResponseWriter, r *http.Request) {
 	if sc.End {
 		st.hangUp(tok)
 		tok = ""
+		// A caller's closing screen names the incident: the phone that
+		// reported it is the one asked whether help has arrived (arrival.go).
+		if p, ok := st.phone(sess.phone); ok && p.Kind == "caller" {
+			if ref := refPattern.FindString(sc.Text); ref != "" {
+				st.arrivals.reported(ref, p.Handle)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session": tok, "text": sc.Text, "end": sc.End})
 }
+
+// refPattern is an incident reference as screens write it.
+var refPattern = regexp.MustCompile(`[0-9]{3} [0-9]{3} [0-9]{4}`)
 
 // syntheticOnly refuses a reply holding a phone number (seven digits or
 // more) unless it is one of the demo's own synthetic numbers: on a public

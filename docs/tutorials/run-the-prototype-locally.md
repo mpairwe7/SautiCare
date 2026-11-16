@@ -113,7 +113,7 @@ time=... level=INFO msg="demo ready"
 Open **http://127.0.0.1:7860** in a browser. **Verify audit ledger** and **Reset demo** sit at the top right. Then, from top to bottom:
 
 - **Five live figures:** open incidents by severity, the median time from call to acceptance (T1 to T4), alerts by outcome, escalations, and SMS sent. All read 0 for now.
-- **Play a scenario:** six buttons that play a whole scenario on the phones, and the **Responder autopilot** beside them. Step 8 uses both.
+- **Play a scenario:** seven buttons that play a whole scenario on the phones, and the **Responder autopilot** beside them. Step 8 uses both. Under the autopilot, **Has help arrived?** sets how often callers are asked whether help has come (scenario E).
 - **The phones**, side by side on a wide screen:
   - **Caller**, with tabs for **Caller A** and **Caller B**;
   - **VHT**, with tabs for VHT 1 to VHT 4;
@@ -254,6 +254,28 @@ Any mix works: a VHT on a basic phone with a rider on a smartphone, or the other
 
 This is a preview: no Sauti service records these details yet. The wording is a placeholder, the SMS go straight to the demo's SMS simulator rather than through dispatch-worker, and nothing is written to the operational store or the audit ledger.
 
+### Scenario E: the caller is asked whether help has arrived (about 2 minutes)
+
+To know roughly when help arrived, even when no responder records it, Sauti asks the caller every 5 minutes after the call: "Has a health worker arrived yet?" It stops once they say yes.
+- **A basic phone** gets the question as a USSD screen the network opens by itself, marked **USSD from Sauti**. The caller presses `1` (Yes) or `2` (No).
+- **A smartphone** gets a notification, and the app shows the question with **Yes, help is here** and **No, still waiting**.
+
+Five minutes is long to wait in a presentation. Under **Has help arrived?** beside the autopilot, choose **every 30 seconds**. The choice holds for this run and for everyone watching.
+
+1. **The call.** On **Caller B**, report a red emergency in Test Ward 2: dial `*384*1#` and press `1`, `1`, `2`, `3`, `2`, `2`, `1`, `1`. VHT 4, Transporter 3 and the nearest responders of Test Ward 1 are alerted. Accept none of them yet.
+2. **Nobody has come.** 30 seconds after the call, the question appears on Caller B. Answer **No**. Nobody has accepted, so Sauti looks harder for help without going past what the dispatch mode allows:
+   - it retries dispatch at once;
+   - it reminds every responder still holding an alert by SMS: `… the caller is still waiting and nobody has taken this. Dial *384*2# to accept.`;
+   - if nobody is being asked for a role and no coordinator has it yet, it alerts a coordinator.
+
+   The caller sees `Sorry. Sauti is looking harder for help. We will ask again in 30 s.`
+3. **Help is on the way, but not there yet.** VHT 4 and Transporter 3 accept on `*384*2#`. At the next question, answer **No** again. Both get `… the caller says help has not arrived yet and is still waiting.`
+4. **Help is here.** At the next question, answer **Yes**. The questions stop.
+
+In the queue, the incident's **Has help arrived?** section lists each question, the answer, how it came (USSD or app) and what Sauti did. Once the caller says yes, it reads `Help arrived between … and …`: after the caller's last "no" and before their "yes". If a responder recorded the arrival (T5), it shows beside it. The activity feed lists each question and answer as **Arrival check**, and a smartphone caller's tracker marks **Help has arrived (you said so)**.
+
+A question left unanswered closes after 2 minutes (or the interval, if shorter), and the next comes one interval after it was asked. This is a demo preview of Build Prompt §10.4, which ADR-0028 left to M3. The answers stay in the demo; the only writes are dispatch's own retry and, when a coordinator is alerted, the existing `no_eligible_responder` escalation.
+
 ## 8. Let the page play the scenarios
 
 The **Play a scenario** buttons replay the scenarios above, and two more, on the same phones. They press the same keys through the same USSD service as you did, one screen at a time, so the audience sees every screen.
@@ -262,10 +284,11 @@ The **Play a scenario** buttons replay the scenarios above, and two more, on the
 2. Watch the status line under the buttons. It reads, for example, `Red injury, accepted. Step 3 of 6: Waiting for the alerts to VHT 1, VHT 2 and Transporter 1.` The phones being dialled show a notice and their keys are locked until the scenario ends.
 3. After about 20 seconds the line reads `Red injury, accepted: done.`, followed by the incident number, who accepted, and the time from call to acceptance, all read from the board.
 
-To stop a scenario part way, click **Cancel scenario**. The six scenarios are:
+To stop a scenario part way, click **Cancel scenario**. The seven scenarios are:
 
 | Button | What it shows | Takes about |
 |---|---|---|
+| **Has help arrived? The caller is asked** | Scenario E at a 30-second pace: Caller B says no twice (before anyone accepts, then after), then yes; the board shows when help arrived. Ends by setting the pace back to 5 minutes. Follows the caller panel's phone type | 2 min |
 | **Pregnancy emergency, end to end** | Scenario D: Transporter 1 and VHT 1 accept; VHT 1 sends their place, facility and number (on `*384*3#`, or by the app on a smartphone); both arrive; the rider hands over at the VHT's facility. Follows the phone type each panel is set to | 30 s |
 | **Red injury, accepted** | Scenario A: five alerts at once; VHT 1 and Transporter 1 accept | 20 s |
 | **A decline cascades** | Scenario B: VHT 4 declines and a VHT in Test Ward 1 is alerted in wave 2 | 15 s |

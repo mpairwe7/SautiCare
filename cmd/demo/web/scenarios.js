@@ -22,9 +22,39 @@ const holders = (b) => {
 };
 const oneEach = (b) => Object.values(holders(b)).every((k) => k <= 1);
 const shareOf = (b, inc, vht) => inc && (b.shares || []).find((s) => s.incident === inc.id && s.vht === vht);
+const checkOf = (b, ref) => { const i = byRef(b, ref); return i && (b.arrival || []).find((a) => a.incident === i.id); };
+const didOf = (b, ref, n) => checkOf(b, ref)?.asks?.[n]?.did || "";
+const hms = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const list = (xs) => (xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1]);
 
 export const SCENARIOS = [
+  {
+    id: "arrival-check",
+    title: "Has help arrived? The caller is asked",
+    description: "Callers are asked every 30 seconds for this run. Caller B reports a red emergency in Test Ward 2 and says nobody has come: Sauti reminds the responders alerted and retries. VHT 4 and Transporter 3 accept; still nobody, so both are told the caller is waiting. Then the caller says yes, which bounds when help arrived.",
+    needsReset: true,
+    steps: [
+      { kind: "pace", label: "Asking callers every 30 seconds, for this run", seconds: 30 },
+      { kind: "dial", label: "Caller B reports a red pregnancy emergency at Test Market 2", phone: "caller-b", inputs: path("1", "2", "2", "1"), as: "ref" },
+      { kind: "wait", label: "Waiting for the alerts to VHT 4 and Transporter 3", timeoutMs: 30000,
+        until: (b, v) => byRef(b, v.ref) && pendingFor(byRef(b, v.ref), ["VHT 4", "Transporter 3"]) },
+      { kind: "answer", label: "Caller B is asked whether help has arrived: no", phone: "caller-b", ref: "ref", yes: false, timeoutMs: 60000 },
+      { kind: "wait", label: "Waiting for Sauti to remind VHT 4 and Transporter 3", timeoutMs: 15000,
+        until: (b, v) => didOf(b, v.ref, 0).includes("reminded VHT 4") && didOf(b, v.ref, 0).includes("reminded Transporter 3") },
+      { kind: "respond", label: "VHT 4 accepts on *384*2#", phone: "vht-4", ref: "ref", answer: "accept" },
+      { kind: "respond", label: "Transporter 3 accepts on *384*2#", phone: "transporter-3", ref: "ref", answer: "accept" },
+      { kind: "answer", label: "Caller B is asked again: still no", phone: "caller-b", ref: "ref", yes: false, timeoutMs: 60000 },
+      { kind: "wait", label: "Waiting for VHT 4 and Transporter 3 to be told the caller is waiting", timeoutMs: 15000,
+        until: (b, v) => didOf(b, v.ref, 1).includes("told VHT 4") && didOf(b, v.ref, 1).includes("told Transporter 3") },
+      { kind: "answer", label: "Caller B is asked again: yes, help is here", phone: "caller-b", ref: "ref", yes: true, timeoutMs: 60000 },
+      { kind: "wait", label: "Waiting for the arrival window on the board", timeoutMs: 15000, until: (b, v) => checkOf(b, v.ref)?.confirmedAt },
+      { kind: "pace", label: "Asking callers every 5 minutes again", seconds: 300 },
+    ],
+    result: (b, v) => {
+      const a = checkOf(b, v.ref);
+      return `Incident ${v.ref}: Caller B was asked ${a.asks.length} times; help arrived between ${hms(a.after)} and ${hms(a.confirmedAt)}, by the caller's answers. Callers are asked every 5 minutes again.`;
+    },
+  },
   {
     id: "pregnancy",
     title: "Pregnancy emergency, end to end",
@@ -323,6 +353,28 @@ const RUN = {
     }
     const text = await menuOn(deps, s.phone, ref, STEP_WORDS[s.step], after);
     if (/could not|before|already|has not|no open/.test(text)) throw new Error(`The menu answered "${text}".`);
+  },
+  // pace sets how often callers are asked whether help has arrived.
+  async pace(s, deps) {
+    const { status, data } = await deps.pace(s.seconds);
+    if (status !== 200) throw new Error(data.error || `The pace got status ${status}.`);
+  },
+  // answer waits for the arrival question on the caller's phone, then
+  // answers it: on the USSD push a basic phone shows, or in the app.
+  async answer(s, deps, vars) {
+    const ref = vars[s.ref];
+    let check = null;
+    await RUN.wait({ label: `Waiting for the question to ${s.phone}`, timeoutMs: s.timeoutMs || 60000,
+      until: (b) => { check = checkOf(b, ref); return check?.open; } }, deps, vars);
+    if (deps.smart?.("caller")) {
+      const { status, data } = await deps.arrival({ phone: s.phone, incident: check.incident, answer: s.yes ? "yes" : "no" });
+      deps.signal.throwIfAborted();
+      if (status !== 200) throw new Error(data.error || `The answer got status ${status}.`);
+      return;
+    }
+    const key = s.yes ? "1" : "2";
+    const sc = await ussd(deps, s.phone, { session: check.open.session, input: key }, key);
+    if (!sc.end || !/Thank you|Sorry/.test(sc.text)) throw new Error(`The caller heard "${sc.text}".`);
   },
   pause: (s, deps) => deps.sleep(s.ms),
   reset: (s, deps) => deps.reset(),

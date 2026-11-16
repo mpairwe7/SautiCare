@@ -103,6 +103,8 @@ const ctx = {
   ussd: (phone, body, keys) => drive(phone, body, keys, undefined, true),
   progress: (body) => api("POST", "api/progress", body),
   share: (body) => api("POST", "api/share", body),
+  arrival: (body) => api("POST", "api/arrival", body),
+  askFor: (id) => askFor(id),
   gps: { get: (id) => app.gps[id], set: (id, g) => { app.gps[id] = g; if (app.board && app.map) drawMap(); } },
   report: { get: (id) => app.reports[id], set: (id, ref) => { app.reports[id] = ref; } },
   ended: (p, text) => {
@@ -250,6 +252,27 @@ async function drive(phoneId, body, keys, signal, takeOver) {
   return res;
 }
 
+// askFor is the arrival question open on a caller's phone, if any: its
+// incident, reference, push session and screen.
+function askFor(id) {
+  const check = (app.board?.arrival || []).find((a) => a.phone === id && a.open);
+  if (!check) return null;
+  const inc = app.board.incidents.find((i) => i.id === check.incident);
+  return { incident: check.incident, ref: inc?.reference || "", session: check.open.session, text: check.open.text };
+}
+
+// The arrival check's pace: how often callers are asked whether help has
+// arrived, for the whole run (every viewer sees the same).
+function buildArrivalPace() {
+  const sel = $("#arrival-pace");
+  sel.addEventListener("change", async () => {
+    const { status, data } = await api("POST", "api/arrival-pace", { seconds: Number(sel.value) });
+    $("#arrival-log").textContent = status === 200 ? `Callers are asked every ${paceWords(Number(sel.value))} until they say help has arrived.` : data.error || "Not changed.";
+  });
+}
+
+const paceWords = (s) => (s >= 60 ? `${s / 60} minute${s === 60 ? "" : "s"}` : `${s} seconds`);
+
 // autoShare is what a VHT's smartphone does once they accept: it sends the
 // transporter their location (its GPS), the facility they registered with
 // and their number, without a question. A move while on the job sends it
@@ -326,7 +349,8 @@ function renderDetail() {
   // Rebuilding drops keyboard focus: it goes back to the same summary, by its key.
   const active = pane.contains(document.activeElement) ? document.activeElement : null;
   const key = active?.closest("details")?.dataset.key;
-  pane.replaceChildren(renderIncident(inc, { open: app.open, now: serverNow(), onHover: onHoverIncident, onClose: closeIncident, closing: app.closing }));
+  pane.replaceChildren(renderIncident(inc, { open: app.open, now: serverNow(), onHover: onHoverIncident, onClose: closeIncident, closing: app.closing,
+    arrival: (app.board.arrival || []).find((a) => a.incident === inc.id), label: (id) => app.phones.find((p) => p.id === id)?.label || id }));
   renderTimelines(true);
   if (key) pane.querySelector(`details[data-key="${CSS.escape(key)}"] > summary`)?.focus({ preventScroll: true });
 }
@@ -356,7 +380,7 @@ function drawMap() {
 // renderSnapshot renders every view of the snapshot, when it changed.
 function renderSnapshot() {
   if (!app.board || !app.map) return;
-  const key = JSON.stringify([app.board.incidents, app.board.suspended, app.board.shares, app.inbox, app.phones]);
+  const key = JSON.stringify([app.board.incidents, app.board.suspended, app.board.shares, app.board.arrival, app.inbox, app.phones]);
   if (key === app.snapKey) return;
   app.snapKey = key;
   const sms = boardSms(app.board, app.inbox);
@@ -427,6 +451,12 @@ async function play(sc) {
     codes: app.codes, signal, now: () => Date.now(),
     smart: (kind) => app.modes[kind] === "smart",
     progress: (body) => api("POST", "api/progress", body),
+    arrival: (body) => api("POST", "api/arrival", body),
+    pace: async (seconds) => {
+      const r = await api("POST", "api/arrival-pace", { seconds });
+      if (r.status === 200) $("#arrival-pace").value = String(seconds);
+      return r;
+    },
     ussd: (phone, body, keys) => drive(phone, body, keys, signal, true),
     board: async () => { const r = await api("GET", "api/board"); return r.status === 200 ? r.data : null; },
     sleep: (ms) => sleep(ms, signal),
@@ -637,6 +667,7 @@ async function pollState() {
   if (data.codes) app.codes = data.codes;
   if (data.map) app.map = data.map;
   if (data.dispatch?.cascadeTimeoutMs) app.timeoutMs = data.dispatch.cascadeTimeoutMs;
+  if (data.arrivalEverySec && document.activeElement !== $("#arrival-pace")) $("#arrival-pace").value = String(data.arrivalEverySec);
   if (data.phase === "ready" && data.phones) {
     const changed = JSON.stringify(data.phones) !== JSON.stringify(app.phones) || was !== "ready";
     app.phones = data.phones;
@@ -687,6 +718,7 @@ $("#audit-btn").addEventListener("click", verify);
 $("#reset-btn").addEventListener("click", reset);
 buildScenarios();
 buildAutopilot();
+buildArrivalPace();
 new ResizeObserver(() => { if (app.board && app.map) drawMap(); }).observe($("#map"));
 new ResizeObserver(() => analytics.render(app.board, serverNow())).observe($("#analytics"));
 loop(pollState, 2000);

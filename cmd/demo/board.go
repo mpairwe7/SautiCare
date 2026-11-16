@@ -27,7 +27,8 @@ type board struct {
 	Now       time.Time       `json:"now"`
 	Suspended bool            `json:"suspended"`
 	Incidents []boardIncident `json:"incidents"`
-	Shares    []shareView     `json:"shares"` // what VHTs shared with their transporter (share.go)
+	Shares    []shareView     `json:"shares"`  // what VHTs shared with their transporter (share.go)
+	Arrival   []arrivalView   `json:"arrival"` // the callers asked whether help has arrived (arrival.go)
 }
 
 type boardIncident struct {
@@ -113,7 +114,7 @@ func maskSMS(s string) string {
 // caller's number or a responder's name or number at all.
 func (st *stack) readBoard(ctx context.Context, cfg config.Bundle, gaz location.File) (board, error) {
 	ro := opstore.New(st.ro)
-	b := board{Now: time.Now().UTC(), Incidents: []boardIncident{}, Shares: []shareView{}}
+	b := board{Now: time.Now().UTC(), Incidents: []boardIncident{}, Shares: []shareView{}, Arrival: []arrivalView{}}
 	if err := st.ro.QueryRow(ctx, "SELECT op.dispatch_suspended()").Scan(&b.Suspended); err != nil {
 		return b, err
 	}

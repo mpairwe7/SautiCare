@@ -64,6 +64,17 @@
     <p id="ap-log" class="ap-log">Off. Alerts wait for a person to answer.</p>
     <p id="ap-paused" class="ap-log" hidden>Paused while a scenario runs.</p>
   </fieldset>
+  <fieldset class="autopilot arrival-pace">
+    <legend>Has help arrived?</legend>
+    <label class="ap-delay">Ask each caller
+      <select id="arrival-pace">
+        <option value="300">every 5 minutes</option>
+        <option value="60">every minute</option>
+        <option value="30">every 30 seconds</option>
+      </select>
+    </label>
+    <p id="arrival-log" class="ap-log">A basic phone gets the question as a USSD screen, a smartphone in the app, until the caller says yes. 5 minutes is the interval asked for; the shorter ones fit a presentation.</p>
+  </fieldset>
 </section>
 
 <main class="layout">

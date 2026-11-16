@@ -72,6 +72,8 @@ export class BasicPhone {
     this.session = "";
     this.screen = "";
     this.busy = false;
+    this.push = ""; // the USSD push session on screen (the arrival question), if any
+    this.dismissed = new Set(); // push sessions hung up on this phone
     this.gen = 0; // bumped when the phone changes or hangs up: a late reply is then dropped
     const id = "in-" + kind;
     this.text = h("p", { class: "screen-text", "aria-live": "polite", "aria-atomic": "true" });
@@ -135,6 +137,8 @@ export class BasicPhone {
   end() {
     // Hanging up a USSD session simply abandons it, as on a handset.
     if (this.locked()) return;
+    if (this.push) this.dismissed.add(this.push);
+    this.push = "";
     this.gen++;
     this.mode = "idle";
     this.session = "";
@@ -172,6 +176,7 @@ export class BasicPhone {
   // scenario or the autopilot sent.
   show(status, data) {
     if (status === 200 || status === 410) {
+      if (data.end || (this.push && data.session !== this.push)) this.push = "";
       this.mode = data.end ? "end" : "con";
       this.session = data.session || "";
       this.screen = data.text || "";
@@ -198,7 +203,25 @@ export class BasicPhone {
     }
   }
 
-  refresh() { /* a basic phone shows only what it was sent */ }
+  // refresh shows what the network sends unasked: the arrival question, as a
+  // USSD push, when the caller's phone is idle. A push that closes elsewhere
+  // (answered on another screen, or lapsed) leaves the screen.
+  refresh() {
+    if (this.kind !== "caller" || !this.p) return;
+    const ask = this.ctx.askFor(this.p.id);
+    if (this.push && this.mode === "con" && (!ask || ask.session !== this.push)) {
+      this.push = "";
+      this.mode = "idle";
+      this.session = "";
+      this.note.textContent = "The question from Sauti has closed.";
+      this.note.hidden = false;
+      this.render();
+      return;
+    }
+    if (!ask || this.mode !== "idle" || this.busy || this.locked() || this.dismissed.has(ask.session)) return;
+    this.push = ask.session;
+    this.show(200, { session: ask.session, text: ask.text, end: false });
+  }
 
   render() {
     const p = this.p;
@@ -215,7 +238,7 @@ export class BasicPhone {
         : "Dial " + codes.responder + "\nfor the responder menu.";
       this.label.textContent = "Number to dial";
     } else {
-      this.meta.textContent = this.mode === "con" ? "USSD" : "USSD, session ended";
+      this.meta.textContent = this.mode === "con" ? (this.push ? "USSD from Sauti" : "USSD") : "USSD, session ended";
       this.text.textContent = this.screen;
       this.label.textContent = "Reply";
     }

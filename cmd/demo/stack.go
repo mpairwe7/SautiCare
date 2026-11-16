@@ -85,6 +85,7 @@ type stack struct {
 	ctx      context.Context    // the run's: ends with stop
 	cancel   context.CancelFunc // ends delivery reports and coordination
 	coord    *coordination      // the VHT's details for the transporter (share.go)
+	arrivals *arrivals          // the callers asked whether help has arrived (arrival.go)
 
 	keys       *devkeys.Store
 	witnessDir string
@@ -107,9 +108,10 @@ type stack struct {
 }
 
 type session struct {
-	mu   sync.Mutex
-	s    ussdSession
-	used time.Time
+	mu    sync.Mutex
+	s     ussdSession
+	used  time.Time
+	phone string // the handle that dialled it; empty for a push
 }
 
 // startStack starts a new run. On error everything it started is stopped
@@ -120,7 +122,7 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 		return nil, err
 	}
 	sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	st = &stack{dir: dir, ctx: sctx, cancel: cancel, coord: newCoordination(), witnessDir: filepath.Join(dir, "witness"),
+	st = &stack{dir: dir, ctx: sctx, cancel: cancel, coord: newCoordination(), arrivals: newArrivals(), witnessDir: filepath.Join(dir, "witness"),
 		labels: map[string]string{}, ids: map[string]string{}, routes: map[string]ussdDialer{}, sessions: map[string]*session{}}
 	defer func() {
 		if err != nil {
@@ -349,7 +351,7 @@ func (st *stack) dial(p phone, route ussdDialer) (string, *session, error) {
 	}
 	st.dials = append(st.dials, now)
 	tok := secret()
-	s := &session{s: route.Dial(p.e164), used: now}
+	s := &session{s: route.Dial(p.e164), used: now, phone: p.Handle}
 	st.sessions[tok] = s
 	return tok, s, nil
 }
