@@ -345,9 +345,15 @@ function renderBoard(b) {
     board.replaceChildren(h("p", { class: "placeholder", text: "No incidents yet. Dial " + app.codes.caller + " on the caller phone, or play a scenario." }));
     return;
   }
+  // Rebuilding the cards drops keyboard focus: it goes back to the same summary, by its key, or card.
+  const active = board.contains(document.activeElement) ? document.activeElement : null;
+  const key = active?.closest("details")?.dataset.key;
+  const card = active?.closest(".incident")?.id;
   const ctx = { open: app.open, now: serverNow(), selected: app.incident, onHover: onHoverIncident };
   board.replaceChildren(...b.incidents.map((inc) => renderIncident(inc, ctx)));
   renderTimelines(true);
+  const again = key ? board.querySelector(`details[data-key="${CSS.escape(key)}"] > summary`) : card && document.getElementById(card);
+  again?.focus({ preventScroll: true });
 }
 
 // renderTimelines redraws the timeline charts at their mounts' width: every

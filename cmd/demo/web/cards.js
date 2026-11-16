@@ -13,7 +13,7 @@ const GLYPH = { pending: "…", accepted: "✓", declined: "✕", no_response: "
 export const since = (from, to) => mmss(to - from);
 
 function details(open, key, summary, body) {
-  const d = h("details", { open: open.has(key), ontoggle: () => (d.open ? open.add(key) : open.delete(key)) },
+  const d = h("details", { open: open.has(key), "data-key": key, ontoggle: () => (d.open ? open.add(key) : open.delete(key)) },
     h("summary", { text: summary }), body);
   return d;
 }
