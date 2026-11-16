@@ -193,10 +193,14 @@ class Phone {
   }
 
   // type shows keys going into the reply box, as a person would press them.
+  // It stops once another phone is selected or a reset clears this one: the
+  // box then belongs to a phone the keys were not meant for.
   async type(keys, signal) {
+    const gen = this.gen;
     this.input.value = "";
     await sleep(READ_MS, signal);
     for (const k of keys) {
+      if (gen !== this.gen) return;
       this.input.value += k;
       await sleep(KEY_MS, signal);
     }
