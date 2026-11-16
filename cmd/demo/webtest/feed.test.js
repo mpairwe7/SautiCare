@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { feedItems, serviceOf } from "../web/feed.js";
+import { boardSms } from "../web/metrics.js";
 
 const at = (s) => new Date(Date.UTC(2026, 10, 16, 9, 0, s)).toISOString();
 const ev = (seq, type, s, payload, relayedAt) => ({ seq, type, at: at(s), actor: "system", payload: JSON.stringify(payload), relayedAt });
@@ -35,6 +36,14 @@ test("the feed lists events and SMS newest first, each tagged with its service a
   assert.ok(items.every((i) => i.ref === "853 402 4461" && i.incident === "inc-1"), "the SMS is tied to its incident by its reference");
   assert.equal(items.at(-1).relayedAt, at(1), "an event sealed by outbox-relay says when");
   assert.equal(new Set(items.map((i) => i.key)).size, items.length, "keys are unique");
+});
+
+test("an SMS keeps its feed key when an older one leaves the board", () => {
+  const both = { incidents: [...board.incidents, { id: "inc-0", reference: "853 402 4460", alerts: [], events: [] }] };
+  const inbox = { "vht-1": [{ at: at(2), text: "PENDING-SMS Sauti 853 402 4460: RED Injury or accident." }, ...sms["vht-1"]] };
+  const key = (b) => feedItems(b, boardSms(b, inbox), phones, map).filter((i) => i.service === "SMS").map((i) => [i.ref, i.key]);
+  const newer = key(both).find(([ref]) => ref === "853 402 4461");
+  assert.deepEqual(key(board), [newer], "only 853 402 4461's SMS is left, under the same key");
 });
 
 test("an escalation's reason names the service that wrote it", () => {

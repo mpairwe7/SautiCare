@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { metrics, timeline, cascade, ticks } from "../web/metrics.js";
+import { metrics, timeline, cascade, ticks, boardSms } from "../web/metrics.js";
 
 const at = (s) => new Date(Date.UTC(2026, 10, 16, 9, 0, s)).toISOString();
 
@@ -28,6 +28,17 @@ test("the strip counts open incidents by severity, alerts by outcome, escalation
   assert.equal(m.alerts, 3);
   assert.deepEqual(m.escalations, { count: 2, incidents: 1 });
   assert.deepEqual(m.sms, { count: 3, phones: 2 });
+});
+
+test("the SMS in the figures are those about the board's incidents, and those about none", () => {
+  const sms = {
+    "vht-1": [{ at: at(1), text: "PENDING-SMS Sauti 111 111 1111: RED Injury." }, { at: at(2), text: "PENDING-SMS Sauti 999 999 9999: RED Injury." }],
+    "vht-2": [{ at: at(3), text: "PENDING-SMS Sauti: you are available until 10:00." }],
+    "caller-a": [{ at: at(4), text: "PENDING-SMS Sauti 999 999 9999: help is on the way." }],
+  };
+  const kept = boardSms(board, sms);
+  assert.deepEqual(kept, { "vht-1": [sms["vht-1"][0]], "vht-2": sms["vht-2"], "caller-a": [] }, "999 999 9999 is off the board");
+  assert.deepEqual(metrics(board, kept).sms, { count: 2, phones: 2 });
 });
 
 test("call to acceptance is the median T1 to T4 over accepted incidents", () => {

@@ -1,6 +1,6 @@
 // Figures derived from the board and the inboxes, exactly as the API returns
 // them. Pure: the views render what these return.
-import { ended, payload } from "./format.js";
+import { REF, ended, payload } from "./format.js";
 
 export const SEVERITIES = ["red", "yellow", "green", "none"];
 export const OUTCOMES = ["pending", "accepted", "declined", "no_response", "stood_down"];
@@ -12,6 +12,15 @@ function median(xs) {
   const s = xs.slice().sort((a, b) => a - b);
   const m = s.length >> 1;
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+// boardSms keeps each phone's SMS about the board's incidents, and those
+// about no incident (an availability notice), so the figures and the feed
+// cover what the board covers.
+export function boardSms(board, sms) {
+  const refs = new Set(board.incidents.map((i) => i.reference));
+  const onBoard = (m) => { const ref = (REF.exec(m.text) || [""])[0]; return !ref || refs.has(ref); };
+  return Object.fromEntries(Object.entries(sms || {}).map(([phone, list]) => [phone, list.filter(onBoard)]));
 }
 
 // metrics is the live strip: open incidents by severity, the median time

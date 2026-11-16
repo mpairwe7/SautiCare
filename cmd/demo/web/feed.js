@@ -60,11 +60,11 @@ export function feedItems(board, sms, phones, map) {
   }
   const labels = Object.fromEntries((phones || []).map((p) => [p.id, p.label]));
   for (const [phone, list] of Object.entries(sms || {})) {
-    list.forEach((m, i) => {
+    for (const m of list) {
       const ref = (REF.exec(m.text) || [""])[0];
-      items.push({ key: "sms:" + phone + ":" + i, at: m.at, service: "SMS", ref, incident: byRef[ref] || "",
+      items.push({ key: "sms:" + phone + ":" + m.at, at: m.at, service: "SMS", ref, incident: byRef[ref] || "",
         text: `To ${labels[phone] || phone}: ${m.text}`, relayedAt: null });
-    });
+    }
   }
   // Ascending, then reversed: a stable sort keeps same-instant items in
   // the order they were written, so the reverse lists the latest first.

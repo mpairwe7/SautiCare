@@ -5,7 +5,7 @@
 // sends masked phone numbers.
 import { h, clock } from "./dom.js";
 import { mmss } from "./format.js";
-import { metrics } from "./metrics.js";
+import { metrics, boardSms } from "./metrics.js";
 import { feedItems } from "./feed.js";
 import { layout } from "./geo.js";
 import { renderKpis, renderMap, renderFeed, highlight } from "./views.js";
@@ -376,9 +376,10 @@ function renderSnapshot() {
   const key = JSON.stringify([app.board.incidents, app.board.suspended, app.inbox, app.phones]);
   if (key === app.snapKey) return;
   app.snapKey = key;
-  renderKpis($("#kpis"), metrics(app.board, app.inbox));
+  const sms = boardSms(app.board, app.inbox);
+  renderKpis($("#kpis"), metrics(app.board, sms));
   drawMap();
-  renderFeed($("#feed"), feedItems(app.board, app.inbox, app.phones, app.map), app.feedSeen);
+  renderFeed($("#feed"), feedItems(app.board, sms, app.phones, app.map), app.feedSeen);
   renderBoard(app.board);
 }
 
