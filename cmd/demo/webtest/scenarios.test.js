@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SCENARIOS, runScenario, next, IDLE, phonesOf, answerAlert, lockPhones } from "../web/scenarios.js";
+import { SCENARIOS, runScenario, next, IDLE, phonesOf, answerAlert, lockPhones, lockedBy } from "../web/scenarios.js";
 
 const codes = { caller: "*384*1#", responder: "*384*2#" };
 const labelOf = (id) => id.replace(/^(\w)(\w*)-(\d+)$/, (_, a, b, n) => (a === "v" ? "VHT" : a.toUpperCase() + b) + " " + n);
@@ -144,14 +144,20 @@ test("the surge's branches run together, and every phone they drive is listed", 
   assert.ok(vht < lastCall, "VHT 4 answers while calls are still coming in");
 });
 
-test("a lock is released only on the phones it still holds", () => {
-  const driven = new Map();
-  const autopilot = lockPhones(driven, ["vht-4"], "The autopilot is answering.");
-  const scenario = lockPhones(driven, new Set(["caller-a", "vht-4"]), "A scenario is dialling.");
-  autopilot(); // the autopilot's answer ends while the scenario plays
-  assert.deepEqual([...driven].map(([id, l]) => [id, l.why]), [["vht-4", "A scenario is dialling."], ["caller-a", "A scenario is dialling."]]);
-  scenario();
-  assert.equal(driven.size, 0);
+test("a phone stays locked while any lock holds it, and shows the latest lock's reason", () => {
+  for (const scenarioEndsFirst of [false, true]) {
+    const locks = new Set();
+    const autopilot = lockPhones(locks, ["vht-4"], "The autopilot is answering.");
+    const scenario = lockPhones(locks, new Set(["caller-a", "vht-4"]), "A scenario is dialling.");
+    assert.equal(lockedBy(locks, "vht-4"), "A scenario is dialling.");
+    const [first, second] = scenarioEndsFirst ? [scenario, autopilot] : [autopilot, scenario];
+    first();
+    assert.equal(lockedBy(locks, "vht-4"), scenarioEndsFirst ? "The autopilot is answering." : "A scenario is dialling.", `vht-4 after the first release (scenario first: ${scenarioEndsFirst})`);
+    assert.equal(lockedBy(locks, "caller-a"), scenarioEndsFirst ? undefined : "A scenario is dialling.", `caller-a after the first release (scenario first: ${scenarioEndsFirst})`);
+    second();
+    assert.equal(lockedBy(locks, "vht-4"), undefined);
+    assert.equal(lockedBy(locks, "caller-a"), undefined);
+  }
 });
 
 test("every scenario is a table of known step kinds with a title, a description and a result", () => {

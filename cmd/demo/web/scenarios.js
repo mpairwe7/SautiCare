@@ -130,14 +130,16 @@ export function phonesOf(steps) {
   return out;
 }
 
-// lockPhones locks phones in driven (phone → lock) and returns the
-// release, which unlocks only the phones whose lock is still this one: a
-// later lock on a phone, a scenario's over the autopilot's, replaces it.
-export function lockPhones(driven, phones, why) {
-  const lock = { why };
-  for (const id of phones) driven.set(id, lock);
-  return () => { for (const id of phones) if (driven.get(id) === lock) driven.delete(id); };
+// lockPhones adds a lock on phones to locks, the set of locks held now, and
+// returns its release. A phone stays locked while any lock holds it.
+export function lockPhones(locks, phones, why) {
+  const lock = { why, phones: new Set(phones) };
+  locks.add(lock);
+  return () => locks.delete(lock);
 }
+
+// lockedBy is the reason of the latest lock holding phone, or undefined.
+export const lockedBy = (locks, phone) => [...locks].findLast((l) => l.phones.has(phone))?.why;
 
 // next is the runner's state machine: idle → running(step) → done | failed
 // | cancelled. An event that does not apply leaves the status as it was.

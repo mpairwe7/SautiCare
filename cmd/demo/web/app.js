@@ -10,7 +10,7 @@ import { feedItems } from "./feed.js";
 import { layout } from "./geo.js";
 import { renderKpis, renderMap, renderFeed, highlight } from "./views.js";
 import { renderIncident, timelineChart } from "./cards.js";
-import { SCENARIOS, runScenario, phonesOf, answerAlert, lockPhones, IDLE } from "./scenarios.js";
+import { SCENARIOS, runScenario, phonesOf, answerAlert, lockPhones, lockedBy, IDLE } from "./scenarios.js";
 import { AUTOPILOT, plan } from "./autopilot.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -60,7 +60,7 @@ const app = {
   incident: "", // the incident picked on the map
   hover: "", // the incident whose card the pointer or focus is on
   feedSeen: new Set(),
-  driven: new Map(), // phone → the lock ({why}) of the scenario or the autopilot dialling it
+  locks: new Set(), // the locks ({why, phones}) of the scenario and the autopilot dialling phones
   scenario: IDLE,
 };
 
@@ -126,7 +126,7 @@ class Phone {
     this.renderInbox();
   }
 
-  locked() { return this.p ? app.driven.get(this.p.id)?.why : undefined; }
+  locked() { return this.p ? lockedBy(app.locks, this.p.id) : undefined; }
 
   press(k) {
     if (this.mode === "end" || this.locked()) return;
@@ -274,7 +274,7 @@ function refreshTabs() {
     const unread = sel ? 0 : Math.max(0, (app.inbox[id] || []).length - (app.seen[id] || 0));
     tab.setAttribute("aria-selected", String(sel));
     tab.tabIndex = sel ? 0 : -1;
-    tab.classList.toggle("driven", app.driven.has(id));
+    tab.classList.toggle("driven", Boolean(lockedBy(app.locks, id)));
     const badge = tab.querySelector(".badge");
     badge.hidden = unread === 0;
     badge.textContent = String(unread);
@@ -311,7 +311,7 @@ async function drive(phoneId, body, keys, signal, takeOver) {
   const p = app.phones.find((x) => x.id === phoneId);
   if (!p) return { status: 0, data: { error: `${phoneId} is not on screen.` } };
   const w = widget(p.kind);
-  const person = w.p && w.p.id !== phoneId && w.mode === "con" && !app.driven.has(w.p.id);
+  const person = w.p && w.p.id !== phoneId && w.mode === "con" && !lockedBy(app.locks, w.p.id);
   const shown = takeOver || !person;
   if (shown && w.p?.id !== phoneId) select(p.kind, phoneId);
   const gen = w.gen; // a reset or another phone bumps it, even if the widget is back on this phone
@@ -437,7 +437,7 @@ async function play(sc) {
   if (sc.needsReset && n && !window.confirm(`"${sc.title}" starts from a fresh demo. Erase the ${n} incident(s) on the board and start?`)) return;
   runCtl = new AbortController();
   const signal = runCtl.signal;
-  const unlock = lockPhones(app.driven, phonesOf(sc.steps), `A scenario is dialling this phone: "${sc.title}". Cancel it to use the keys.`);
+  const unlock = lockPhones(app.locks, phonesOf(sc.steps), `A scenario is dialling this phone: "${sc.title}". Cancel it to use the keys.`);
   ap.since = Infinity; // the autopilot leaves a scenario's alerts to the scenario
   const deps = {
     codes: app.codes, signal, now: () => Date.now(),
@@ -496,7 +496,7 @@ async function pumpAutopilot() {
         apLog(`${d.responder}'s alert for ${d.ref} ended before the autopilot answered.`);
         continue;
       }
-      const unlock = lockPhones(app.driven, [d.phone], "The autopilot is answering an alert on this phone.");
+      const unlock = lockPhones(app.locks, [d.phone], "The autopilot is answering an alert on this phone.");
       renderPhones();
       const gen = app.gen;
       try {
