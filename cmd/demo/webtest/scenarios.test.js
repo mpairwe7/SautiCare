@@ -15,7 +15,7 @@ function fakeDemo({ alerts = [], reasons = false } = {}) {
   const incidents = [];
   let n = 0;
   let clock = 0;
-  const latest = (label) => incidents.flatMap((i) => i.alerts.filter((a) => a.responder === label && a.outcome === "pending").map((a) => [i, a])).at(-1);
+  const latest = (label) => incidents.flatMap((i) => i.alerts.filter((a) => a.responder === label && a.outcome === "pending").map((a) => [i, a]))[0];
   const screen = (session, text, end) => ({ status: 200, data: { session: end ? "" : session, text, end } });
   const ussd = async (phone, body) => {
     calls.push([phone, body.code || body.input]);
@@ -113,6 +113,16 @@ test("a decline that asks why answers with the last reason", async () => {
   assert.equal(out.text, "PENDING-RESPONDER Declined 853 402 4460. Thank you.");
   assert.equal(demo.incidents[0].alerts[0].reason, "3");
   await assert.rejects(answerAlert(demo.deps, "vht-4", "853 402 4460", "accept"), /did not offer the alert/, "an alert is answered once");
+});
+
+test("the responder menu offers the latest of two pending alerts", async () => {
+  const demo = fakeDemo({ alerts: [["VHT 4", "vht"]] });
+  for (const phone of ["caller-a", "caller-b"]) {
+    const { data } = await demo.deps.ussd(phone, { code: codes.caller });
+    for (let k = 0; k < 8; k++) await demo.deps.ussd(phone, { session: data.session, input: "1" });
+  }
+  assert.equal((await answerAlert(demo.deps, "vht-4", "", "accept")).ref, "853 402 4461", "the second call's alert");
+  assert.equal((await answerAlert(demo.deps, "vht-4", "", "accept")).ref, "853 402 4460", "then the first call's");
 });
 
 test("the surge's branches run together, and every phone they drive is listed", async () => {
