@@ -80,7 +80,7 @@ export function renderMap(mount, lay, selected, onSelect) {
     svg("g", {}, pins));
   mount.replaceChildren(el);
   document.getElementById("map-summary").textContent = summary(lay);
-  if (focused) el.querySelector(`[data-inc="${CSS.escape(focused)}"]`)?.focus();
+  if (focused) el.querySelector(`.pin[data-inc="${CSS.escape(focused)}"]`)?.focus();
 }
 
 // highlight marks one incident's pin and lines, or none, without a redraw.
