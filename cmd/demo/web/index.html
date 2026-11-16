@@ -79,9 +79,17 @@
     <div id="resp-phone" role="tabpanel" aria-labelledby="resp-h"></div>
   </section>
 
+  <section class="panel panel-feed" aria-labelledby="feed-h">
+    <h2 id="feed-h">Activity</h2>
+    <p class="hint">Every incident event and SMS, newest first, tagged with the service that produced it.</p>
+    <ol id="feed" class="feed"></ol>
+  </section>
+
   <section class="panel panel-map" aria-labelledby="map-h">
-    <h2 id="map-h">Map of the wards</h2>
-    <p class="hint">The gazetteer's placeholder wards and landmarks. Select an incident pin to open its card.</p>
+    <div class="map-head">
+      <h2 id="map-h">Map of the wards</h2>
+      <p class="hint">Each ward is the area nearest its centre, drawn from the gazetteer's placeholder wards and landmarks. Select an incident pin to open its card.</p>
+    </div>
     <figure class="map">
       <div id="map" class="map-mount"></div>
       <figcaption id="map-summary" class="map-summary"></figcaption>
@@ -96,12 +104,6 @@
       <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-no_response" x1="2" y1="5" x2="32" y2="5"/></svg> No response</li>
       <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-stood_down" x1="2" y1="5" x2="32" y2="5"/></svg> Stood down</li>
     </ul>
-  </section>
-
-  <section class="panel panel-feed" aria-labelledby="feed-h">
-    <h2 id="feed-h">Activity</h2>
-    <p class="hint">Every incident event and SMS, newest first, tagged with the service that produced it.</p>
-    <ol id="feed" class="feed"></ol>
   </section>
 
   <section class="panel panel-board" aria-labelledby="board-h">

@@ -360,6 +360,12 @@ function renderTimelines(all) {
   }
 }
 
+// drawMap lays the map out at its mount's size, one SVG unit to the pixel.
+function drawMap() {
+  const mount = $("#map");
+  renderMap(mount, layout(app.map, app.phones, app.board, { width: mount.clientWidth, height: mount.clientHeight }), app.incident, onSelectIncident);
+}
+
 // renderSnapshot renders every view of the snapshot, when it changed.
 function renderSnapshot() {
   if (!app.board || !app.map) return;
@@ -367,7 +373,7 @@ function renderSnapshot() {
   if (key === app.snapKey) return;
   app.snapKey = key;
   renderKpis($("#kpis"), metrics(app.board, app.inbox));
-  renderMap($("#map"), layout(app.map, app.phones, app.board), app.incident, onSelectIncident);
+  drawMap();
   renderFeed($("#feed"), feedItems(app.board, app.inbox, app.phones, app.map), app.feedSeen);
   renderBoard(app.board);
 }
@@ -675,6 +681,7 @@ $("#audit-btn").addEventListener("click", verify);
 $("#reset-btn").addEventListener("click", reset);
 buildScenarios();
 buildAutopilot();
+new ResizeObserver(() => { if (app.board && app.map) drawMap(); }).observe($("#map"));
 loop(pollState, 2000);
 loop(pollData, 1500);
 setInterval(tick, 1000);
