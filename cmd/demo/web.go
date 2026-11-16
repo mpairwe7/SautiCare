@@ -83,6 +83,15 @@ func (a *app) boot() {
 		case a.ctx.Err() != nil:
 			st.stop()
 		default:
+			// The demo's own menu and the coordination need the app's
+			// configuration; both are in place before any request sees st.
+			// A stand-in stack (tests) has neither routes nor a run context.
+			if st.routes != nil {
+				st.routes[incidentCode] = menuRoute{a: a, st: st}
+			}
+			if st.ctx != nil && st.coord != nil {
+				go a.coordinate(st)
+			}
 			a.st, a.phase = st, phaseReady
 			a.run++
 			a.log.Info("demo ready")
@@ -125,6 +134,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/audit", a.audit)
 	mux.HandleFunc("POST /api/reset", a.reset)
 	mux.HandleFunc("POST /api/progress", a.progress)
+	mux.HandleFunc("POST /api/share", a.share)
 	return headers(mux)
 }
 
@@ -170,7 +180,7 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 	a.mu.Lock()
 	st, phase, run := a.st, a.phase, a.run
 	a.mu.Unlock()
-	out := map[string]any{"phase": phase, "run": run, "codes": map[string]string{"caller": callerCode, "responder": responderCode},
+	out := map[string]any{"phase": phase, "run": run, "codes": map[string]string{"caller": callerCode, "responder": responderCode, "incident": incidentCode},
 		"map": a.geo, "dispatch": map[string]int64{"cascadeTimeoutMs": a.cfg.Dispatch.CascadeTimeout.Milliseconds()}}
 	if st != nil {
 		phones := make([]phone, len(st.phones))
@@ -199,6 +209,7 @@ func (a *app) board(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "The board could not be read."})
 		return
 	}
+	b.Shares = st.coord.views(b, st.phones, a.gaz, a.geo)
 	writeJSON(w, http.StatusOK, b)
 }
 
@@ -210,7 +221,11 @@ func (a *app) sms(w http.ResponseWriter, _ *http.Request) {
 	}
 	out := map[string][]sms{}
 	for _, p := range st.phones {
-		out[p.Handle] = st.sink.inbox(p.e164)
+		list := st.sink.inbox(p.e164)
+		for i := range list {
+			list[i].Text = maskSMS(list[i].Text)
+		}
+		out[p.Handle] = list
 	}
 	writeJSON(w, http.StatusOK, out)
 }

@@ -200,6 +200,12 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; font-weight: 600; }
 /* SMS inbox, under either phone */
 .inbox { margin-top: 16px; }
 .inbox h3 { font-size: 15px; font-weight: 700; display: flex; gap: 8px; align-items: baseline; }
+.inbox h3:focus { outline: none; }
+/* The heading on the left, Clear on the right, on one line. */
+.inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.inbox-clear { font: inherit; font-size: 13px; font-weight: 700; min-height: 32px; padding: 4px 14px; border-radius: 999px; border: 1px solid var(--line-strong); background: #fff; color: var(--ink); cursor: pointer; }
+.inbox-clear:hover:not(:disabled) { background: var(--lime); }
+.inbox-clear:disabled { color: var(--muted); cursor: default; opacity: 0.7; }
 .inbox-count { font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
 .msgs { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; max-height: 260px; overflow: auto; }
 .msgs li { background: #faf9f6; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; font-size: 14px; }
@@ -472,6 +478,17 @@ th { color: var(--muted); font-weight: 700; }
 @keyframes march { to { stroke-dashoffset: -10; } }
 .resp rect { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
 .resp text { font-size: 11px; font-weight: 800; text-anchor: middle; fill: var(--ink); }
+/* A responder shown where they are (a smartphone's fix, or the place a VHT
+   sent): filled, so it reads apart from the ward groups. */
+.resp.located rect { fill: #1f5fb0; stroke: #fff; stroke-width: 2; }
+.resp.located text { fill: #fff; }
+/* A registered health facility: a green square with a white cross. */
+.facility rect { fill: #067647; stroke: #fff; stroke-width: 1.5; }
+.facility .cross { stroke: #fff; stroke-width: 2.5; stroke-linecap: round; fill: none; }
+.facility text { font-size: 11px; font-weight: 700; fill: #055c37; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+/* The VHT on a transporter's smartphone map. */
+.sp-map .vhtpt { fill: #7a3fb0; stroke: #fff; stroke-width: 2.5; }
+.sp-map .via { stroke: #7a3fb0; stroke-width: 2; stroke-dasharray: 4 3; fill: none; }
 .pin { cursor: pointer; }
 .pin:focus { outline: none; }
 .pin .dot { stroke: #fff; stroke-width: 2; }

@@ -17,27 +17,44 @@ export function sleep(ms, signal) {
 }
 
 // Inbox is a phone's SMS list, newest first; the newest is marked when it
-// arrived since the last render.
+// arrived since the last render. Clear empties this phone's list on this
+// page, as deleting messages on a handset does: the messages stay in the
+// system's records, the figures and the activity feed.
 export class Inbox {
   constructor(ctx) {
     this.ctx = ctx;
+    this.p = null;
     this.msgs = h("ol", { class: "msgs" });
     this.empty = h("p", { class: "empty", text: "No messages yet." });
     this.count = h("span", { class: "inbox-count" });
-    this.root = h("section", { class: "inbox", "aria-label": "SMS inbox" }, h("h3", {}, "SMS inbox", this.count), this.empty, this.msgs);
+    this.title = h("h3", { tabindex: "-1" }, "SMS inbox", this.count);
+    this.clearBtn = h("button", { type: "button", class: "inbox-clear", text: "Clear", disabled: true, onclick: () => this.clear() });
+    this.root = h("section", { class: "inbox", "aria-label": "SMS inbox" }, h("div", { class: "inbox-head" }, this.title, this.clearBtn), this.empty, this.msgs);
     this.last = undefined;
   }
 
   reset() { this.last = undefined; }
 
+  clear() {
+    if (!this.p) return;
+    this.ctx.clear(this.p.id);
+    this.render(this.p);
+    this.title.focus(); // the button is now disabled: keep the reader's place
+  }
+
   // render returns the messages that are new since the last render.
   render(p) {
-    const list = (p && this.ctx.inbox(p.id)) || [];
-    const fresh = this.last === undefined ? [] : list.slice(this.last);
-    this.last = list.length;
-    if (p) this.ctx.seen(p.id, list.length);
+    this.p = p || null;
+    const all = (p && this.ctx.inbox(p.id)) || [];
+    const list = all.slice(p ? Math.min(this.ctx.cleared(p.id), all.length) : 0);
+    const fresh = this.last === undefined ? [] : all.slice(this.last);
+    this.last = all.length;
+    if (p) this.ctx.seen(p.id, all.length);
     this.empty.hidden = list.length > 0;
+    this.empty.textContent = all.length ? "No messages. Cleared on this page." : "No messages yet.";
     this.count.textContent = list.length ? `(${list.length})` : "";
+    this.clearBtn.disabled = !list.length;
+    this.clearBtn.setAttribute("aria-label", p ? `Clear ${p.label}'s SMS inbox` : "Clear the SMS inbox");
     this.msgs.replaceChildren(...list.slice().reverse().map((m, i) =>
       h("li", { class: fresh.length && i === 0 ? "new" : "" }, h("time", { datetime: m.at, text: clock(new Date(m.at)) }), h("p", { text: m.text }))));
     return fresh;

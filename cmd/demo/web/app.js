@@ -7,7 +7,7 @@ import { h, svg } from "./dom.js";
 import { mmss, REF } from "./format.js";
 import { metrics, boardSms } from "./metrics.js";
 import { feedItems } from "./feed.js";
-import { layout } from "./geo.js";
+import { layout, located, homeFix } from "./geo.js";
 import { renderKpis, renderMap, renderFeed, highlight } from "./views.js";
 import { renderIncident, renderQueue, timelineChart } from "./cards.js";
 import { SCENARIOS, runScenario, phonesOf, answerAlert, lockPhones, lockedBy, IDLE } from "./scenarios.js";
@@ -51,15 +51,17 @@ const app = {
   lost: false, // the last state poll failed
   verifying: false, // an audit verification is in flight
   phones: [],
-  codes: { caller: "*384*1#", responder: "*384*2#" },
+  codes: { caller: "*384*1#", responder: "*384*2#", incident: "*384*3#" },
   map: null, // the gazetteer, from /api/state
   timeoutMs: 90000, // an alert's answer window, from /api/state
   board: null,
   inbox: {},
   seen: {},
+  cleared: {}, // each phone's inbox length when it was last cleared on this page
+  shareTried: new Map(), // phone|incident → when this page last sent a smartphone VHT's share
   selected: { caller: "caller-a", vht: "", transporter: "" },
   modes: Object.fromEntries(KINDS.map((k) => [k, store.get("mode-" + k, "basic") === "smart" ? "smart" : "basic"])),
-  gps: {}, // each caller SIM's simulated GPS fix
+  gps: {}, // each smartphone's simulated GPS fix, once moved
   reports: {}, // each caller SIM's last incident reference
   open: new Set(),
   skew: 0, // server clock minus browser clock, ms
@@ -77,6 +79,10 @@ const app = {
 const serverNow = () => Date.now() + app.skew;
 const kindOf = (p) => (p.kind === "caller" ? "caller" : p.role);
 
+// fixOf is a responder's smartphone location: where it was moved to, else
+// where its simulated GPS starts, by their registered stage.
+const fixOf = (p) => app.gps[p.id] || homeFix(p, app.phones, app.map);
+
 // ---------- Phones ----------
 
 // ctx is what a phone widget may read and do.
@@ -87,13 +93,17 @@ const ctx = {
   locked: (id) => lockedBy(app.locks, id),
   inbox: (id) => app.inbox[id] || [],
   seen: (id, n) => { app.seen[id] = n; },
+  cleared: (id) => app.cleared[id] || 0,
+  clear: (id) => { app.cleared[id] = (app.inbox[id] || []).length; },
+  phones: () => app.phones,
   board: () => app.board,
   map: () => app.map,
   now: () => serverNow(),
   timeoutMs: () => app.timeoutMs,
   ussd: (phone, body, keys) => drive(phone, body, keys, undefined, true),
   progress: (body) => api("POST", "api/progress", body),
-  gps: { get: (id) => app.gps[id], set: (id, g) => { app.gps[id] = g; } },
+  share: (body) => api("POST", "api/share", body),
+  gps: { get: (id) => app.gps[id], set: (id, g) => { app.gps[id] = g; if (app.board && app.map) drawMap(); } },
   report: { get: (id) => app.reports[id], set: (id, ref) => { app.reports[id] = ref; } },
   ended: (p, text) => {
     const ref = (REF.exec(text || "") || [""])[0];
@@ -117,12 +127,12 @@ const HINTS = {
     smart: () => "The Sauti app asks the same questions as USSD, through the same service, and fills in the ward and place from the phone's location.",
   },
   vht: {
-    basic: () => `Village Health Team members get alerts by SMS. Dial ${app.codes.responder} to accept or decline.`,
-    smart: () => "Alerts arrive as notifications. Accept, see the way to the patient, and record the arrival.",
+    basic: () => `Village Health Team members get alerts by SMS. Dial ${app.codes.responder} to accept or decline, then ${app.codes.incident} to send the transporter where you are and to record your arrival.`,
+    smart: () => "Alerts arrive as notifications. Accepting sends the transporter your location, facility and number. See the way to the patient and record the arrival.",
   },
   transporter: {
-    basic: () => `Transporters get alerts by SMS. Dial ${app.codes.responder} to accept or decline.`,
-    smart: () => "Accept, find the patient, then record the pickup and the arrival at the facility.",
+    basic: () => `Transporters get alerts by SMS. Dial ${app.codes.responder} to accept or decline, then ${app.codes.incident} to record the trip. The VHT's place and number come by SMS.`,
+    smart: () => "Accept, see where the VHT and the patient are, then record the pickup and the arrival at the facility.",
   },
 };
 
@@ -152,6 +162,7 @@ function setMode(kind, mode) {
   for (const b of document.querySelectorAll(`[data-mode-for="${kind}"] button`)) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
   makeWidget(kind);
   renderHints();
+  if (app.board && app.map) drawMap(); // smartphones show where they are; basic phones do not
 }
 
 function renderHints() {
@@ -239,6 +250,24 @@ async function drive(phoneId, body, keys, signal, takeOver) {
   return res;
 }
 
+// autoShare is what a VHT's smartphone does once they accept: it sends the
+// transporter their location (its GPS), the facility they registered with
+// and their number, without a question. A move while on the job sends it
+// again (smart.js). A failed send is tried again after a few seconds.
+function autoShare() {
+  if (app.modes.vht !== "smart" || !app.board || !app.map) return;
+  for (const p of app.phones.filter((x) => x.role === "vht")) {
+    const st = responderStatus(app.board, p.label, app.timeoutMs);
+    if (st.kind !== "busy") continue;
+    if ((app.board.shares || []).some((s) => s.incident === st.inc.id && s.vht === p.label)) continue;
+    const key = p.id + "|" + st.inc.id;
+    if (serverNow() - (app.shareTried.get(key) || 0) < 6000) continue;
+    app.shareTried.set(key, serverNow());
+    const g = fixOf(p);
+    if (g) api("POST", "api/share", { phone: p.id, incident: st.inc.id, facility: p.facility, lat: g.lat, lon: g.lon });
+  }
+}
+
 // ---------- The live queue ----------
 
 function onSelectIncident(id, from) {
@@ -319,14 +348,15 @@ function renderTimelines(all) {
 // drawMap lays the map out at its mount's size, one SVG unit to the pixel.
 function drawMap() {
   const mount = $("#map");
-  renderMap(mount, layout(app.map, app.phones, app.board, { width: mount.clientWidth, height: mount.clientHeight }), app.hover || app.incident,
+  const where = located(app.phones, app.modes, fixOf, app.board);
+  renderMap(mount, layout(app.map, app.phones, app.board, { width: mount.clientWidth, height: mount.clientHeight, where }), app.hover || app.incident,
     (id) => onSelectIncident(id, "map"));
 }
 
 // renderSnapshot renders every view of the snapshot, when it changed.
 function renderSnapshot() {
   if (!app.board || !app.map) return;
-  const key = JSON.stringify([app.board.incidents, app.board.suspended, app.inbox, app.phones]);
+  const key = JSON.stringify([app.board.incidents, app.board.suspended, app.board.shares, app.inbox, app.phones]);
   if (key === app.snapKey) return;
   app.snapKey = key;
   const sms = boardSms(app.board, app.inbox);
@@ -395,6 +425,8 @@ async function play(sc) {
   ap.since = Infinity; // the autopilot leaves a scenario's alerts to the scenario
   const deps = {
     codes: app.codes, signal, now: () => Date.now(),
+    smart: (kind) => app.modes[kind] === "smart",
+    progress: (body) => api("POST", "api/progress", body),
     ussd: (phone, body, keys) => drive(phone, body, keys, signal, true),
     board: async () => { const r = await api("GET", "api/board"); return r.status === 200 ? r.data : null; },
     sleep: (ms) => sleep(ms, signal),
@@ -548,6 +580,8 @@ function clearRun() {
   app.gen++;
   app.inbox = {};
   app.seen = {};
+  app.cleared = {};
+  app.shareTried = new Map();
   app.phones = [];
   app.board = null;
   app.snapKey = "";
@@ -628,6 +662,7 @@ async function pollData() {
     app.skew = new Date(board.data.now) - Date.now();
     app.board = board.data;
     autopilotPlan();
+    autoShare();
   }
   if (sms.status === 200) {
     app.inbox = sms.data;

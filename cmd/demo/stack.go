@@ -60,15 +60,17 @@ var (
 // phone is one handset on screen. Its number stays in the demo process:
 // Number renders masked in JSON.
 type phone struct {
-	Handle string    `json:"id"`
-	Label  string    `json:"label"`
-	Kind   string    `json:"kind"` // caller or responder
-	Role   string    `json:"role,omitempty"`
-	Ward   string    `json:"ward,omitempty"` // an ID; /api/state sends the English name, and the ID as WardID
-	WardID string    `json:"wardId,omitempty"`
-	Stage  string    `json:"stage,omitempty"` // a responder's stage: the smartphone's location in the demo
-	Number pii.Phone `json:"number"`
-	e164   string
+	Handle string `json:"id"`
+	Label  string `json:"label"`
+	Kind   string `json:"kind"` // caller or responder
+	Role   string `json:"role,omitempty"`
+	Ward   string `json:"ward,omitempty"` // an ID; /api/state sends the English name, and the ID as WardID
+	WardID string `json:"wardId,omitempty"`
+	Stage  string `json:"stage,omitempty"` // a responder's stage: where their smartphone's simulated GPS starts
+	// Facility is the health facility a VHT registered with (share.go).
+	Facility string    `json:"facility,omitempty"`
+	Number   pii.Phone `json:"number"`
+	e164     string
 }
 
 // stack is one run of the system: a private PostgreSQL, the five stores,
@@ -80,7 +82,9 @@ type stack struct {
 	services []*proc
 	sink     *smsSink
 	sinkSrv  *http.Server
-	cancel   context.CancelFunc // ends delivery reports
+	ctx      context.Context    // the run's: ends with stop
+	cancel   context.CancelFunc // ends delivery reports and coordination
+	coord    *coordination      // the VHT's details for the transporter (share.go)
 
 	keys       *devkeys.Store
 	witnessDir string
@@ -92,9 +96,9 @@ type stack struct {
 	pools      []*pgxpool.Pool
 
 	phones []phone
-	labels map[string]string // responder ID → label
-	ids    map[string]string // phone handle → responder ID
-	routes map[string]*sim.USSD
+	labels map[string]string     // responder ID → label
+	ids    map[string]string     // phone handle → responder ID
+	routes map[string]ussdDialer // intake-gw's service codes, and the demo's own menu (share.go)
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -104,7 +108,7 @@ type stack struct {
 
 type session struct {
 	mu   sync.Mutex
-	s    *sim.USSDSession
+	s    ussdSession
 	used time.Time
 }
 
@@ -116,8 +120,8 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 		return nil, err
 	}
 	sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	st = &stack{dir: dir, cancel: cancel, witnessDir: filepath.Join(dir, "witness"),
-		labels: map[string]string{}, ids: map[string]string{}, routes: map[string]*sim.USSD{}, sessions: map[string]*session{}}
+	st = &stack{dir: dir, ctx: sctx, cancel: cancel, coord: newCoordination(), witnessDir: filepath.Join(dir, "witness"),
+		labels: map[string]string{}, ids: map[string]string{}, routes: map[string]ussdDialer{}, sessions: map[string]*session{}}
 	defer func() {
 		if err != nil {
 			st.stop()
@@ -186,7 +190,7 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 		st.labels[ids[i].String()] = d.Label
 		st.ids[handleOf(d.Label)] = ids[i].String()
 		st.phones = append(st.phones, phone{Handle: handleOf(d.Label), Label: d.Label, Kind: "responder",
-			Role: string(d.Role), Ward: d.Ward, Stage: d.Stage, e164: d.Phone})
+			Role: string(d.Role), Ward: d.Ward, Stage: d.Stage, Facility: vhtFacility[d.Label], e164: d.Phone})
 	}
 	for i := range st.phones {
 		if st.phones[i].Number, err = pii.ParsePhone(st.phones[i].e164); err != nil {
@@ -248,7 +252,7 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 		}
 	}
 	for _, code := range []string{callerCode, responderCode} {
-		st.routes[code] = sim.NewUSSD(intakeURL, pathToken, code, network)
+		st.routes[code] = intakeRoute{sim.NewUSSD(intakeURL, pathToken, code, network)}
 	}
 	return st, nil
 }
@@ -324,7 +328,7 @@ var errBusy = errors.New("the demo is busy; try again in a minute")
 
 // dial opens a USSD session from a phone on a service code and returns its
 // token. Sessions idle past sessionMaxAge are dropped first.
-func (st *stack) dial(p phone, route *sim.USSD) (string, *session, error) {
+func (st *stack) dial(p phone, route ussdDialer) (string, *session, error) {
 	now := time.Now()
 	st.mu.Lock()
 	defer st.mu.Unlock()

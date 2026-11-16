@@ -21,9 +21,39 @@ const holders = (b) => {
   return n;
 };
 const oneEach = (b) => Object.values(holders(b)).every((k) => k <= 1);
+const shareOf = (b, inc, vht) => inc && (b.shares || []).find((s) => s.incident === inc.id && s.vht === vht);
 const list = (xs) => (xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1]);
 
 export const SCENARIOS = [
+  {
+    id: "pregnancy",
+    title: "Pregnancy emergency, end to end",
+    description: "Caller A reports a pregnancy emergency with heavy bleeding at Test School 1. Transporter 1 accepts, then VHT 1, who sends the rider where they are, their health facility and their number. Both arrive; the rider takes the mother to the VHT's facility.",
+    needsReset: true,
+    steps: [
+      { kind: "dial", label: "Caller A reports a red pregnancy emergency at Test School 1", phone: "caller-a", inputs: path("1", "2", "1", "3"), as: "ref" },
+      { kind: "wait", label: "Waiting for the alerts to VHT 1 and Transporter 1", timeoutMs: 30000,
+        until: (b, v) => byRef(b, v.ref) && pendingFor(byRef(b, v.ref), ["VHT 1", "Transporter 1"]) },
+      { kind: "respond", label: "Transporter 1 accepts on *384*2#", phone: "transporter-1", ref: "ref", answer: "accept" },
+      { kind: "respond", label: "VHT 1 accepts on *384*2#", phone: "vht-1", ref: "ref", answer: "accept" },
+      // A basic phone answers *384*3#: send it, Test Health Centre 1, this
+      // number, Test Ward 1, Test Church 1. A smartphone sends by itself.
+      { kind: "share", label: "VHT 1 sends Transporter 1 where they are, their facility and number", phone: "vht-1", vht: "VHT 1", ref: "ref", keys: ["1", "1", "1", "1", "4"] },
+      { kind: "wait", label: "Waiting for Transporter 1's SMS with VHT 1's place, facility and number", timeoutMs: 30000,
+        until: (b, v) => shareOf(b, byRef(b, v.ref), "VHT 1")?.told },
+      { kind: "step", label: "VHT 1 records the arrival", phone: "vht-1", role: "vht", ref: "ref", step: "arrived" },
+      { kind: "step", label: "Transporter 1 records the arrival", phone: "transporter-1", role: "transporter", ref: "ref", step: "arrived" },
+      { kind: "step", label: "Transporter 1 leaves with the mother", phone: "transporter-1", role: "transporter", ref: "ref", step: "departed" },
+      { kind: "step", label: "Transporter 1 hands over at VHT 1's facility", phone: "transporter-1", role: "transporter", ref: "ref", step: "at_facility", facilityOf: "VHT 1" },
+      { kind: "wait", label: "Waiting for the incident to close", timeoutMs: 30000, until: (b, v) => byRef(b, v.ref)?.state === "closed" },
+    ],
+    result: (b, v) => {
+      const i = byRef(b, v.ref);
+      const s = shareOf(b, i, "VHT 1");
+      const t = (k) => Date.parse(i.t[k]);
+      return `Incident ${v.ref}: Transporter 1 was told VHT 1 is near ${s.landmark}${s.km !== undefined ? `, ${s.km} km from the patient` : ""}, works at ${s.facility}, with VHT 1's number (${s.via === "app" ? "from VHT 1's smartphone" : "from *384*3#"}); handed over at ${s.facility} ${mmss(t("T7") - t("T1"))} after the call.`;
+    },
+  },
   {
     id: "red-accepted",
     title: "Red injury, accepted",
@@ -198,6 +228,22 @@ export async function answerAlert(deps, phone, ref, answer) {
   return { ref: shown, text: sc.text };
 }
 
+// menuOn dials the "My incident" menu (*384*3#) from phone for ref, and
+// presses the option whose words match, then any keys after it.
+async function menuOn(deps, phone, ref, words, after = []) {
+  let sc = await ussd(deps, phone, { phone, code: deps.codes.incident }, deps.codes.incident);
+  const line = sc.text.split("\n").find((l) => l.replace(/^\d+ /, "") === words);
+  if (sc.end || !sc.text.includes(ref) || !line) throw new Error(`The menu on ${phone} did not offer "${words}" for ${ref}: "${sc.text}"`);
+  for (const key of [line.split(" ")[0], ...after]) {
+    if (sc.end) throw new Error(`The menu ended before the answer ${key}: "${sc.text}"`);
+    sc = await ussd(deps, phone, { session: sc.session, input: key }, key);
+  }
+  if (!sc.end) throw new Error(`The menu did not end: "${sc.text}"`);
+  return sc.text;
+}
+
+const STEP_WORDS = { arrived: "I have arrived", departed: "Patient picked up, leaving now", at_facility: "Arrived at the facility" };
+
 const RUN = {
   async dial(s, deps, vars) {
     let sc = await ussd(deps, s.phone, { phone: s.phone, code: deps.codes.caller }, deps.codes.caller);
@@ -225,6 +271,58 @@ const RUN = {
       if (deps.now() >= deadline) throw new Error(`Timed out: ${s.label.replace(/^Waiting for/, "no sign of")}.`);
       await deps.sleep(1000);
     }
+  },
+  // share: a VHT's smartphone sends by itself once they accept (app.js), so
+  // the step waits for it; a basic phone answers the menu.
+  async share(s, deps, vars) {
+    const ref = vars[s.ref];
+    if (deps.smart?.("vht")) {
+      await RUN.wait({ label: `Waiting for ${s.vht}'s smartphone to send`, timeoutMs: 20000, until: (b) => shareOf(b, byRef(b, ref), s.vht) }, deps, vars);
+      return;
+    }
+    let text = "";
+    for (const words of ["Send the transporter where I am", "Update where I am"]) {
+      try {
+        text = await menuOn(deps, s.phone, ref, words, s.keys.slice(1));
+        break;
+      } catch (err) {
+        if (words === "Update where I am") throw err;
+      }
+    }
+    if (!/^PENDING-RESPONDER (Sent to|Saved)/.test(text)) throw new Error(`The VHT heard "${text}", not that it was sent.`);
+  },
+  // step: a smartphone records it through its app; a basic phone on the menu.
+  async step(s, deps, vars) {
+    const ref = vars[s.ref];
+    const b = await deps.board();
+    const inc = b && byRef(b, ref);
+    if (!inc) throw new Error(`Incident ${ref} is not on the board.`);
+    const facility = s.facilityOf ? shareOf(b, inc, s.facilityOf)?.facilityId : "";
+    if (s.facilityOf && !facility) throw new Error(`${s.facilityOf} has not shared a facility.`);
+    if (deps.smart?.(s.role)) {
+      const body = { phone: s.phone, incident: inc.id, step: s.step };
+      if (facility) body.facility = facility;
+      const { status, data } = await deps.progress(body);
+      deps.signal.throwIfAborted();
+      if (status !== 200) throw new Error(data.error || `The step got status ${status}.`);
+      return;
+    }
+    const after = [];
+    if (facility) {
+      // The destination screen lists facilities by distance: find its key.
+      const sc = await ussd(deps, s.phone, { phone: s.phone, code: deps.codes.incident }, deps.codes.incident);
+      const key = sc.text.split("\n").find((l) => l.replace(/^\d+ /, "") === STEP_WORDS[s.step])?.split(" ")[0];
+      if (!key) throw new Error(`The menu did not offer "${STEP_WORDS[s.step]}": "${sc.text}"`);
+      const list = await ussd(deps, s.phone, { session: sc.session, input: key }, key);
+      const name = shareOf(b, inc, s.facilityOf).facility;
+      const pick = list.text.split("\n").find((l) => l.replace(/^\d+ /, "") === name)?.split(" ")[0];
+      if (!pick) throw new Error(`The facility list did not offer ${name}: "${list.text}"`);
+      const done = await ussd(deps, s.phone, { session: list.session, input: pick }, pick);
+      if (!done.end || !done.text.includes("Handed over")) throw new Error(`The rider heard "${done.text}".`);
+      return;
+    }
+    const text = await menuOn(deps, s.phone, ref, STEP_WORDS[s.step], after);
+    if (/could not|before|already|has not|no open/.test(text)) throw new Error(`The menu answered "${text}".`);
   },
   pause: (s, deps) => deps.sleep(s.ms),
   reset: (s, deps) => deps.reset(),

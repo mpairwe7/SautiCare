@@ -14,6 +14,7 @@ import (
 	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/location"
+	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/devkeys"
 	"sautihealth.com/sauti/internal/platform/pg/auditstore"
 	"sautihealth.com/sauti/internal/platform/pg/opstore"
@@ -26,6 +27,7 @@ type board struct {
 	Now       time.Time       `json:"now"`
 	Suspended bool            `json:"suspended"`
 	Incidents []boardIncident `json:"incidents"`
+	Shares    []shareView     `json:"shares"` // what VHTs shared with their transporter (share.go)
 }
 
 type boardIncident struct {
@@ -95,11 +97,23 @@ var numberLike = regexp.MustCompile(`\+[0-9][0-9 ]{6,16}[0-9]|\b0[0-9]{9}\b|\b25
 
 func maskNumbers(s string) string { return numberLike.ReplaceAllString(s, "[number]") }
 
+// maskSMS masks every number in an SMS before the page shows it, as pii
+// masks a number: an SMS to a responder may carry another's number (share.go),
+// which the handset sees in full but a public page never does.
+func maskSMS(s string) string {
+	return numberLike.ReplaceAllStringFunc(s, func(n string) string {
+		if p, err := pii.ParsePhone(n); err == nil {
+			return p.String()
+		}
+		return "[number]"
+	})
+}
+
 // readBoard reads the latest incidents as op_readonly, which cannot read a
 // caller's number or a responder's name or number at all.
 func (st *stack) readBoard(ctx context.Context, cfg config.Bundle, gaz location.File) (board, error) {
 	ro := opstore.New(st.ro)
-	b := board{Now: time.Now().UTC(), Incidents: []boardIncident{}}
+	b := board{Now: time.Now().UTC(), Incidents: []boardIncident{}, Shares: []shareView{}}
 	if err := st.ro.QueryRow(ctx, "SELECT op.dispatch_suspended()").Scan(&b.Suspended); err != nil {
 		return b, err
 	}

@@ -2,16 +2,17 @@
 // Every choice is a key sent to the same USSD service (ussd.js turns each
 // screen into buttons), so the system under the app is unchanged. What only
 // a smartphone adds is shown for what it is:
-//   - location: the caller's simulated GPS picks the ward and nearest place;
-//     a responder's registered stage stands in for theirs;
+//   - location: simulated GPS. The caller's picks the ward and nearest
+//     place; a responder's starts by their registered stage, and a VHT's is
+//     sent to the transporter with their facility and number (app.js);
 //   - push notifications: drawn from the alert and the SMS the system sent;
 //   - the steps after accepting (arrived, picked up, at facility): a demo
 //     preview of M3, recorded through /api/progress.
 import { h, svg, clock } from "./dom.js";
-import { mmss, REF } from "./format.js";
+import { mmss, REF, payload } from "./format.js";
 import { Inbox, sleep, READ_MS } from "./phone.js";
 import { parseScreen, placeKind, progressOf } from "./ussd.js";
-import { projector, cells, nearest, distanceM, trip } from "./geo.js";
+import { projector, cells, nearest, distanceM, trip, homeFix } from "./geo.js";
 import { responderStatus, nextStep, partner, callerProgress, arrivedRoles } from "./responders.js";
 
 const SEV = { red: "Red", yellow: "Yellow", green: "Green", none: "Unclassified" };
@@ -27,9 +28,10 @@ const GPS_HOME = { "caller-a": "w01_clinic", "caller-b": "w02_market" };
 // ---------- The mini map ----------
 
 // miniMap draws the wards and a route: me (a blue dot), dest (a red pin), fac
-// (a green square), at width × height. With onPick, every landmark is a
-// button that calls onPick(landmark).
-function miniMap(map, { me, dest, fac, route, pick, onPick }, width = 264, height = 150) {
+// (a green square), vht (a purple dot, with a dashed line from me), at
+// width × height. With onPick, every landmark is a button that calls
+// onPick(landmark).
+function miniMap(map, { me, dest, fac, vht, route, pick, onPick }, width = 264, height = 150) {
   if (!map) return null;
   const P = projector([...map.wards, ...map.landmarks], width, height, 16);
   const at = (p) => [P.x(p.lon), P.y(p.lat)];
@@ -46,16 +48,21 @@ function miniMap(map, { me, dest, fac, route, pick, onPick }, width = 264, heigh
   })));
   const pts = [route?.[0], route?.[1]].filter(Boolean).map(at);
   if (pts.length === 2) kids.push(svg("line", { class: "route", x1: pts[0][0].toFixed(1), y1: pts[0][1].toFixed(1), x2: pts[1][0].toFixed(1), y2: pts[1][1].toFixed(1) }));
+  if (vht && me) {
+    const [a, b] = [at(me), at(vht)];
+    kids.push(svg("line", { class: "via", x1: a[0].toFixed(1), y1: a[1].toFixed(1), x2: b[0].toFixed(1), y2: b[1].toFixed(1) }));
+  }
+  if (vht) { const [x, y] = at(vht); kids.push(svg("circle", { class: "vhtpt", cx: x.toFixed(1), cy: y.toFixed(1), r: "6" })); }
   if (fac) { const [x, y] = at(fac); kids.push(svg("rect", { class: "fac", x: (x - 6).toFixed(1), y: (y - 6).toFixed(1), width: "12", height: "12", rx: "2" })); }
   if (dest) { const [x, y] = at(dest); kids.push(svg("circle", { class: "dest", cx: x.toFixed(1), cy: y.toFixed(1), r: "7" })); }
   if (me) { const [x, y] = at(me); kids.push(svg("circle", { class: "me-halo", cx: x.toFixed(1), cy: y.toFixed(1), r: "14" }), svg("circle", { class: "me", cx: x.toFixed(1), cy: y.toFixed(1), r: "6" })); }
-  for (const [p, text] of [[dest, dest?.label], [fac, fac?.label]]) {
+  for (const [p, text] of [[dest, dest?.label], [fac, fac?.label], [vht, vht?.label]]) {
     if (!p || !text) continue;
     const [x, y] = at(p);
     kids.push(svg("text", { class: "lbl", x: (x + 10).toFixed(1), y: (y + 4).toFixed(1), "text-anchor": x > width - 90 ? "end" : "start",
       dx: x > width - 90 ? "-20" : "0", text }));
   }
-  const name = [me && "your location", dest && `destination ${dest.label || ""}`, fac && `facility ${fac.label || ""}`].filter(Boolean).join(", ");
+  const name = [me && "your location", dest && `destination ${dest.label || ""}`, fac && `facility ${fac.label || ""}`, vht && `${vht.label || "the VHT"}`].filter(Boolean).join(", ");
   return h("div", { class: "sp-map" + (onPick ? " pickable" : "") },
     svg("svg", { viewBox: `0 0 ${width} ${height}`, role: onPick ? "group" : "img", "aria-label": onPick ? "Places on the map: choose one" : `Map: ${name}` }, kids));
 }
@@ -330,6 +337,7 @@ export class SmartPhone {
   gps() {
     const map = this.ctx.map();
     let g = this.ctx.gps.get(this.p.id);
+    if (!g && map && this.kind !== "caller") g = homeFix(this.p, this.ctx.phones(), map);
     if (!g && map) {
       const home = map.landmarks.find((l) => l.id === GPS_HOME[this.p.id]) || map.landmarks[0];
       if (home) g = { lat: home.lat + 0.0002, lon: home.lon + 0.0002 };
@@ -353,7 +361,7 @@ export class SmartPhone {
     const near = this.nearestPlaces(g);
     const ref = this.ctx.report.get(this.p.id);
     const inc = ref ? (this.ctx.board()?.incidents || []).find((i) => i.reference === ref) : null;
-    const tracker = inc ? callerProgress(inc) : null;
+    const tracker = inc ? this.trackerOf(inc) : null;
     const base = { sub: "Emergency help", gps: g, near: near.landmark?.name || "", ward: near.ward?.name || "", nearId: near.landmark?.id || "" };
     if (this.mode === "idle") {
       return { ...base, view: this.tapped === "dial" ? "dialing" : "caller-home", picking: this.picking, ref, tracker, state: inc?.state || "" };
@@ -385,6 +393,17 @@ export class SmartPhone {
       place: pk.kind };
   }
 
+  // trackerOf is the caller's tracker, naming the facility the patient was
+  // taken to once the transporter hands over there, so the family can follow.
+  trackerOf(inc) {
+    const t = callerProgress(inc);
+    const at = inc.events.find((e) => e.type === "responder.at_facility");
+    const id = at ? payload(at).facility : "";
+    const name = (this.ctx.map()?.facilities || []).find((f) => f.id === id)?.name;
+    if (name) t.steps = t.steps.map((s) => (s.key === "facility" ? { ...s, label: `At ${name}` } : s));
+    return t;
+  }
+
   callerHome(vm) {
     const map = this.ctx.map();
     const out = [
@@ -405,8 +424,20 @@ export class SmartPhone {
   }
 
   moveTo(l) {
-    this.ctx.gps.set(this.p.id, { lat: l.lat + 0.0002, lon: l.lon + 0.0002 });
+    const g = { lat: l.lat + 0.0002, lon: l.lon + 0.0002 };
+    this.ctx.gps.set(this.p.id, g);
     this.picking = false;
+    this.render(true);
+    if (this.kind === "vht") this.reshare(g);
+  }
+
+  // reshare sends a VHT's new location to their transporter, while on a job.
+  async reshare(g) {
+    const st = this.status();
+    if (st.kind !== "busy") return;
+    const { status, data } = await this.ctx.share({ phone: this.p.id, incident: st.inc.id, facility: this.p.facility, lat: g.lat, lon: g.lon });
+    this.say(status === 200 ? (data.transporter ? `Your new location was sent to ${data.transporter}.` : "Saved: the transporter gets it when one accepts.")
+      : data.error || "Your location could not be sent.", status !== 200);
     this.render(true);
   }
 
@@ -486,7 +517,7 @@ export class SmartPhone {
   responderModel(now) {
     const role = this.p.role;
     const st = this.status();
-    const me = this.stage();
+    const me = this.gps();
     const sub = `${role === "vht" ? "VHT" : "Transporter"} · ${this.p.ward || ""}`;
     if (this.mode === "con") {
       // The menu is open (a scenario, the autopilot or a tap here): an alert
@@ -498,7 +529,11 @@ export class SmartPhone {
     if (this.tapped === "dial" && !this.flow) return { view: "dialing", sub };
     if (st.kind === "busy") return { ...this.jobModel(st, me), sub };
     if (st.kind === "alert") return { ...this.alertModel(st, me, now), sub, menu: false };
-    return { view: "resp-home", sub, duty: this.duty, stage: me?.name || "",
+    const near = this.nearestPlaces(me);
+    const map = this.ctx.map();
+    return { view: "resp-home", sub, duty: this.duty, stage: this.stage()?.name || "", gps: me, near: near.landmark?.name || "", ward: near.ward?.name || "",
+      nearId: near.landmark?.id || "", picking: this.picking, number: this.p.number || "",
+      facility: (map?.facilities || []).find((f) => f.id === this.p.facility)?.name || "",
       recent: st.recent.slice(0, 4).map(({ inc, alert }) => ({ ref: inc.reference, outcome: alert.outcome, at: clock(new Date(alert.sentAt)) })) };
   }
 
@@ -524,13 +559,44 @@ export class SmartPhone {
     const from = toFacility || arrived ? scene : me;
     const to = toFacility ? fac && { lat: fac.lat, lon: fac.lon, label: fac.name } : scene;
     const t = from && to && !(arrived && !toFacility) ? trip(from, to, role) : null;
+    const crew = this.crewOf(inc, role, me, scene, !arrived && !toFacility);
     return { view: "job", ref: inc.reference, incId: inc.id, sev: inc.severity || "none", category: inc.category, place: place(inc), state: inc.state,
       step, arrived, toFacility, facilities: step === "at_facility" ? facilities.map((f) => ({ id: f.id, name: f.name, km: f.km })) : [],
-      facility: fac?.id || "", partner: partner(inc, role), km: t?.km ?? null, min: t?.min ?? null,
+      facility: fac?.id || "", partner: partner(inc, role), km: t?.km ?? null, min: t?.min ?? null, ...crew,
       me: from ? { lat: from.lat, lon: from.lon } : null, dest: toFacility ? null : scene, fac: toFacility && to ? to : null };
   }
 
+  // crewOf is what a responder knows of the other one on the job. A
+  // transporter: where the VHT is (once shared), the facility they work at
+  // and their number, and the trip straight to the patient against picking
+  // the VHT up first. A VHT: the transporter coming and their number, and
+  // whether their own details have gone.
+  crewOf(inc, role, me, scene, enRoute) {
+    const share = (this.ctx.board()?.shares || []).find((s) => s.incident === inc.id);
+    const other = inc.alerts.find((a) => a.role === (role === "vht" ? "transporter" : "vht") && a.outcome === "accepted");
+    if (role === "transporter") {
+      if (!other) return { vht: null };
+      const v = { label: other.responder, shared: Boolean(share && share.vht === other.responder) };
+      if (!v.shared) return { vht: v };
+      Object.assign(v, { place: [share.landmark, share.ward].filter(Boolean).join(", "), facility: share.facility, number: share.number,
+        km: share.km ?? null, from: share.via });
+      if (me && scene && enRoute) {
+        const pt = { lat: share.lat, lon: share.lon };
+        const direct = trip(me, scene, role);
+        const a = trip(me, pt, role);
+        const b = trip(pt, scene, role);
+        Object.assign(v, { direct, first: { km: Math.round((a.km + b.km) * 10) / 10, min: a.min + b.min } });
+      }
+      return { vht: v, vhtPt: enRoute ? { lat: share.lat, lon: share.lon, label: other.responder } : null };
+    }
+    const tp = other && this.ctx.phones().find((p) => p.label === other.responder);
+    const mine = share && share.vht === this.p.label ? share : null;
+    return { crew: { transporter: other?.responder || "", number: tp?.number || "",
+      shared: mine ? { place: [mine.landmark, mine.ward].filter(Boolean).join(", "), facility: mine.facility, told: mine.told } : null } };
+  }
+
   respHome(vm) {
+    const map = this.ctx.map();
     return [
       h("p", { class: "sp-title", text: vm.duty ? "You're on duty" : "You're off duty" }),
       h("p", { class: "sp-sub", text: vm.duty ? "Emergency alerts near you appear here as soon as Sauti sends them." : "Sauti will not alert you until you go on duty." }),
@@ -538,8 +604,19 @@ export class SmartPhone {
         h("button", { type: "button", "aria-pressed": String(vm.duty), disabled: this.off(vm), "data-focus": "duty", text: vm.duty ? "On duty" : "Off duty",
           onclick: () => this.setDuty(!vm.duty) })),
       h("section", { class: "sp-card" }, h("h3", { text: "Your location" }),
-        h("p", { class: "sp-text", text: vm.stage ? `At ${vm.stage}` : "Unknown" }),
-        h("p", { class: "sp-small", text: "Your registered stage stands in for this phone's GPS in the demo." })),
+        h("p", { class: "sp-text", text: vm.near ? `Near ${vm.near}, ${vm.ward}` : "Finding your location…" }),
+        h("p", { class: "sp-small", text: "From this phone's GPS (simulated in the demo, starting by your registered stage)." }),
+        vm.picking ? miniMap(map, { me: vm.gps, pick: vm.nearId, onPick: (l) => this.moveTo(l) }) : miniMap(map, { me: vm.gps, pick: vm.nearId }),
+        h("button", { type: "button", class: "sp-link", "data-focus": "move", disabled: this.off(vm),
+          text: vm.picking ? "Done" : "Move my location", onclick: () => { this.picking = !this.picking; this.render(true); } }),
+        vm.picking ? h("p", { class: "sp-small", text: "Choose a place on the map: your location moves next to it." }) : null),
+      h("section", { class: "sp-card" }, h("h3", { text: "Registered with Sauti" }),
+        vm.facility ? h("div", { class: "sp-row" }, h("span", { text: "Health facility" }), h("b", { text: vm.facility })) : null,
+        h("div", { class: "sp-row" }, h("span", { text: "Stage" }), h("b", { text: vm.stage || "None" })),
+        h("div", { class: "sp-row" }, h("span", { text: "Number" }), h("b", { class: "num", text: vm.number })),
+        h("p", { class: "sp-small", text: this.kind === "vht"
+          ? "When you accept, the app sends your facility, your number and your location to the transporter."
+          : "When a VHT is on your job too, Sauti sends you where they are, their facility and their number." })),
       h("section", { class: "sp-card" }, h("h3", { text: "Recent alerts" }),
         vm.recent.length ? h("ul", { class: "sp-recent" }, vm.recent.map((r) => h("li", {}, h("span", { class: "num", text: `${r.ref} · ${r.at}` }),
           h("span", { class: "tone-" + OUTCOME_TONE[r.outcome], text: OUTCOME[r.outcome] || r.outcome })))) : h("p", { class: "sp-small", text: "None yet." })),
@@ -562,7 +639,7 @@ export class SmartPhone {
         h("div", { class: "sp-row" }, h("span", { text: "Incident" }), h("b", { class: "num", text: vm.ref }))),
       timing,
       miniMap(map, { me: vm.me, dest: vm.dest, route: [vm.me, vm.dest] }),
-      h("p", { class: "sp-small", text: "Distance and time are estimates from your stage." }),
+      h("p", { class: "sp-small", text: "Distance and time are estimates from your location." }),
       h("div", { class: "sp-actions" },
         this.btn(vm, "Accept", accept, { key: "1", focus: "accept" }),
         this.btn(vm, "Decline", decline, { cls: "alt", key: "2", focus: "decline" })),
@@ -583,7 +660,8 @@ export class SmartPhone {
         h("div", { class: "sp-row" }, h("span", { text: "Caller" }), h("b", { text: "Sauti bridge line" })),
         h("p", { class: "sp-small", text: "The caller's number is never shown. Calling through the bridge is not part of the demo." }),
         h("p", { class: "sp-text tone-" + vm.partner.tone, text: vm.partner.text })),
-      miniMap(map, { me: vm.me, dest: vm.dest, fac: vm.fac, route: [vm.me, vm.dest || vm.fac] }),
+      this.vhtCard(vm), this.crewCard(vm),
+      miniMap(map, { me: vm.me, dest: vm.dest, fac: vm.fac, vht: vm.vhtPt, route: [vm.me, vm.dest || vm.fac] }),
     ];
     if (vm.step === "at_facility" && vm.facilities.length) {
       out.push(h("fieldset", { class: "sp-fac" }, h("legend", { class: "sp-small", text: "Which facility?" }),
@@ -597,6 +675,37 @@ export class SmartPhone {
       out.push(h("p", { class: "sp-small", text: vm.arrived ? "Stay with the patient. The transporter records the trip to the facility." : "The patient has already left for the facility." }));
     }
     return out;
+  }
+
+  // vhtCard: on a transporter's job, the VHT's place, facility and number.
+  vhtCard(vm) {
+    const v = vm.vht;
+    if (!v) return null;
+    if (!v.shared) {
+      return h("section", { class: "sp-card" }, h("h3", { text: `${v.label}, the VHT` }),
+        h("p", { class: "sp-text", text: `${v.label} is coming too. Their place has not reached you yet.` }));
+    }
+    return h("section", { class: "sp-card" }, h("h3", { text: `${v.label}, the VHT` }),
+      h("div", { class: "sp-row" }, h("span", { text: "Where" }), h("b", { text: v.place })),
+      v.km !== null ? h("div", { class: "sp-row" }, h("span", { text: "From the patient" }), h("b", { text: `${v.km} km` })) : null,
+      h("div", { class: "sp-row" }, h("span", { text: "Works at" }), h("b", { text: v.facility })),
+      h("div", { class: "sp-row" }, h("span", { text: "Call" }), h("b", { class: "num", text: v.number })),
+      v.direct ? h("p", { class: "sp-text" }, `Straight to the patient: ${v.direct.km} km, about ${v.direct.min} min.`,
+        h("br"), `Picking up ${v.label} first: ${v.first.km} km, about ${v.first.min} min.`) : null,
+      h("p", { class: "sp-small", text: `Sent by ${v.label}${v.from === "app" ? "'s smartphone" : " on " + this.ctx.codes().incident}. Numbers show masked in the demo.` }));
+  }
+
+  // crewCard: on a VHT's job, the transporter coming and what was sent.
+  crewCard(vm) {
+    const c = vm.crew;
+    if (!c) return null;
+    return h("section", { class: "sp-card" }, h("h3", { text: "Your transporter" }),
+      c.transporter ? [h("div", { class: "sp-row" }, h("span", { text: "Who" }), h("b", { text: c.transporter })),
+        h("div", { class: "sp-row" }, h("span", { text: "Call" }), h("b", { class: "num", text: c.number }))]
+        : h("p", { class: "sp-text", text: "No transporter has accepted yet." }),
+      h("p", { class: "sp-small", text: c.shared
+        ? `${c.shared.told ? "Sent to the transporter" : "Ready for the transporter who accepts"}: you are near ${c.shared.place}, you work at ${c.shared.facility}, and your number. From your registration and this phone's location.`
+        : "Sending your location, facility and number…" }));
   }
 
   // ---------- Responder actions ----------

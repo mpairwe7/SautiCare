@@ -113,7 +113,7 @@ time=... level=INFO msg="demo ready"
 Open **http://127.0.0.1:7860** in a browser. **Verify audit ledger** and **Reset demo** sit at the top right. Then, from top to bottom:
 
 - **Five live figures:** open incidents by severity, the median time from call to acceptance (T1 to T4), alerts by outcome, escalations, and SMS sent. All read 0 for now.
-- **Play a scenario:** five buttons that play a whole scenario on the phones, and the **Responder autopilot** beside them. Step 8 uses both.
+- **Play a scenario:** six buttons that play a whole scenario on the phones, and the **Responder autopilot** beside them. Step 8 uses both.
 - **The phones**, side by side on a wide screen:
   - **Caller**, with tabs for **Caller A** and **Caller B**;
   - **VHT**, with tabs for VHT 1 to VHT 4;
@@ -125,11 +125,15 @@ Open **http://127.0.0.1:7860** in a browser. **Verify audit ledger** and **Reset
   - a **basic phone** has a screen, a **Dial** button for the service code, a keypad, a reply box with a green call or reply button, and **End**;
   - a **smartphone** runs the Sauti app. The app sends the same keys to the same USSD service, so the system behind it is the same. Location, notifications and the steps after accepting are what a smartphone adds; see step 7.
 
-  Every phone has its **SMS inbox** under it. The page remembers each switch in this browser.
+  Every phone has its **SMS inbox** under it, with **Clear** on the right of its heading. Clear empties that phone's inbox on this page only, as deleting messages on a handset would: the figures and the activity feed still count the messages. The page remembers each switch in this browser.
 - **Activity:** every event and SMS, newest first. Each line names the service that produced it: `intake-gw`, `dispatch-worker`, `outbox-relay`, `SMS`, or `responder app` for the steps recorded from a smartphone.
 - **Live queue:** every incident, most urgent first: red before yellow before green, then the longest wait. The buttons above it show **All**, **Waiting**, **Assigned**, **Escalated** or **Done**, each with its count. Each row shows the severity, the incident number, what happened and where, its state, who is coming for each role, and the time since the call, in red once nobody has accepted for 3 minutes. Select a row to see that incident in full beside the list: its timeline, the T1 to T7 times, every alert wave, the escalations and the event log. It reads "No incidents yet" until a call comes in.
 - **Analytics:** two charts of the protocol timestamps the study analyses. **Median time in each stage** shows, for each stage from the call (T1) to the facility (T7), the median over the incidents that completed it, with how many did. **Each incident, stage by stage** shows the latest calls on one axis from the call, one colour per stage; a faded stage is still running. Point at or Tab to a bar for its figures, or open **Show the figures as a table**.
-- **Map of the wards.** The four placeholder wards fill the map. Each ward is the area nearer its centre than any other ward's. Landmarks are small dots. Each ward's responders sit in a group under the ward's name, one square each (`V1` is VHT 1, `T2` is Transporter 2). Incidents at the same landmark fan out around it, each joined to it by a thin line. A key beside the map explains the marks.
+- **Map of the wards.** The four placeholder wards fill the map. Each ward is the area nearer its centre than any other ward's. Landmarks are small dots. The registered health facilities are green squares with a white cross. A responder is a square (`V1` is VHT 1, `T2` is Transporter 2):
+  - filled blue where their location is known: at a smartphone's location, or at the place a VHT on a basic phone sent on `*384*3#` (scenario D);
+  - white, grouped under their ward's name, when they are on a basic phone and their location is not known.
+
+  Incidents at the same landmark fan out around it, each joined to it by a thin line. A key beside the map explains the marks.
 
 Phone numbers are always shown masked (`+256•••••••••`). That is deliberate: the system never reveals a caller's number.
 
@@ -183,11 +187,11 @@ Then:
 Press **Reset demo**, then set all three phones to **Smartphone**.
 
 1. **The caller reports.** On **Caller A**, the home screen shows **Your location: Near Test Clinic 1, Test Ward 1**. That is the phone's GPS, simulated in the demo; **Move my location** moves it next to another place on the map. Tap **Report an emergency**, then answer each question with its button: English, Yes, Injury or accident, 18 to 59, No. At **Where is the emergency?** the app shows your location on a map: tap **Use this location**. The app answers the ward and the nearest place for you, through the same USSD screens. Tap **This number**. The app shows **Help is coming**, the incident number, and a tracker that follows the incident.
-2. **The VHT is notified.** On **VHT 1** a notification drops in, and the app shows the alert: the severity, what happened, where, the distance and an estimated time from the VHT's stage (their registered stage stands in for GPS), the time left to answer, and a map with the route. Tap **Accept**. The app shows **Go to the patient** with the route, the caller as "Sauti bridge line" (never their number), and whether a transporter is coming. Tap **I've arrived**: T5 is recorded.
+2. **The VHT is notified.** On **VHT 1** a notification drops in, and the app shows the alert: the severity, what happened, where, the distance and an estimated time from the VHT's location (simulated GPS, starting by their registered stage), the time left to answer, and a map with the route. Tap **Accept**. The app shows **Go to the patient** with the route, the caller as "Sauti bridge line" (never their number), and whether a transporter is coming. It also sends the transporter the VHT's location, health facility and number by itself (scenario D). Tap **I've arrived**: T5 is recorded.
 3. **The transporter answers late.** Wait until **Transporter 1**'s tab reads **Open alert**: the 90 seconds to answer have passed, but nobody has taken the transporter's role. The app says **You can still accept**. Tap **Accept**: the acceptance counts. (Before this change, a lapsed alert disappeared from the menu and nobody could accept it; see UX audit F-26.)
-4. **The trip.** On Transporter 1 tap **I've arrived**, then **Patient picked up, leaving now** (T6). The app lists the facilities by distance and shows the route to the nearest. Tap **Arrived at the facility** (T7). The incident closes, both responders are free for the next call, and the queue moves it to **Done**. The caller's tracker shows every step done.
+4. **The trip.** On Transporter 1 tap **I've arrived**, then **Patient picked up, leaving now** (T6). The app lists the facilities by distance and shows the route to the nearest. Tap **Arrived at the facility** (T7). The incident closes, both responders are free for the next call, and the queue moves it to **Done**. The caller's tracker shows every step done, and names the facility the patient was taken to.
 
-Arrival, departure and arrival at the facility are a preview of milestone M3: no service records them yet, so the demo writes them through the single write path, as the M0 demo does. A coordinator can also close an incident from its detail in the queue with **Close incident**, a stand-in for the M5 console. Alerts still waiting for an answer are stood down first, and those responders get the "no longer needed" SMS.
+Arrival, departure and arrival at the facility are a preview of milestone M3: no service records them yet, so the demo writes them through the single write path, as the M0 demo does. A basic phone records them too, on `*384*3#` (scenario D). A coordinator can also close an incident from its detail in the queue with **Close incident**, a stand-in for the M5 console. Alerts still waiting for an answer are stood down first, and those responders get the "no longer needed" SMS.
 
 ### Scenario B: a responder declines (about 1 minute)
 
@@ -216,6 +220,40 @@ The caller still sees `HELP IS COMING` with an incident number. No responder can
 
 The demo records the escalation but calls nobody: voice is not part of it. In production, each recorded escalation makes ivr-controller call a coordinator ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)).
 
+### Scenario D: a pregnancy emergency, and the VHT and the rider told about each other (about 3 minutes)
+
+A transporter (a boda-boda rider) cannot know where the VHT is. Once both have accepted the same incident, Sauti tells each about the other. The rider learns where the VHT is, how far that is from the patient, the health facility the VHT works at and the VHT's number. With that, the rider can decide whether to pick the VHT up on the way or go straight to the patient. The VHT learns which rider is coming and the rider's number.
+
+Press **Reset demo**. Leave the VHT and the transporter on **Basic phone** for now.
+
+1. **The call.** On **Caller A**, dial `*384*1#` and press `1` (English), `1` (bleeding a lot: yes), `2` (**Pregnancy or birth**), `3`, `2`, `1` (Test Ward 1), `3` (**Test School 1**), `1`. It is triaged RED. VHTs 1 to 3 and Transporters 1 and 2 are alerted.
+2. **Both accept.** On **Transporter 1**, dial `*384*2#` and press `1`. On **VHT 1**, do the same.
+3. **The VHT is reminded.** If VHT 1 has not sent their details 8 seconds after both accepted, their inbox gets:
+   `PENDING-SMS Sauti …: Transporter 1 is coming to help. Call +256•••••••••. Dial *384*3# to send them where you are.`
+4. **The VHT sends where they are.** On **VHT 1**, dial `*384*3#`, the **My incident** menu:
+
+   | Screen | Press | Meaning |
+   |---|---|---|
+   | My incident …, Test School 1, Test Ward 1 | `1` | Send the transporter where I am |
+   | Which health facility do you work at? | `1` | Test Health Centre 1 |
+   | Is this phone's number the one to call you on? | `1` | Yes (`2` lets you type another, a demo number only) |
+   | Which ward are you in? | `1` | Test Ward 1 |
+   | Nearest place to you? | `4` | Test Church 1 |
+
+   The screen ends with `PENDING-RESPONDER Sent to Transporter 1: you are near Test Church 1, Test Ward 1.`
+5. **The rider is told.** Within a second, **Transporter 1**'s inbox gets:
+   `PENDING-SMS Sauti …: VHT 1 is near Test Church 1, Test Ward 1, 0.3 km from the patient. Works at Test Health Centre 1. Call +256•••••••••.`
+   The page shows every number masked, as it always does; the handset would show it in full. On the map, VHT 1 is now a filled square near Test Church 1.
+6. **The job, on basic phones.** On `*384*3#`, VHT 1 presses `2` (**I have arrived**). Transporter 1 dials it three times and presses `1` each time: **I have arrived**, then **Patient picked up, leaving now**, then **Arrived at the facility**, where a list of facilities follows, nearest to the patient first. They press `1`, **Test Health Centre 1**, the VHT's facility. The incident closes.
+
+**On smartphones.** Switch the VHT and the transporter to **Smartphone** and play the scenario again.
+- **VHT 1's app** sends their details as soon as they accept, with no questions: their location from GPS (simulated), and the facility and number they registered with. Its **Your transporter** card names the rider coming and their number, and says what was sent. **Move my location** while on the job sends the new place, and the rider gets "VHT 1 is now near …".
+- **Transporter 1's app** has a card for VHT 1 with their place, the distance to the patient, their facility and number. It also compares going straight to the patient with picking up VHT 1 first, for example `Straight to the patient: 0.1 km, about 1 min. Picking up VHT 1 first: 0.5 km, about 2 min.` Its map marks VHT 1 with a purple dot.
+
+Any mix works: a VHT on a basic phone with a rider on a smartphone, or the other way round. A rider on a basic phone also sees `VHT 1: near Test Church 1` on their `*384*3#` menu.
+
+This is a preview: no Sauti service records these details yet. The wording is a placeholder, the SMS go straight to the demo's SMS simulator rather than through dispatch-worker, and nothing is written to the operational store or the audit ledger.
+
 ## 8. Let the page play the scenarios
 
 The **Play a scenario** buttons replay the scenarios above, and two more, on the same phones. They press the same keys through the same USSD service as you did, one screen at a time, so the audience sees every screen.
@@ -224,10 +262,11 @@ The **Play a scenario** buttons replay the scenarios above, and two more, on the
 2. Watch the status line under the buttons. It reads, for example, `Red injury, accepted. Step 3 of 6: Waiting for the alerts to VHT 1, VHT 2 and Transporter 1.` The phones being dialled show a notice and their keys are locked until the scenario ends.
 3. After about 20 seconds the line reads `Red injury, accepted: done.`, followed by the incident number, who accepted, and the time from call to acceptance, all read from the board.
 
-To stop a scenario part way, click **Cancel scenario**. The five scenarios are:
+To stop a scenario part way, click **Cancel scenario**. The six scenarios are:
 
 | Button | What it shows | Takes about |
 |---|---|---|
+| **Pregnancy emergency, end to end** | Scenario D: Transporter 1 and VHT 1 accept; VHT 1 sends their place, facility and number (on `*384*3#`, or by the app on a smartphone); both arrive; the rider hands over at the VHT's facility. Follows the phone type each panel is set to | 30 s |
 | **Red injury, accepted** | Scenario A: five alerts at once; VHT 1 and Transporter 1 accept | 20 s |
 | **A decline cascades** | Scenario B: VHT 4 declines and a VHT in Test Ward 1 is alerted in wave 2 | 15 s |
 | **Nobody nearby, escalated** | Scenario C: both roles escalate to a coordinator | 15 s |

@@ -75,6 +75,17 @@ func (s *smsSink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// add keeps a message the demo itself sends (share.go), as if the provider
+// had delivered it. It has no provider message ID, so no delivery report.
+func (s *smsSink) add(to, text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.msgs = append(s.msgs, sms{to: to, Text: text, At: time.Now().UTC()})
+	if len(s.msgs) > maxMessages {
+		s.msgs = s.msgs[len(s.msgs)-maxMessages:]
+	}
+}
+
 // inbox returns the messages sent to an E.164 number, oldest first.
 func (s *smsSink) inbox(e164 string) []sms {
 	s.mu.Lock()

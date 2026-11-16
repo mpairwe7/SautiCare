@@ -142,7 +142,9 @@
     <ul class="legend" aria-label="Map key">
       <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="pin sev-red" transform="translate(14 14)"><circle class="dot" r="12"/><text class="letter" y="4.5">R</text></g></svg> Incident: R red, Y yellow, G green; it pulses while open</li>
       <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="landmark"><circle cx="5" cy="14" r="3.5"/></g><line class="leader" x1="5" y1="14" x2="25" y2="14"/></svg> Landmark. Incidents at one place fan out around it, each on a thin line</li>
-      <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="resp" transform="translate(14 14)"><rect x="-12" y="-12" width="24" height="24" rx="4"/><text y="4">V1</text></g></svg> Responder, grouped under their ward's name: V VHT, T transporter</li>
+      <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="facility"><rect x="6" y="6" width="16" height="16" rx="3"/><path class="cross" d="M9.5 14h9M14 9.5v9"/></g></svg> Registered health facility</li>
+      <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="resp located" transform="translate(14 14)"><rect x="-12" y="-12" width="24" height="24" rx="4"/><text y="4">V1</text></g></svg> Responder where they are: a smartphone's location, or the place a VHT sent on *384*3#</li>
+      <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="resp" transform="translate(14 14)"><rect x="-12" y="-12" width="24" height="24" rx="4"/><text y="4">V1</text></g></svg> Responder on a basic phone, location not known: grouped under their ward's name. V VHT, T transporter</li>
       <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-pending" x1="2" y1="5" x2="32" y2="5"/></svg> Alert waiting for an answer</li>
       <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-accepted" x1="2" y1="5" x2="32" y2="5"/></svg> Accepted</li>
       <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-declined" x1="2" y1="5" x2="32" y2="5"/></svg> Declined</li>
@@ -153,7 +155,7 @@
 </main>
 
 <footer class="foot">
-  <p>Texts marked <code>PENDING</code> are placeholders awaiting the study's approved wording, shown exactly as the system sends them. SMS goes to a local simulator of the provider; voice calls are not part of this demo. The smartphone views use the same USSD service as the basic phones; a responder's location is their registered stage, standing in for GPS. Arrival, departure and arrival at the facility are a preview of M3, recorded through the single write path. Responders, numbers and places are synthetic. The figures, map and activity cover the incidents in the queue, the latest 25.</p>
+  <p>Texts marked <code>PENDING</code> are placeholders awaiting the study's approved wording, shown exactly as the system sends them. SMS goes to a local simulator of the provider; voice calls are not part of this demo. The smartphone views use the same USSD service as the basic phones; a smartphone's location is simulated GPS, starting by the responder's registered stage. Arrival, departure and arrival at the facility are a preview of M3, recorded through the single write path, from a smartphone or from the basic phone's *384*3# menu. What a VHT sends their transporter (their place, facility and number) is a preview too: it stays in the demo and its SMS go straight to the simulator. Numbers in SMS show masked here; the handset would show them in full. Responders, numbers and places are synthetic. The figures, map and activity cover the incidents in the queue, the latest 25.</p>
 </footer>
 </body>
 </html>

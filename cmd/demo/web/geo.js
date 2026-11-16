@@ -1,8 +1,10 @@
 // The map's geometry: the gazetteer projected into a frame the size of the
 // panel, each ward the territory nearest its centre, incidents at their
-// landmark (or ward centre) and fanned out when they share one, each ward's
-// responders grouped by its centre, and one line per alert. Pure: the view
-// draws what layout returns.
+// landmark (or ward centre) and fanned out when they share one, the
+// registered health facilities, responders whose location is known (a
+// smartphone's, or the place a VHT sent) at it and the others grouped by
+// their ward's centre, and one line per alert. Pure: the view draws what
+// layout returns.
 import { ended } from "./format.js";
 
 export const PIN_R = 12; // an incident pin's radius
@@ -112,7 +114,63 @@ export const short = (label) => label.replace(/^(\w)\w*\s*/, "$1");
 
 const t1 = (inc) => Date.parse(inc.t?.T1) || 0;
 
-export function layout(map, phones, board, { width = 640, height = 640, pad = 56 } = {}) {
+// HOME_R is how far, in degrees (about 30 m), a responder's simulated GPS
+// starts from their registered stage, so people sharing a stage do not
+// start on one point.
+const HOME_R = 0.00027;
+
+// homeFix is where a responder's smartphone GPS starts in the demo: by their
+// registered stage, each responder of that stage on their own side of it.
+export function homeFix(p, phones, map) {
+  const stage = (map?.stages || []).find((s) => s.id === p.stage);
+  if (!stage) return null;
+  const mates = (phones || []).filter((x) => x.kind === "responder" && x.stage === p.stage);
+  const i = Math.max(0, mates.findIndex((x) => x.id === p.id));
+  const a = (2 * Math.PI * i) / Math.max(1, mates.length) - Math.PI / 2;
+  return { lat: stage.lat - HOME_R * Math.sin(a), lon: stage.lon + HOME_R * Math.cos(a) };
+}
+
+// located lists where each responder is known to be, by label: a smartphone's
+// fix (how "phone"), or the place a VHT on a basic phone sent for an open
+// incident (how "shared"). modes: each role's phone type; fix(p): a phone's
+// current fix.
+export function located(phones, modes, fix, board) {
+  const out = {};
+  const open = new Set((board?.incidents || []).filter((i) => !ended(i)).map((i) => i.id));
+  for (const p of phones || []) {
+    if (p.kind !== "responder") continue;
+    if (modes[p.role] === "smart") {
+      const g = fix(p);
+      if (g) out[p.label] = { lat: g.lat, lon: g.lon, how: "phone" };
+      continue;
+    }
+    const s = (board?.shares || []).find((x) => x.vht === p.label && open.has(x.incident));
+    if (s) out[p.label] = { lat: s.lat, lon: s.lon, how: "shared", place: s.landmark };
+  }
+  return out;
+}
+
+// clear finds the spot nearest (x, y), on rings a square apart, whose box of
+// size w × h overlaps none of against and stays in the frame.
+function clear(x, y, w, h, against, width, height) {
+  const step = SQUARE + GAP;
+  for (let r = 0; r <= 4; r++) {
+    const n = r === 0 ? 1 : 8 * r;
+    for (let k = 0; k < n; k++) {
+      const a = (2 * Math.PI * k) / n - Math.PI / 2;
+      const cx = Math.min(Math.max(x + r * step * Math.cos(a), w / 2), width - w / 2);
+      const cy = Math.min(Math.max(y + r * step * Math.sin(a), h / 2), height - h / 2);
+      const b = box(cx - w / 2, cy - h / 2, w, h);
+      if (!against.some((t) => overlaps(b, t))) return [cx, cy, b];
+    }
+  }
+  return [x, y, box(x - w / 2, y - h / 2, w, h)];
+}
+
+// FAC is a facility mark's side.
+export const FAC = 16;
+
+export function layout(map, phones, board, { width = 640, height = 640, pad = 56, where = {} } = {}) {
   const P = projector([...map.wards, ...map.landmarks], width, height, pad);
   const at = (p) => ({ x: P.x(p.lon), y: P.y(p.lat) });
   const centres = map.wards.map(at);
@@ -145,12 +203,37 @@ export function layout(map, phones, board, { width = 640, height = 640, pad = 56
   }
   const taken = [...landmarks.map((l) => box(l.x - 4, l.y - 4, 8, 8)), ...marks]; // what is placed, for placing what comes after
 
-  // Each ward's group, its name over its responders' squares, sits at the
-  // spot nearest its centre that keeps it inside the ward and clear of the
-  // pins, their labels and the landmarks.
+  // The registered health facilities, at their point, named beside them
+  // where there is room.
+  const facilities = (map.facilities || []).map((f) => {
+    const p = at(f);
+    const mark = box(p.x - FAC / 2, p.y - FAC / 2, FAC, FAC);
+    taken.push(mark);
+    const label = [1, -1].map((s) => beside(p.x, p.y, FAC / 2, s, 0, f.name, SIZE.landmark))
+      .find((t) => t.box[0] >= 0 && t.box[2] <= width && t.box[1] >= 0 && t.box[3] <= height && !taken.some((b) => overlaps(t.box, b))) || null;
+    if (label) taken.push(label.box);
+    return { id: f.id, name: f.name, x: p.x, y: p.y, label };
+  });
+
+  // Responders whose location is known sit at it, moved as little as keeps
+  // their square clear of the pins and of each other.
   const responders = [];
+  const placed = [];
+  for (const p of (phones || []).filter((x) => x.kind === "responder" && where[x.label])) {
+    const w = where[p.label];
+    const q = at(w);
+    const [x, y, b] = clear(q.x, q.y, SQUARE, SQUARE, [...pins, ...placed], width, height);
+    placed.push(b);
+    taken.push(b);
+    const ward = map.wards.find((wd) => wd.id === p.wardId)?.name || p.ward || "";
+    responders.push({ id: p.id, label: p.label, short: short(p.label), role: p.role, ward, located: w.how, place: w.place || "", x, y });
+  }
+
+  // Each ward's group, its name over the squares of its responders whose
+  // location is not known, sits at the spot nearest its centre that keeps it
+  // inside the ward and clear of the pins, their labels and the landmarks.
   const wards = map.wards.map((w, i) => {
-    const mine = (phones || []).filter((p) => p.kind === "responder" && p.wardId === w.id);
+    const mine = (phones || []).filter((p) => p.kind === "responder" && p.wardId === w.id && !where[p.label]);
     const gw = Math.max(w.name.length * SIZE.ward * CHAR, Math.min(mine.length, ROW) * (SQUARE + GAP) - GAP);
     const gh = SIZE.ward + Math.ceil(mine.length / ROW) * (SQUARE + GAP);
     const c = centres[i];
@@ -194,7 +277,7 @@ export function layout(map, phones, board, { width = 640, height = 640, pad = 56
       if (from && to) links.push({ key: inc.id + ":" + a.id, incident: inc.id, responder: a.responder, outcome: a.outcome, from, to });
     }
   }
-  return { width, height, wards, landmarks: named, incidents, responders, links, unplaced };
+  return { width, height, wards, landmarks: named, facilities, incidents, responders, links, unplaced };
 }
 
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -209,11 +292,15 @@ export function summary(lay) {
   for (const l of lay.links) byOutcome[l.outcome] = (byOutcome[l.outcome] || 0) + 1;
   const lines = Object.entries(byOutcome).map(([o, n]) => `${n} ${o.replaceAll("_", " ")}`).join(", ");
   const perWard = lay.wards.map((w) => `${lay.responders.filter((r) => r.ward === w.name).length} in ${w.name}`).join(", ");
+  const known = lay.responders.filter((r) => r.located).length;
+  const facilities = lay.facilities || [];
   return [
-    `${count(lay.wards.length, "ward", "wards")} and ${count(lay.landmarks.length, "landmark", "landmarks")}.`,
+    facilities.length
+      ? `${count(lay.wards.length, "ward", "wards")}, ${count(lay.landmarks.length, "landmark", "landmarks")} and ${count(facilities.length, "health facility", "health facilities")}: ${facilities.map((f) => f.name).join(", ")}.`
+      : `${count(lay.wards.length, "ward", "wards")} and ${count(lay.landmarks.length, "landmark", "landmarks")}.`,
     active ? `${count(active, "open incident", "open incidents")} on the map: ${sev}.` : "No open incident on the map.",
     lay.unplaced ? `${count(lay.unplaced, "incident has", "incidents have")} no place yet.` : "",
-    `Responders: ${perWard}.`,
+    `Responders: ${perWard}${known ? `; ${known} shown where they are` : ""}.`,
     lay.links.length ? `${count(lay.links.length, "alert line", "alert lines")}: ${lines}.` : "",
   ].filter(Boolean).join(" ");
 }
