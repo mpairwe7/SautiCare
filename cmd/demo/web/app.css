@@ -190,7 +190,7 @@ td.payload { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 1
 .scenario span { font-size: 12.5px; color: var(--muted); }
 .scenario:hover:not(:disabled) { border-color: var(--accent); background: #fff; }
 .scenario:disabled { opacity: 0.55; cursor: not-allowed; }
-.scenario.running, .scenario.running:disabled { opacity: 1; border-color: var(--accent); background: #fff; box-shadow: inset 4px 0 0 var(--accent); }
+.scenario.running, .scenario.running:disabled { opacity: 1; border-color: var(--accent); background: #fff; box-shadow: 0 0 0 1px var(--accent); }
 .run-line { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; min-height: 40px; }
 .run-status { margin: 0; flex: 1 1 260px; font-size: 14px; color: var(--muted); }
 .run-status.running { color: var(--ink); font-weight: 600; }
