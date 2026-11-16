@@ -231,7 +231,15 @@ With rootless Podman, if the build cannot download modules or the page never ope
 docker compose -f compose.yaml -f compose.host-network.yaml up --build
 ```
 
-Podman 4.3 has no `docker compose` command of its own. Use the Docker Compose binary with Podman's API socket (`systemctl --user enable --now podman.socket`, then `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`). Without the buildx plugin, Compose builds through Podman's Docker-compatible build API.
+Podman 4.3 has no `docker compose` command of its own. Use the Docker Compose binary with Podman's API socket. Export `DOCKER_HOST` so that Compose inherits it; a plain assignment without `export` stays in your shell, and Compose then looks for Docker's socket instead:
+
+```bash
+systemctl --user enable --now podman.socket
+export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
+docker-compose -f compose.yaml -f compose.host-network.yaml up --build
+```
+
+Without the buildx plugin, Compose builds through Podman's Docker-compatible build API.
 
 ## Troubleshooting
 
