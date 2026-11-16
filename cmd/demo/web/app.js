@@ -58,6 +58,7 @@ const app = {
   snapKey: "",
   gen: 0, // bumped by clearRun: a response to a request from an earlier run is dropped
   incident: "", // the incident picked on the map
+  hover: "", // the incident whose card the pointer or focus is on
   feedSeen: new Set(),
   driven: new Map(), // phone → why its keys are locked: a scenario or the autopilot is dialling it
   scenario: IDLE,
@@ -333,7 +334,10 @@ function onSelectIncident(id) {
   card.focus({ preventScroll: true });
 }
 
-const onHoverIncident = (id) => highlight($("#map"), id || app.incident);
+function onHoverIncident(id) {
+  app.hover = id;
+  highlight($("#map"), id || app.incident);
+}
 
 function renderBoard(b) {
   $("#suspended").hidden = !b.suspended;
@@ -363,7 +367,7 @@ function renderTimelines(all) {
 // drawMap lays the map out at its mount's size, one SVG unit to the pixel.
 function drawMap() {
   const mount = $("#map");
-  renderMap(mount, layout(app.map, app.phones, app.board, { width: mount.clientWidth, height: mount.clientHeight }), app.incident, onSelectIncident);
+  renderMap(mount, layout(app.map, app.phones, app.board, { width: mount.clientWidth, height: mount.clientHeight }), app.hover || app.incident, onSelectIncident);
 }
 
 // renderSnapshot renders every view of the snapshot, when it changed.
@@ -588,6 +592,7 @@ function clearRun() {
   app.board = null;
   app.snapKey = "";
   app.incident = "";
+  app.hover = "";
   app.feedSeen = new Set();
   ap.queue = [];
   ap.decided = new Set();
