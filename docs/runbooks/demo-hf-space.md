@@ -46,6 +46,8 @@ docker build -t sauti-demo .
 docker run --rm -p 7860:7860 --user 1000:1000 sauti-demo
 ```
 
+Or `docker compose up --build`, which builds the same image from `compose.yaml` and publishes it on 127.0.0.1 only. For rootless Podman without a working network, see step 10 of [the local tutorial](../tutorials/run-the-prototype-locally.md).
+
 Stage 1 builds every command with `golang:1.27.4`. The runtime image is `postgres:18.6`, pinned to the digest CI uses, with the binaries in `/app/bin`, `config/` and `triage-rules/` beside them, a data directory `/app/var`, user 1000 and port 7860. The SQL migrations are compiled into the binaries. These risks are checked only when the image is built or run, not by CI:
 
 | Risk | Defence |

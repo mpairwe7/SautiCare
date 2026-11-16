@@ -4,8 +4,10 @@
 #
 # Images are pinned: Go to CI's exact toolchain, PostgreSQL to the digest of
 # postgres:18.6 that CI's integration job runs (.github/workflows/ci.yml).
+# Names are fully qualified so Podman builds it as Docker does, without a
+# short-name search list.
 
-FROM golang:1.27.4 AS build
+FROM docker.io/library/golang:1.27.4 AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-trimpath
 COPY go.mod go.sum ./
@@ -15,7 +17,7 @@ COPY . .
 # binaries (go:embed in db/migrations.go), so the image needs no db/ tree.
 RUN mkdir -p /out && go build -ldflags="-s -w" -o /out/ ./cmd/...
 
-FROM postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+FROM docker.io/library/postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
 
 # The runner starts PostgreSQL 18 from the base image's binaries. Their
 # directory is a Debian packaging detail: fail the build here, not at
