@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SCENARIOS, runScenario, next, IDLE, phonesOf, answerAlert } from "../web/scenarios.js";
+import { SCENARIOS, runScenario, next, IDLE, phonesOf, answerAlert, lockPhones } from "../web/scenarios.js";
 
 const codes = { caller: "*384*1#", responder: "*384*2#" };
 const labelOf = (id) => id.replace(/^(\w)(\w*)-(\d+)$/, (_, a, b, n) => (a === "v" ? "VHT" : a.toUpperCase() + b) + " " + n);
@@ -142,6 +142,16 @@ test("the surge's branches run together, and every phone they drive is listed", 
   const vht = demo.calls.findIndex(([p]) => p === "vht-4");
   const lastCall = demo.calls.findLastIndex(([p]) => p.startsWith("caller"));
   assert.ok(vht < lastCall, "VHT 4 answers while calls are still coming in");
+});
+
+test("a lock is released only on the phones it still holds", () => {
+  const driven = new Map();
+  const autopilot = lockPhones(driven, ["vht-4"], "The autopilot is answering.");
+  const scenario = lockPhones(driven, new Set(["caller-a", "vht-4"]), "A scenario is dialling.");
+  autopilot(); // the autopilot's answer ends while the scenario plays
+  assert.deepEqual([...driven].map(([id, l]) => [id, l.why]), [["vht-4", "A scenario is dialling."], ["caller-a", "A scenario is dialling."]]);
+  scenario();
+  assert.equal(driven.size, 0);
 });
 
 test("every scenario is a table of known step kinds with a title, a description and a result", () => {

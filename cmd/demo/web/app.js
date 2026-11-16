@@ -10,7 +10,7 @@ import { feedItems } from "./feed.js";
 import { layout } from "./geo.js";
 import { renderKpis, renderMap, renderFeed, highlight } from "./views.js";
 import { renderIncident, timelineChart } from "./cards.js";
-import { SCENARIOS, runScenario, phonesOf, answerAlert, IDLE } from "./scenarios.js";
+import { SCENARIOS, runScenario, phonesOf, answerAlert, lockPhones, IDLE } from "./scenarios.js";
 import { AUTOPILOT, plan } from "./autopilot.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -60,7 +60,7 @@ const app = {
   incident: "", // the incident picked on the map
   hover: "", // the incident whose card the pointer or focus is on
   feedSeen: new Set(),
-  driven: new Map(), // phone → why its keys are locked: a scenario or the autopilot is dialling it
+  driven: new Map(), // phone → the lock ({why}) of the scenario or the autopilot dialling it
   scenario: IDLE,
 };
 
@@ -126,7 +126,7 @@ class Phone {
     this.renderInbox();
   }
 
-  locked() { return this.p ? app.driven.get(this.p.id) : undefined; }
+  locked() { return this.p ? app.driven.get(this.p.id)?.why : undefined; }
 
   press(k) {
     if (this.mode === "end" || this.locked()) return;
@@ -431,8 +431,7 @@ async function play(sc) {
   if (sc.needsReset && n && !window.confirm(`"${sc.title}" starts from a fresh demo. Erase the ${n} incident(s) on the board and start?`)) return;
   runCtl = new AbortController();
   const signal = runCtl.signal;
-  const lock = `A scenario is dialling this phone: "${sc.title}". Cancel it to use the keys.`;
-  for (const id of phonesOf(sc.steps)) app.driven.set(id, lock);
+  const unlock = lockPhones(app.driven, phonesOf(sc.steps), `A scenario is dialling this phone: "${sc.title}". Cancel it to use the keys.`);
   ap.since = Infinity; // the autopilot leaves a scenario's alerts to the scenario
   const deps = {
     codes: app.codes, signal, now: () => Date.now(),
@@ -444,7 +443,7 @@ async function play(sc) {
   renderPhones();
   await runScenario(sc, deps, (s) => { app.scenario = s; renderRunStatus(); });
   runCtl.abort(); // stops a parallel branch still running after its sibling failed
-  for (const id of phonesOf(sc.steps)) app.driven.delete(id);
+  unlock();
   ap.since = serverNow();
   renderPhones();
 }
@@ -491,7 +490,7 @@ async function pumpAutopilot() {
         apLog(`${d.responder}'s alert for ${d.ref} ended before the autopilot answered.`);
         continue;
       }
-      app.driven.set(d.phone, "The autopilot is answering an alert on this phone.");
+      const unlock = lockPhones(app.driven, [d.phone], "The autopilot is answering an alert on this phone.");
       renderPhones();
       const gen = app.gen;
       try {
@@ -501,7 +500,7 @@ async function pumpAutopilot() {
       } catch (err) {
         if (gen === app.gen) apLog(`${d.responder} did not answer ${d.ref}: ${err.message}`);
       } finally {
-        app.driven.delete(d.phone);
+        unlock();
         renderPhones();
       }
     }
