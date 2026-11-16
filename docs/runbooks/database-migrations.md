@@ -5,7 +5,7 @@
 | Owner | Platform engineering |
 | Severity | SEV-3 (deploy blocker) |
 | Alert / trigger | Deploy step `sautictl migrate` fails, or reports `applied migration file has changed` |
-| Last reviewed: | 2026-11-14 |
+| Last reviewed: | 2026-11-16 |
 | Last drilled | Not yet drilled (M0, development only) |
 
 ## Summary
@@ -46,6 +46,14 @@ Migrations are forward-only and checksummed (ADR-0010). Each store applies `db/<
    ```
 
    Repair any such rows only by an approved correction under a deviation record. Then, as the schema owner, run `ALTER TABLE op.incident_events VALIDATE CONSTRAINT incident_events_flag_is_string;`. It takes only a `SHARE UPDATE EXCLUSIVE` lock, so reads and writes continue.
+7. Before 0039 on a populated store. 0039's trigger refuses a classification without a logic version from then on, and the code released with it no longer folds a stored history that holds one ([ADR-0043](../adr/ADR-0043-approved-bundle-and-logic-version.md)). Such an incident would fail `sautictl verify-projections` ("events do not fold") and a retried append. No release path writes one, but count them first, as `op_readonly`:
+
+   ```sql
+   SELECT count(*) FROM op.incident_events
+    WHERE type = 'incident.classified' AND coalesce(logic_version, '') = '';
+   ```
+
+   If the count is not 0, stop the release and treat those incidents as in item 6, by an approved correction under a deviation record.
 
 ## Escalation
 

@@ -31,7 +31,7 @@ func TestFlagEventNeedsAJSONStringFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, bad := range []string{`{"flag":123}`, `{"flag":true}`, `{"flag":["test_call"]}`, `{"flag":{"test_call":1}}`} {
-		if err := appendErr(s, o.IncidentID, incident.EvFlagged, bad, 0); !errors.Is(err, incident.ErrIllegalTransition) {
+		if err := appendErr(t, s, o.IncidentID, incident.EvFlagged, bad, 0); !errors.Is(err, incident.ErrIllegalTransition) {
 			t.Errorf("flag event %s: err = %v, want ErrIllegalTransition", bad, err)
 		}
 	}

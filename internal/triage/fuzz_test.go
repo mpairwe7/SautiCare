@@ -2,11 +2,13 @@ package triage
 
 import (
 	"crypto/mldsa"
+	"slices"
 	"testing"
 )
 
-// Whatever the inputs, Classify returns one of the three severities and
-// never panics; anything outside the declared domain is red.
+// Whatever the inputs, Classify never panics; an input outside the declared
+// domain is red with a rule error, and inputs inside it are never a rule
+// error (evaluation audit V-04, ES-11).
 func FuzzClassifyNeverPanics(f *testing.F) {
 	sk, err := mldsa.GenerateKey(mldsa.MLDSA65())
 	if err != nil {
@@ -22,10 +24,19 @@ func FuzzClassifyNeverPanics(f *testing.F) {
 	}
 	f.Add("yes", "trauma", "age_18_59", "no")
 	f.Add("", "\x00", "unknown", "maybe")
+	f.Add("no", "trauma", "age_18_59", "maybe")
 	f.Fuzz(func(t *testing.T, danger, category, age, specific string) {
-		r := e.Classify(Inputs{Danger: danger, Category: category, AgeBand: age, SpecificDanger: specific})
-		if r.Severity != "red" && r.Severity != "yellow" && r.Severity != "green" {
-			t.Fatalf("severity %q", r.Severity)
+		in := Inputs{Danger: danger, Category: category, AgeBand: age, SpecificDanger: specific}
+		r := e.Classify(in)
+		inDomain := true
+		for i, name := range inputNames {
+			inDomain = inDomain && slices.Contains(e.Values(name), in.values()[i])
+		}
+		switch {
+		case !inDomain && (r.Severity != Red || !r.RuleError):
+			t.Fatalf("%+v is outside the domain: %+v, want red with a rule error", in, r)
+		case inDomain && (r.RuleError || (r.Severity != Red && r.Severity != Yellow && r.Severity != Green)):
+			t.Fatalf("%+v is inside the domain: %+v", in, r)
 		}
 	})
 }

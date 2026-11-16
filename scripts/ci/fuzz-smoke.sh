@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 T=${FUZZTIME:-20s}
 go test -run='^$' -fuzz='^FuzzParseReference$' -fuzztime="$T" ./internal/incident/
+go test -run='^$' -fuzz='^FuzzFoldSeverityNeverFalls$' -fuzztime="$T" ./internal/incident/
 go test -run='^$' -fuzz='^FuzzATForm$' -fuzztime="$T" ./internal/platform/africastalking/
 go test -run='^$' -fuzz='^FuzzClassifyNeverPanics$' -fuzztime="$T" ./internal/triage/
 go test -run='^$' -fuzz='^FuzzAnswerNeverPanics$' -fuzztime="$T" ./internal/intake/

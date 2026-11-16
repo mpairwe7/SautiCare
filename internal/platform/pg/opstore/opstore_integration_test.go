@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -69,7 +70,7 @@ func appendEv(t *testing.T, s *opstore.Store, id uuid.UUID, typ incident.EventTy
 	if payload == "" {
 		payload = "{}"
 	}
-	a, err := s.Append(context.Background(), incident.AppendParams{
+	a, err := s.Append(pgtest.Context(t), incident.AppendParams{
 		IncidentID: id, Type: typ, Payload: json.RawMessage(payload), ActorKind: incident.ActorSystem,
 		IdemKey: string(typ) + ":" + payload, LogicVersion: logic,
 	})
@@ -173,8 +174,8 @@ func TestAppendIsIdempotentOnKey(t *testing.T) {
 	}
 }
 
-func appendErr(s *opstore.Store, id uuid.UUID, typ incident.EventType, payload string, expected int64) error {
-	_, err := s.Append(context.Background(), incident.AppendParams{
+func appendErr(t testing.TB, s *opstore.Store, id uuid.UUID, typ incident.EventType, payload string, expected int64) error {
+	_, err := s.Append(pgtest.Context(t), incident.AppendParams{
 		IncidentID: id, ExpectedVersion: expected, Type: typ, Payload: json.RawMessage(payload),
 		ActorKind: incident.ActorSystem, IdemKey: uuid.NewV4().String(),
 	})
@@ -186,10 +187,10 @@ func TestAppendRejectsVersionConflict(t *testing.T) {
 	s := storeAs(t, c, "op_intake")
 	o, _ := s.OpenIncident(context.Background(), openParams(t))
 	answer := `{"screen":2,"field":"danger","value":"no"}`
-	if err := appendErr(s, o.IncidentID, incident.EvScreenAnswered, answer, 5); !errors.Is(err, incident.ErrVersionConflict) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvScreenAnswered, answer, 5); !errors.Is(err, incident.ErrVersionConflict) {
 		t.Fatalf("err = %v, want ErrVersionConflict", err)
 	}
-	if err := appendErr(s, o.IncidentID, incident.EvScreenAnswered, answer, 1); err != nil {
+	if err := appendErr(t, s, o.IncidentID, incident.EvScreenAnswered, answer, 1); err != nil {
 		t.Fatalf("matching expected version rejected: %v", err)
 	}
 }
@@ -198,10 +199,10 @@ func TestAppendRejectsIllegalTransition(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
 	o, _ := s.OpenIncident(context.Background(), openParams(t))
-	if err := appendErr(s, o.IncidentID, incident.EvDeparted, `{}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvDeparted, `{}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
 		t.Fatalf("departed in intake: %v", err)
 	}
-	if err := appendErr(s, o.IncidentID, incident.EvSessionStarted, `{}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvSessionStarted, `{}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
 		t.Fatalf("second session.started: %v", err)
 	}
 }
@@ -209,7 +210,7 @@ func TestAppendRejectsIllegalTransition(t *testing.T) {
 func TestAppendToUnknownIncident(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
-	if err := appendErr(s, uuid.NewV7(), incident.EvScreenAnswered, `{}`, 0); !errors.Is(err, incident.ErrNotFound) {
+	if err := appendErr(t, s, uuid.NewV7(), incident.EvScreenAnswered, `{}`, 0); !errors.Is(err, incident.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -225,8 +226,95 @@ func TestAppendRejectsSeverityLowering(t *testing.T) {
 		"INSERT INTO op.incident_transitions VALUES ('triaged', 'incident.classified', NULL)"); err != nil {
 		t.Fatal(err)
 	}
-	if err := appendErr(s, o.IncidentID, incident.EvClassified, `{"severity":"green"}`, 0); !errors.Is(err, incident.ErrSeverityLowered) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvClassified, `{"severity":"green"}`, 0); !errors.Is(err, incident.ErrSeverityLowered) {
 		t.Fatalf("err = %v, want ErrSeverityLowered", err)
+	}
+}
+
+// The severity ratchet through the real write path, for every pair of
+// severities and both events that set one (evaluation audit V-04, ES-1),
+// with the expectations of internal/incident TestNoEventLowersSeverity: a
+// classification may keep or raise the severity, severity_raised must raise
+// it. A classification meets an incident still in intake that a merged call
+// raised to from; severity_raised meets an incident classified from that
+// absorbed a call classified to. A refused append leaves the severity alone.
+func TestAppendRejectsEverySeverityLowering(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := pgtest.Context(t) // bounded: every external call has a deadline
+	sevs := []incident.Severity{incident.SevGreen, incident.SevYellow, incident.SevRed}
+	for _, typ := range []incident.EventType{incident.EvClassified, incident.EvSeverityRaised} {
+		for _, from := range sevs {
+			for _, to := range sevs {
+				var survivor incident.Opened
+				var params incident.AppendParams
+				switch typ {
+				case incident.EvClassified:
+					var err error
+					if survivor, err = s.OpenIncident(ctx, openParams(t)); err != nil {
+						t.Fatal(err)
+					}
+					member := dispatchedAs(t, s, from)
+					absorb(t, s, survivor, member)
+					appendEv(t, s, survivor.IncidentID, incident.EvSeverityRaised, fmt.Sprintf(`{"severity":%q,"from":%q}`, from, member.IncidentID), "")
+					params = incident.AppendParams{Type: typ, Payload: json.RawMessage(fmt.Sprintf(`{"severity":%q}`, to)), LogicVersion: testLogic}
+				case incident.EvSeverityRaised:
+					survivor = dispatchedAs(t, s, from)
+					member := dispatchedAs(t, s, to)
+					absorb(t, s, survivor, member)
+					params = incident.AppendParams{Type: typ, Payload: json.RawMessage(fmt.Sprintf(`{"severity":%q,"from":%q}`, to, member.IncidentID))}
+				}
+				params.IncidentID, params.ActorKind, params.IdemKey = survivor.IncidentID, incident.ActorSystem, "ratchet"
+				_, err := s.Append(ctx, params)
+				got, perr := s.Projection(ctx, survivor.IncidentID)
+				if perr != nil {
+					t.Fatal(perr)
+				}
+				accepted := to.Rank() > from.Rank() || (typ == incident.EvClassified && to == from)
+				switch {
+				case accepted && (err != nil || got.Severity != to):
+					t.Errorf("%s %s -> %s: severity %s, err %v; want accepted", typ, from, to, got.Severity, err)
+				case !accepted && !errors.Is(err, incident.ErrSeverityLowered) && !errors.Is(err, incident.ErrIllegalTransition):
+					t.Errorf("%s %s -> %s: err = %v, want ErrSeverityLowered or ErrIllegalTransition", typ, from, to, err)
+				case !accepted && got.Severity != from:
+					t.Errorf("%s %s -> %s: refused, but the stored severity is %s", typ, from, to, got.Severity)
+				}
+			}
+		}
+	}
+}
+
+// A classification without a logic version is refused (evaluation audit
+// V-29, ES-9: the audit's probe stored one, because the store sends an
+// empty version as NULL and NULL passes the format check). The refusal is a
+// trigger on the event log (migration 0039), so it holds for any write path:
+// a direct insert as the owner is refused too.
+func TestAppendRequiresLogicVersionOnClassification(t *testing.T) {
+	c := pgtest.Cluster(t)
+	s := storeAs(t, c, "op_intake")
+	ctx := pgtest.Context(t) // bounded: every external call has a deadline
+	o, err := s.OpenIncident(ctx, openParams(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendErr(t, s, o.IncidentID, incident.EvClassified, `{"severity":"yellow"}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
+		t.Fatalf("classification without a logic version: err = %v, want ErrIllegalTransition", err)
+	}
+	owner := c.Owner(t, pg.StoreOperational)
+	for _, v := range []*string{nil, new("")} {
+		_, err := owner.Exec(ctx, `INSERT INTO op.incident_events (incident_id, seq, type, actor_kind, payload, idem_key, logic_version)
+			VALUES ($1, 2, 'incident.classified', 'system', '{"severity":"yellow"}', 'direct', $2)`, o.IncidentID, v)
+		var pe *pgconn.PgError
+		if !errors.As(err, &pe) || pe.Code != "SA422" || !strings.Contains(pe.Message, "logic version") {
+			t.Errorf("direct insert with logic version %v: err = %v, want SA422 naming the logic version", v, err)
+		}
+	}
+	got, err := s.Projection(ctx, o.IncidentID)
+	if err != nil || got.Severity != "" || got.Version != 1 {
+		t.Fatalf("after refused classifications: %+v, %v", got, err)
+	}
+	if a := appendEv(t, s, o.IncidentID, incident.EvClassified, `{"severity":"yellow"}`, testLogic); a.Event.LogicVersion != testLogic {
+		t.Fatalf("versioned classification: %+v", a.Event)
 	}
 }
 
@@ -279,7 +367,7 @@ func TestAppendValidatesMergeTarget(t *testing.T) {
 	appendEv(t, s, closed, incident.EvClosed, `{"reason":"test_call"}`, "")
 	appendEv(t, s, merged, incident.EvMerged, `{"into":"`+live.String()+`"}`, "")
 	merge := func(into string) error {
-		return appendErr(s, src, incident.EvMerged, `{"into":"`+into+`"}`, 0)
+		return appendErr(t, s, src, incident.EvMerged, `{"into":"`+into+`"}`, 0)
 	}
 	for _, tc := range []struct {
 		into string

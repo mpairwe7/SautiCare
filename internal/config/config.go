@@ -117,6 +117,10 @@ type StoppingRule struct {
 type Triage struct {
 	RulesFile   string            `yaml:"rules_file"`
 	TrustedKeys map[string]string `yaml:"trusted_keys"`
+	// ApprovedSHA256 is the lower-case hex sha256 of the one signed bundle
+	// that may run (ADR-0043): the signature proves who signed it, the
+	// digest which bundle is approved. Production refuses it empty.
+	ApprovedSHA256 string `yaml:"approved_sha256"`
 }
 
 // Flags are the section 11 enhancements, all false during the study, and

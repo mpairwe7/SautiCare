@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"regexp"
 	"slices"
 
 	"go.yaml.in/yaml/v4"
@@ -125,8 +126,13 @@ func Load(fsys fs.FS) (Bundle, error) {
 	if b.Triage.RulesFile == "" || len(b.Triage.TrustedKeys) == 0 {
 		return Bundle{}, errors.New("config: gated/triage.yaml needs rules_file and at least one trusted key")
 	}
+	if d := b.Triage.ApprovedSHA256; d != "" && !sha256Hex.MatchString(d) {
+		return Bundle{}, fmt.Errorf("config: gated/triage.yaml approved_sha256 %q is not 64 lower-case hex digits", d)
+	}
 	return b, nil
 }
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func decodeStrict(data []byte, dst any) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))

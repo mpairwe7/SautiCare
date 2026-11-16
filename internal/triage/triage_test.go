@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -146,6 +147,8 @@ func TestLoadRejectsNonTotalTable(t *testing.T) {
 		"unknown input":      strings.Replace(rules, `when: "true"`, `when: 'colour == "x"'`, 1),
 		"duplicate id":       strings.Replace(rules, "id: green-default", "id: red-danger", 1),
 		"empty domain":       strings.Replace(rules, `specific_danger: ["yes", "no"]`, `specific_danger: []`, 1),
+		"empty value":        strings.Replace(rules, `specific_danger: ["yes", "no"]`, `specific_danger: ["yes", "no", ""]`, 1),
+		"duplicate value":    strings.Replace(rules, `danger: ["yes", "no", "unknown"]`, `danger: ["yes", "no", "unknown", "no"]`, 1),
 		"no version":         strings.Replace(rules, `version: "tool1-test-1"`, `version: ""`, 1),
 		"version not a code": strings.Replace(rules, `version: "tool1-test-1"`, `version: "Tool1-v1"`, 1),
 		"unknown key":        strings.Replace(rules, "protocol_status: pending", "protocol_status: pending\nauthor: x", 1),
@@ -183,15 +186,23 @@ func TestLoadRejectsOversizedDomain(t *testing.T) {
 
 // Fail safe (Build Prompt §14): a rule that errors at run time, or an input
 // outside the declared domain, gives red and is marked as a rule error so the
-// coordinator is alerted.
+// coordinator is alerted. Every input, from every point of the domain, with
+// values that are empty, unknown, of another input, or differ only in case
+// or spacing (evaluation audit V-04, ES-11).
 func TestRuntimeErrorIsRed(t *testing.T) {
 	e := load(t, rules)
-	for _, in := range []Inputs{
-		{Danger: "no", Category: "snakebite", AgeBand: "age_18_59", SpecificDanger: "no"},
-		{Danger: "", Category: "trauma", AgeBand: "age_18_59", SpecificDanger: "no"},
-	} {
-		if r := e.Classify(in); r.Severity != "red" || !r.RuleError {
-			t.Errorf("%+v = %+v, want red rule error", in, r)
+	outside := []string{"", "maybe", "snakebite", "trauma", "under_5", "YES", " no", "no ", "\x00"}
+	for _, in := range e.Domain() {
+		for i, name := range inputNames {
+			for _, v := range outside {
+				if slices.Contains(e.Values(name), v) {
+					continue
+				}
+				bad := withInput(in, i, v)
+				if r := e.Classify(bad); r.Severity != "red" || !r.RuleError || r.RuleID != RuleErrorID {
+					t.Fatalf("%s=%q in %+v = %+v, want red rule error", name, v, bad, r)
+				}
+			}
 		}
 	}
 	// A row that errors when evaluated (division by zero) also yields red.
@@ -279,6 +290,12 @@ func TestRepositoryBundleVerifies(t *testing.T) {
 			t.Errorf("%s: %+v, want %s", c.Name, got, c.Severity)
 		}
 	}
+}
+
+// withInput returns in with its input number i (inputNames order) set to v.
+func withInput(in Inputs, i int, v string) Inputs {
+	*[]*string{&in.Danger, &in.Category, &in.AgeBand, &in.SpecificDanger}[i] = v
+	return in
 }
 
 func mustCompile(t *testing.T, e *Engine, expr string) cel.Program {

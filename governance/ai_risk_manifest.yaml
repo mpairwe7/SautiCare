@@ -16,11 +16,22 @@ risks:
     mitigation: >-
       Deterministic decision table authored by the emergency-medicine
       co-investigators; severity can only rise, enforced in Go and in the SQL
-      write path; a rule error makes the incident red and alerts a coordinator,
-      and its escalation is announced first and survives a merge (ADR-0034).
+      write path and tested over every pair of severities and over generated
+      event histories, with fold-SQL parity both ways (ADR-0043); an
+      out-of-domain input is red with a rule error for every input; a rule
+      error makes the incident red and alerts a coordinator, and its
+      escalation is announced first and survives a merge (ADR-0034); only
+      intake, the wiring and sautictl may import triage (archcheck R5).
     verified_by:
       - internal/incident/fold_test.go::TestApplyRejectsSeverityLowering
       - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsSeverityLowering
+      - internal/incident/fold_test.go::TestNoEventLowersSeverity
+      - internal/incident/fuzz_test.go::TestFoldSeverityNeverFallsProperty
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRejectsEverySeverityLowering
+      - internal/incident/fold_test.go::TestApplyRejectsMalformedPayloads
+      - internal/platform/pg/opstore/tool1_integration_test.go::TestFoldRejectsWhatSQLRejects
+      - internal/platform/pg/opstore/tool1_integration_test.go::TestSQLRejectsWhatFoldRejects
+      - tools/archcheck/check_test.go::TestOnlyIntakeWiringAndSautictlImportTriage
       - internal/triage/triage_test.go::TestRepositoryBundleVerifies
       - internal/triage/triage_test.go::TestRuleTableFromBuildPrompt
       - internal/triage/triage_test.go::TestRuntimeErrorIsRed
@@ -40,11 +51,20 @@ risks:
     owner_role: Principal Investigator
     mitigation: >-
       Versioned configuration with a content fingerprint; the logic version is
-      stamped on the classification event, the projection and the audit entry.
+      stamped on the classification event, the projection and the audit entry,
+      and a classification without one is refused in Go and by a trigger on
+      the event log (migration 0039); only the bundle whose sha256 is the
+      gated approved_sha256 runs, and production refuses an empty one
+      (ADR-0043).
     verified_by:
       - internal/config/config_test.go::TestFingerprintStableAndSensitive
       - internal/platform/pg/opstore/opstore_integration_test.go::TestProjectionMatchesFold
       - internal/intake/service_test.go::TestAnOpenIncidentKeepsItsLogicVersion
+      - internal/incident/fold_test.go::TestApplyRequiresLogicVersionOnClassification
+      - internal/platform/pg/opstore/opstore_integration_test.go::TestAppendRequiresLogicVersionOnClassification
+      - internal/platform/wiring/intake_test.go::TestBuildIntakeRefusesAnUnapprovedBundle
+      - internal/platform/wiring/intake_test.go::TestProductionRequiresAnApprovedDigest
+      - internal/config/config_test.go::TestLoadRefusesAMalformedApprovedDigest
   - id: AIR-003
     title: An adaptive model ranks responders or sets severity during the pilot
     nist_function: GOVERN

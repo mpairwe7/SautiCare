@@ -71,7 +71,10 @@ func ioAllowed(rel string) bool {
 	return false
 }
 
-// Check applies rules R1–R4 to the module's packages.
+// under reports whether rel is path or one of its subpackages.
+func under(rel, path string) bool { return rel == path || strings.HasPrefix(rel, path+"/") }
+
+// Check applies rules R1–R5 to the module's packages.
 func Check(module string, pkgs []Package) []Violation {
 	prefix := module + "/"
 	var out []Violation
@@ -85,6 +88,9 @@ func Check(module string, pkgs []Package) []Violation {
 		}
 		for _, imp := range p.Imports {
 			if impRel, inModule := strings.CutPrefix(imp, prefix); inModule {
+				if under(impRel, triagePkg) && !slices.ContainsFunc(triageImporters, func(loc string) bool { return under(rel, loc) }) {
+					out = append(out, Violation{p.ImportPath, imp, "R5"})
+				}
 				if ctx == "" {
 					continue
 				}
