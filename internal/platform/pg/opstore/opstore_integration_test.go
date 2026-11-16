@@ -70,7 +70,7 @@ func appendEv(t *testing.T, s *opstore.Store, id uuid.UUID, typ incident.EventTy
 	if payload == "" {
 		payload = "{}"
 	}
-	a, err := s.Append(context.Background(), incident.AppendParams{
+	a, err := s.Append(pgtest.Context(t), incident.AppendParams{
 		IncidentID: id, Type: typ, Payload: json.RawMessage(payload), ActorKind: incident.ActorSystem,
 		IdemKey: string(typ) + ":" + payload, LogicVersion: logic,
 	})
@@ -174,8 +174,8 @@ func TestAppendIsIdempotentOnKey(t *testing.T) {
 	}
 }
 
-func appendErr(s *opstore.Store, id uuid.UUID, typ incident.EventType, payload string, expected int64) error {
-	_, err := s.Append(context.Background(), incident.AppendParams{
+func appendErr(t testing.TB, s *opstore.Store, id uuid.UUID, typ incident.EventType, payload string, expected int64) error {
+	_, err := s.Append(pgtest.Context(t), incident.AppendParams{
 		IncidentID: id, ExpectedVersion: expected, Type: typ, Payload: json.RawMessage(payload),
 		ActorKind: incident.ActorSystem, IdemKey: uuid.NewV4().String(),
 	})
@@ -187,10 +187,10 @@ func TestAppendRejectsVersionConflict(t *testing.T) {
 	s := storeAs(t, c, "op_intake")
 	o, _ := s.OpenIncident(context.Background(), openParams(t))
 	answer := `{"screen":2,"field":"danger","value":"no"}`
-	if err := appendErr(s, o.IncidentID, incident.EvScreenAnswered, answer, 5); !errors.Is(err, incident.ErrVersionConflict) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvScreenAnswered, answer, 5); !errors.Is(err, incident.ErrVersionConflict) {
 		t.Fatalf("err = %v, want ErrVersionConflict", err)
 	}
-	if err := appendErr(s, o.IncidentID, incident.EvScreenAnswered, answer, 1); err != nil {
+	if err := appendErr(t, s, o.IncidentID, incident.EvScreenAnswered, answer, 1); err != nil {
 		t.Fatalf("matching expected version rejected: %v", err)
 	}
 }
@@ -199,10 +199,10 @@ func TestAppendRejectsIllegalTransition(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
 	o, _ := s.OpenIncident(context.Background(), openParams(t))
-	if err := appendErr(s, o.IncidentID, incident.EvDeparted, `{}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvDeparted, `{}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
 		t.Fatalf("departed in intake: %v", err)
 	}
-	if err := appendErr(s, o.IncidentID, incident.EvSessionStarted, `{}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvSessionStarted, `{}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
 		t.Fatalf("second session.started: %v", err)
 	}
 }
@@ -210,7 +210,7 @@ func TestAppendRejectsIllegalTransition(t *testing.T) {
 func TestAppendToUnknownIncident(t *testing.T) {
 	c := pgtest.Cluster(t)
 	s := storeAs(t, c, "op_intake")
-	if err := appendErr(s, uuid.NewV7(), incident.EvScreenAnswered, `{}`, 0); !errors.Is(err, incident.ErrNotFound) {
+	if err := appendErr(t, s, uuid.NewV7(), incident.EvScreenAnswered, `{}`, 0); !errors.Is(err, incident.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -226,7 +226,7 @@ func TestAppendRejectsSeverityLowering(t *testing.T) {
 		"INSERT INTO op.incident_transitions VALUES ('triaged', 'incident.classified', NULL)"); err != nil {
 		t.Fatal(err)
 	}
-	if err := appendErr(s, o.IncidentID, incident.EvClassified, `{"severity":"green"}`, 0); !errors.Is(err, incident.ErrSeverityLowered) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvClassified, `{"severity":"green"}`, 0); !errors.Is(err, incident.ErrSeverityLowered) {
 		t.Fatalf("err = %v, want ErrSeverityLowered", err)
 	}
 }
@@ -297,7 +297,7 @@ func TestAppendRequiresLogicVersionOnClassification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := appendErr(s, o.IncidentID, incident.EvClassified, `{"severity":"yellow"}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
+	if err := appendErr(t, s, o.IncidentID, incident.EvClassified, `{"severity":"yellow"}`, 0); !errors.Is(err, incident.ErrIllegalTransition) {
 		t.Fatalf("classification without a logic version: err = %v, want ErrIllegalTransition", err)
 	}
 	owner := c.Owner(t, pg.StoreOperational)
@@ -367,7 +367,7 @@ func TestAppendValidatesMergeTarget(t *testing.T) {
 	appendEv(t, s, closed, incident.EvClosed, `{"reason":"test_call"}`, "")
 	appendEv(t, s, merged, incident.EvMerged, `{"into":"`+live.String()+`"}`, "")
 	merge := func(into string) error {
-		return appendErr(s, src, incident.EvMerged, `{"into":"`+into+`"}`, 0)
+		return appendErr(t, s, src, incident.EvMerged, `{"into":"`+into+`"}`, 0)
 	}
 	for _, tc := range []struct {
 		into string

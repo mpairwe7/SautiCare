@@ -25,7 +25,7 @@ func dispatchedIncident(t *testing.T, s *opstore.Store) incident.Opened {
 
 func dispatchedAs(t *testing.T, s *opstore.Store, sev incident.Severity) incident.Opened {
 	t.Helper()
-	o, err := s.OpenIncident(context.Background(), openParams(t))
+	o, err := s.OpenIncident(pgtest.Context(t), openParams(t))
 	if err != nil {
 		t.Fatal(err)
 	}
