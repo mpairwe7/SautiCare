@@ -470,10 +470,14 @@ func TestOneAlertPerResponder(t *testing.T) {
 		t.Fatalf("alerted for the nearer incident: %v", err)
 	}
 
-	// An alert on a merged incident does not hold its responder.
+	// An incident merges only once its alerts in flight are stood down
+	// (0018 I7); its responder is then free for the surviving incident.
 	tr := r.responder(t, responder.RoleTransporter)
 	merged := dispatchedIncident(t, r.intake).IncidentID
-	r.issue(t, merged, tr, responder.RoleTransporter)
+	inFlight := r.issue(t, merged, tr, responder.RoleTransporter)
+	if ok, err := r.dispatcher.CloseAlert(ctx, inFlight.AlertID, dispatch.OutcomeStoodDown); err != nil || !ok {
+		t.Fatalf("stand down before the merge: %v %v", ok, err)
+	}
 	appendEv(t, r.intake, merged, incident.EvMerged, `{"into":"`+nearer.String()+`"}`, "")
 	r.issue(t, nearer, tr, responder.RoleTransporter)
 

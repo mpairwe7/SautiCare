@@ -78,13 +78,20 @@ func holdResponderRow(ctx context.Context, t *testing.T, c *pgtest.TestCluster, 
 
 // 4557205856: one responder accepting alerts for two incidents at the same
 // instant is assigned to exactly one. The incident locks differ, so the
-// acceptances serialise on the responder row before the busy check.
+// acceptances serialise on the responder row before the busy check. A
+// responder holds one pending alert at a time (0042), so the first alert
+// lapses before the second is issued; with its role still open it can still
+// be accepted (0041).
 func TestAcceptsSerialisePerResponder(t *testing.T) {
 	r := newDispatchRig(t)
-	ctx := bounded(t)
 	other := dispatchedIncident(t, r.intake).IncidentID
 	tr := r.responder(t, responder.RoleTransporter)
-	alerts := []uuid.UUID{r.issue(t, r.incident, tr, responder.RoleTransporter).AlertID, r.issue(t, other, tr, responder.RoleTransporter).AlertID}
+	first := r.issue(t, r.incident, tr, responder.RoleTransporter).AlertID
+	if ok, err := r.dispatcher.CloseAlert(context.Background(), first, dispatch.OutcomeNoResponse); err != nil || !ok {
+		t.Fatalf("lapse: %v %v", ok, err)
+	}
+	alerts := []uuid.UUID{first, r.issue(t, other, tr, responder.RoleTransporter).AlertID}
+	ctx := bounded(t)
 
 	release := holdResponderRow(ctx, t, r.c, tr)
 	results := make([]dispatch.AcceptOutcome, 2)
