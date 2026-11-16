@@ -7,7 +7,8 @@ This tutorial is for anyone presenting or trying the prototype. By the end you w
 - started the whole system on your computer with one command;
 - reported an emergency from a simulated basic phone;
 - had a responder accept it on another simulated phone;
-- watched the dispatch board follow the incident;
+- watched the dispatch board, the map and the activity feed follow the incident;
+- let the page play scenarios on the phones, and let the responders answer by themselves;
 - verified the tamper-evident audit ledger.
 
 The same prototype is packaged for a Hugging Face Space (see [the demo runbook](../runbooks/demo-hf-space.md)). Running it locally needs no internet once it is built, so it is a dependable fallback for a presentation.
@@ -23,7 +24,9 @@ One command, `bin/demo`, starts all of the following on your computer only:
 - a simulated SMS provider;
 - a web page at http://127.0.0.1:7860 with:
   - two caller phones;
-  - nine responder phones;
+  - seven responder phones;
+  - live figures, a map of the wards and an activity feed;
+  - buttons that play scenarios on the phones, and a responder autopilot;
   - the dispatch board;
   - an audit-ledger check;
   - a Reset button.
@@ -108,14 +111,18 @@ time=... level=INFO msg="demo ready"
 
 ## 6. Open the page
 
-Open **http://127.0.0.1:7860** in a browser. The page has a banner and three numbered panels:
+Open **http://127.0.0.1:7860** in a browser. Under the banner, **Verify audit ledger** and **Reset demo** sit at the top right. Then, from top to bottom:
 
-1. **Caller phone.** Tabs for **Caller A** and **Caller B**. Each phone has a screen, a **Dial** button for the emergency code, a keypad, a reply box with a green call or reply button, **End**, and an **SMS inbox**.
-2. **Responder phones.** One tab per responder:
-   - **Test Ward 1:** VHT 1, VHT 2, VHT 3, Transporter 1, Transporter 2;
-   - **Test Ward 2:** VHT 4, Transporter 3;
-   - **Test Wards 3 and 4:** nobody.
-3. **Dispatch board.** It reads "No incidents yet" until a call comes in. At the top are **Verify audit ledger** and **Reset demo**.
+- **Five live figures:** open incidents by severity, the median time from call to acceptance (T1 to T4), alerts by outcome, escalations, and SMS sent. All read 0 for now.
+- **Play a scenario:** five buttons that play a whole scenario on the phones, and the **Responder autopilot** beside them. Step 8 uses both.
+- **1. Caller phone.** Tabs for **Caller A** and **Caller B**. Each phone has a screen, a **Dial** button for the emergency code, a keypad, a reply box with a green call or reply button, **End**, and an **SMS inbox**.
+- **2. Responder phones.** One tab per responder:
+  - **Test Ward 1:** VHT 1, VHT 2, VHT 3, Transporter 1, Transporter 2;
+  - **Test Ward 2:** VHT 4, Transporter 3;
+  - **Test Wards 3 and 4:** nobody.
+- **Map of the wards.** The four placeholder wards and their landmarks. Each responder is a small square in their ward (`V1` is VHT 1, `T2` is Transporter 2). A key under the map explains the marks.
+- **Activity.** Every event and SMS, newest first, each tagged with the service that produced it: `intake-gw`, `dispatch-worker`, `outbox-relay` or `SMS`.
+- **3. Dispatch board.** It reads "No incidents yet" until a call comes in.
 
 Phone numbers are always shown masked (`+256•••••••••`). That is deliberate: the system never reveals a caller's number.
 
@@ -154,14 +161,15 @@ Then:
 
 1. **The responders get the alert.** Within a few seconds, all five Test Ward 1 responders (VHT 1 to 3 and Transporters 1 and 2) have this SMS:
    `PENDING-SMS Sauti 284 262 7491: RED Injury or accident. Dial *384*2# to accept or decline.`
-   The board shows the incident as **RED** with its timeline.
+   The board shows the incident as **RED** with its timeline. On the map, a red pin marked `R` appears at Test Clinic 1, with a dashed blue line from each of the five responders: their alerts wait for an answer. The **Activity** feed lists each step, such as `intake-gw` "Triaged RED by rule red-danger-sign" and `dispatch-worker` "Alert to VHT 1: ring 1, wave 1", and notes when `outbox-relay` sealed each event into the audit ledger.
 2. **VHT 1 accepts.** Open **VHT 1** and dial `*384*2#`. The menu shows `PENDING-RESPONDER Sauti 284 262 7491: RED Injury or accident` with `1 Accept`, `2 Decline` and `3 Availability`. Press `1`:
    `PENDING-RESPONDER Accepted 284 262 7491. Go to Test Clinic 1, Test Ward 1. Caller: Sauti bridge line.`
    The responder never sees the caller's number, only the masked bridge line.
 3. **The first acceptance wins, for each role.** A few seconds later, VHT 2 and VHT 3 get `PENDING-SMS Sauti 284 262 7491: no longer needed. Thank you.`, and their `*384*2#` menu shows `PENDING-RESPONDER Sauti: no active alert.` with only `3 Availability`. Caller A's inbox gets `PENDING-SMS Sauti 284 262 7491: help is on the way.` The transporters keep their alerts: a transporter accepts separately.
 4. **Transporter 1 accepts.** Open **Transporter 1**, dial `*384*2#` and press `1`. The menu is the same as VHT 1's, and the answer is:
    `PENDING-RESPONDER Accepted 284 262 7491. Go to Test Clinic 1, Test Ward 1. Caller: Sauti bridge line.`
-   Transporter 2 then gets `PENDING-SMS Sauti 284 262 7491: no longer needed. Thank you.` The board shows the incident as **Help assigned**, with VHT 1 and Transporter 1 accepted and the other three alerts stood down.
+   Transporter 2 then gets `PENDING-SMS Sauti 284 262 7491: no longer needed. Thank you.` The board shows the incident as **Help assigned**, with VHT 1 and Transporter 1 accepted and the other three alerts stood down. On the map, the two acceptances are solid green lines and the stood-down alerts thin grey ones. In the card, **Wave 1** lists each alerted responder with their outcome and how long it took, and the timeline bar shows the intervals from the call to the acceptance. **Call to acceptance** at the top now shows that time.
+5. **Find the incident from the map.** Click the red pin, or press Tab until it has focus and press Enter. The page scrolls to the incident's card and outlines it. Pointing at a card lights its pin on the map.
 
 ### Scenario B: a responder declines (about 1 minute)
 
@@ -190,7 +198,33 @@ The caller still sees `HELP IS COMING` with an incident number. No responder can
 
 The demo records the escalation but calls nobody: voice is not part of it. In production, each recorded escalation makes ivr-controller call a coordinator ([ADR-0034](../adr/ADR-0034-every-failure-path-ends-with-a-person.md)).
 
-## 8. Verify the audit ledger
+## 8. Let the page play the scenarios
+
+The **Play a scenario** buttons replay the scenarios above, and two more, on the same phones. They press the same keys through the same USSD service as you did, one screen at a time, so the audience sees every screen.
+
+1. Click **Red injury, accepted**. Each scenario starts from a fresh demo, so if the board holds incidents, the page asks before it erases them. Click **OK**.
+2. Watch the status line under the buttons. It reads, for example, `Red injury, accepted. Step 3 of 6: Waiting for the alerts to VHT 1, VHT 2 and Transporter 1.` The phones being dialled show a notice and their keys are locked until the scenario ends.
+3. After about 20 seconds the line reads `Red injury, accepted: done.`, followed by the incident number, who accepted, and the time from call to acceptance, all read from the board.
+
+To stop a scenario part way, click **Cancel scenario**. The five scenarios are:
+
+| Button | What it shows | Takes about |
+|---|---|---|
+| **Red injury, accepted** | Scenario A: five alerts at once; VHT 1 and Transporter 1 accept | 20 s |
+| **A decline cascades** | Scenario B: VHT 4 declines and a VHT in Test Ward 1 is alerted in wave 2 | 15 s |
+| **Nobody nearby, escalated** | Scenario C: both roles escalate to a coordinator | 15 s |
+| **A surge of five calls** | Five red calls in a row from Test Ward 2 while VHT 4 accepts one; every call is dispatched | 45 s |
+| **Two calls, one emergency** | Callers A and B report the same emergency; the second call merges into the first | 20 s |
+
+Now let the responders answer by themselves:
+
+1. Under **Responder autopilot**, tick **Answer new alerts on the responder phones**. The line under it reads `On. New alerts are answered on the responder phones after the delay.`
+2. Set the sliders. Each share is the chance that a responder accepts, declines or ignores an alert; the percentages beside them always add up to 100.
+3. Report an emergency on a caller phone, as in scenario A. After the delay you chose, the responder phone dials `*384*2#` by itself and presses `1` or `2`. The line reports it, for example `VHT 4 accepted 233 039 2428 on *384*2#.`
+
+The autopilot answers each alert at most once, and only alerts sent while it is on. An ignored alert stays unanswered until dispatch marks it **no response**, 90 seconds after it was sent. The autopilot waits while a scenario plays.
+
+## 9. Verify the audit ledger
 
 Press **Verify audit ledger**. The prototype:
 
@@ -200,7 +234,7 @@ Press **Verify audit ledger**. The prototype:
 
 After the scenarios above it reports **Audit ledger verified**, with counts such as 33 entries, checkpoint and witness OK, and 0 drift. Every step a caller, responder or system took is in that ledger, and changing any of it would make this check fail.
 
-## 9. Reset, stop and start again
+## 10. Reset, stop and start again
 
 - **Reset demo** erases everything and re-registers the responders, without restarting. Use it between audiences.
 - **To stop,** press **Ctrl-C** in the terminal from step 5. The prototype stops every part within a few seconds and deletes its data.
@@ -208,7 +242,7 @@ After the scenarios above it reports **Audit ledger verified**, with counts such
 
 Seeded responders are marked available for 8 hours. After that, a responder switches back on through `*384*2#`, then `3`, then `1`, or you press **Reset demo**.
 
-## 10. Optional: run it in a container instead
+## 11. Optional: run it in a container instead
 
 If Docker with Docker Compose is installed, you can skip steps 3–5. From the `SautiCare` directory:
 
