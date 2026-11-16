@@ -144,6 +144,12 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; font-weight: 600; }
 /* Page layout: phones, then activity, the queue and the map. */
 .layout { display: grid; gap: 20px; padding: 20px 24px 24px; }
 .phones { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); align-items: start; }
+/* Each phone panel's four rows (title and switch, hint, tabs, phone) share
+   the row tracks of the panels beside it, so the phones line up even when
+   one panel's switch or tabs wrap onto another line ("Transporter" is the
+   longest title, and it has the most tabs after VHT). */
+.panel-phone { display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 0; align-content: start; }
+.panel-phone > * { align-self: start; min-width: 0; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; min-width: 0; }
 .panel h2 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
 .panel-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
