@@ -228,7 +228,9 @@ export async function runScenario(sc, deps, onStatus = () => {}) {
       await RUN[s.kind](s, deps, vars);
       deps.signal.throwIfAborted();
     }
-    status = next(status, { type: "done", result: sc.result(await deps.board(), vars) });
+    const b = await deps.board();
+    deps.signal.throwIfAborted();
+    status = next(status, { type: "done", result: sc.result(b, vars) });
   } catch (err) {
     status = next(status, deps.signal.aborted ? { type: "cancel" } : { type: "fail", reason: err.message });
   }

@@ -105,6 +105,13 @@ test("cancelling stops the run before its next keypress", async () => {
   assert.deepEqual(demo.calls.at(-1), ["caller-a", "3"], "no key is sent after the cancel");
 });
 
+test("a cancel while the final board is read ends the run cancelled, not done", async () => {
+  const demo = fakeDemo();
+  const sc = { id: "one", title: "One", steps: [{ kind: "pause", label: "A pause", ms: 1 }], result: () => "finished" };
+  demo.deps.board = async () => { demo.ctl.abort(); return { incidents: [] }; };
+  assert.deepEqual(await runScenario(sc, demo.deps), { phase: "cancelled", id: "one", step: 0 });
+});
+
 test("a decline that asks why answers with the last reason", async () => {
   const demo = fakeDemo({ alerts: [["VHT 4", "vht"]], reasons: true });
   await demo.deps.ussd("caller-b", { code: codes.caller });
