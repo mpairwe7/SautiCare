@@ -51,17 +51,17 @@ const fixed = (n) => n.toFixed(1);
 export function renderMap(mount, lay, selected, onSelect) {
   const focused = mount.contains(document.activeElement) ? document.activeElement.dataset.inc : "";
   const pins = lay.incidents.map((p) => {
-    const name = `Incident ${p.ref}, ${SEVERITY_NAMES[p.severity]}, ${p.merged ? "merged" : p.active ? "open" : "closed"}, at ${p.place}`;
+    const name = `${LETTER[p.severity]} ${p.ref.slice(-4)}: incident ${p.ref}, ${SEVERITY_NAMES[p.severity]}, ${p.merged ? "merged" : p.active ? "open" : "closed"}, at ${p.place}`;
     return svg("g", { class: `pin sev-${p.severity}${p.active ? " active" : ""}${p.merged ? " merged" : ""}${p.id === selected ? " hl" : ""}`,
       transform: `translate(${fixed(p.x)} ${fixed(p.y)})`, tabindex: "0", role: "button", "aria-label": name, "data-inc": p.id,
       onclick: () => onSelect(p.id),
       onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(p.id); } } },
-    svg("title", { text: name }),
     p.active ? svg("circle", { class: "pulse", r: PIN_R }) : null,
     svg("circle", { class: "ring", r: PIN_R + 4 }),
     svg("circle", { class: "dot", r: PIN_R }),
     svg("text", { class: "letter", y: "4.5", text: LETTER[p.severity] }),
-    svg("text", { class: "pin-label", x: fixed(p.label.x - p.x), y: fixed(p.label.y - p.y), "text-anchor": p.label.anchor, text: p.ref.slice(-4) }));
+    // SVG drops the leading space when drawing, but it keeps the pin's text "R 2170", as in its name (WCAG 2.5.3).
+    svg("text", { class: "pin-label", x: fixed(p.label.x - p.x), y: fixed(p.label.y - p.y), "text-anchor": p.label.anchor, text: " " + p.ref.slice(-4) }));
   });
   const el = svg("svg", { class: "map-svg", viewBox: `0 0 ${lay.width} ${lay.height}`, role: "group", "aria-labelledby": "map-h", "aria-describedby": "map-summary" },
     svg("g", {}, lay.wards.map((w, i) => svg("polygon", { class: `ward t${i % 4}`, points: w.cell.map(([x, y]) => `${fixed(x)},${fixed(y)}`).join(" ") }))),

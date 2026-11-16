@@ -128,6 +128,12 @@ The repository owner, by the team's usual chat. The demo holds no clinical matte
 6. The map shows a red pin at Test Clinic 1 with solid green lines from VHT 1 and Transporter 1 once they accept, and the activity feed lists the events tagged `intake-gw`, `dispatch-worker` and `SMS`, each sealed by `outbox-relay`.
 7. Click each **Play a scenario** button in turn. Each status line ends with "done" and a result read from the board.
 8. Automated: `cmd/demo/main_integration_test.go::TestDemoScenario1OverHTTP` runs steps 2–5 over HTTP, then Reset and SIGTERM. `SAUTI_DEMO_URL=<url> go test -tags integration ./cmd/demo/ -run TestDemoEdgeCases` runs the flows the scenario buttons play. `node --test cmd/demo/webtest/*.test.js` tests the page's figures, feed, map layout, scenario runner and autopilot.
+9. Accessibility, to WCAG 2.2 AA, at widths from 320 to 1920 px:
+   - axe-core (WCAG 2.2 A and AA rules) reports no violations, on the idle page and after the scenarios. Run it once animations have settled: new feed items fade in for 0.5 s.
+   - From a fresh load, the first Tab lands on "Skip to the dispatch board". Tab reaches every scenario button, the autopilot controls, each map pin and the activity feed, and each shows a focus ring.
+   - With every incident section open, the page never scrolls sideways, and every control is at least 24 by 24 px.
+   - With reduced motion set in the browser or OS, the pins do not pulse and the alert lines do not move.
+   - A pin's name starts with what it shows, for example "R 3390: incident 213 750 3390, red, open, at Test Clinic 1", so speech input can name it.
 
 ## References
 - [ADR-0039](../adr/ADR-0039-public-demo-on-hugging-face.md) (the conditions), [ADR-0008](../adr/ADR-0008-interim-hosting-and-confidentiality.md) (confidential documents), [ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md) (channels)
