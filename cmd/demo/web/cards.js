@@ -1,14 +1,19 @@
-// One dispatch-board card per incident: its facts, the response timeline,
-// the alert cascade and the full tables.
+// The live queue: one compact row per incident, most urgent first, and the
+// selected incident in full beside it: its facts, the response timeline, the
+// alert waves and the tables. Readings are plain text in a text-safe colour.
 import { h, svg, clock } from "./dom.js";
 import { ended, mmss, words } from "./format.js";
 import { timeline, cascade } from "./metrics.js";
 import { OUTCOME_NAMES } from "./views.js";
+import { groupOf, overdue, roleCell, counts, filtered, GROUP_NAMES } from "./queue.js";
 
 const tNames = { T1: "call", T2: "ready to dispatch", T3: "first alert", T4: "accepted", T5: "arrived", T6: "departed", T7: "at facility" };
 const stateNames = { intake: "Taking the call", triaged: "Triaged", dispatching: "Finding help", assigned: "Help assigned",
   on_scene: "On scene", transporting: "Transporting", at_facility: "At facility", closed: "Closed", merged: "Merged" };
 const GLYPH = { pending: "…", accepted: "✓", declined: "✕", no_response: "○", stood_down: "↓" };
+const TONE = { pending: "pending", accepted: "accepted", declined: "declined", no_response: "declined", stood_down: "none" };
+const STATE_TONE = { waiting: "pending", assigned: "accepted", escalated: "declined", done: "none" };
+export const SEV_WORD = { red: "Red", yellow: "Yellow", green: "Green", none: "Unclassified" };
 
 export const since = (from, to) => mmss(to - from);
 
@@ -53,28 +58,28 @@ export function timelineChart(inc, now, width) {
     "aria-label": `Response timeline from the call: ${label}.${open ? "" : " Ended."}` }, blocks, ticks);
 }
 
-// cascadeView shows the alert waves as columns, one chip per alert, and the
-// escalations to a coordinator as a last column.
+// cascadeView lists the alert waves, one row per alert with its outcome in
+// colour, and the escalations to a coordinator last.
 function cascadeView(inc) {
   const waves = cascade(inc);
   if (!waves.length && !inc.escalations.length) return null;
   const cols = waves.map((w) => h("section", { class: "wave" }, h("h4", { text: "Wave " + w.wave }),
-    h("ul", {}, w.alerts.map((a) => h("li", { class: "chip-a o-" + a.outcome },
-      h("span", {}, h("b", { text: a.responder }), h("span", { class: "chip-meta", text: `, ring ${a.ring}` })),
-      h("span", { class: "chip-out" }, h("span", { "aria-hidden": "true", text: GLYPH[a.outcome] || "" }),
+    h("ul", {}, w.alerts.map((a) => h("li", { class: "alert-row" },
+      h("span", {}, h("b", { text: a.responder }), h("span", { class: "alert-meta", text: `, ring ${a.ring}` })),
+      h("span", { class: "alert-out tone-" + (TONE[a.outcome] || "none") }, h("span", { "aria-hidden": "true", text: GLYPH[a.outcome] || "" }),
         ` ${OUTCOME_NAMES[a.outcome] || a.outcome}${a.reason ? ": " + words(a.reason) : ""}${a.took === null ? "" : " after " + mmss(a.took)}`))))));
   if (inc.escalations.length) {
     cols.push(h("section", { class: "wave wave-esc" }, h("h4", { text: "Coordinator" }),
-      h("ul", {}, inc.escalations.map((e) => h("li", { class: "chip-a esc" },
-        h("b", { text: "Escalated" }), h("span", { class: "chip-meta", text: words(e.reason) + (e.role ? ` (${e.role})` : "") }))))));
+      h("ul", {}, inc.escalations.map((e) => h("li", { class: "alert-row" },
+        h("b", { class: "tone-declined", text: "Escalated" }), h("span", { class: "alert-meta", text: words(e.reason) + (e.role ? ` (${e.role})` : "") }))))));
   }
-  return h("div", { class: "cascade", role: "group", "aria-label": "Alert cascade" }, cols);
+  return h("div", { class: "cascade", role: "group", "aria-label": "Alert waves" }, cols);
 }
 
-// renderIncident builds a card. ctx: open (the details opened), now (the
-// server's clock), selected (the incident picked on the map) and
-// onHover(id or ""). Its timeline mount is filled once the card is on the
-// page and has a width (timelineChart).
+// renderIncident builds the selected incident's detail. ctx: open (the
+// details opened), now (the server's clock), onHover(id or ""), onClose(id)
+// and closing (the close under way or its answer). Its timeline mount is
+// filled once it is on the page and has a width (timelineChart).
 export function renderIncident(inc, ctx) {
   const t1 = inc.t.T1 ? new Date(inc.t.T1) : null;
   const sev = inc.severity || "none";
@@ -84,6 +89,7 @@ export function renderIncident(inc, ctx) {
     h("small", { text: open ? "since T1" : "T1 to last" }));
   const facts = [inc.category, inc.ward, inc.landmark].filter(Boolean).join(" · ") || "Answers not given yet";
   const tags = [];
+  if (inc.mergedInto) tags.push(h("li", { text: "Merged into another call" }));
   if (inc.escalated) tags.push(h("li", { class: "esc", text: "Escalated to a coordinator" }));
   for (const f of inc.flags || []) tags.push(h("li", { text: words(f) }));
   if (inc.location) tags.push(h("li", { text: "located by " + inc.location }));
@@ -111,17 +117,78 @@ export function renderIncident(inc, ctx) {
   kids.push(details(ctx.open, inc.id + ":events", "Event timeline (" + inc.events.length + ")",
     table(["#", "Time", "Event", "Actor", "Coded payload"], inc.events.map((e) => [
       String(e.seq), clock(new Date(e.at)), e.type, e.actor, h("span", { class: "payload", text: e.payload })]))));
-  return h("article", { class: "incident " + sev + (inc.id === ctx.selected ? " selected" : ""), id: "inc-" + inc.id, tabindex: "-1",
+  const closable = !ended(inc);
+  const closing = ctx.closing && ctx.closing.id === inc.id ? ctx.closing : null;
+  const actions = closable ? h("div", { class: "detail-actions" },
+    h("button", { type: "button", class: "btn btn-quiet btn-small", disabled: Boolean(closing && closing.busy), onclick: () => ctx.onClose(inc.id),
+      text: "Close incident" }),
+    h("p", { class: closing && closing.bad ? "bad" : "", role: "status",
+      text: closing && closing.text ? closing.text : "Alerts still waiting are stood down and the responders freed. A stand-in for the M5 console." })) : null;
+  return h("article", { class: "incident", id: "inc-" + inc.id, tabindex: "-1",
     "aria-labelledby": "ref-" + inc.id, "data-inc": inc.id,
     onmouseenter: () => ctx.onHover(inc.id), onmouseleave: () => ctx.onHover(""),
     onfocusin: () => ctx.onHover(inc.id), onfocusout: () => ctx.onHover("") },
   h("div", { class: "inc-head" },
-    h("span", { class: "chip " + sev, text: sev === "none" ? "UNCLASSIFIED" : sev.toUpperCase() }),
+    h("span", { class: "sev " + sev }, h("span", { class: "sev-dot " + sev, "aria-hidden": "true" }), SEV_WORD[sev]),
     h("h3", { id: "ref-" + inc.id, "aria-label": "Incident " + (inc.reference || ""), text: inc.reference || "—" }),
-    h("span", { class: "state", text: stateNames[inc.state] || inc.state }),
+    h("span", { class: "state tone-" + STATE_TONE[groupOf(inc)], text: stateNames[inc.state] || inc.state }),
     clockEl),
   h("p", { class: "facts", text: facts }),
   tags.length ? h("ul", { class: "tags" }, tags) : null,
+  actions,
   h("div", { class: "tl-mount", "data-tl": inc.id }),
   ttimes, cascadeView(inc), kids);
+}
+
+// waitClock: the time since the call, live while open, as the detail's.
+function waitClock(inc, now) {
+  const t1 = inc.t.T1 ? Date.parse(inc.t.T1) : null;
+  const open = groupOf(inc) !== "done";
+  const last = Math.max(...Object.values(inc.t).map((v) => Date.parse(v)));
+  const late = overdue(inc, now);
+  return h("span", { class: "q-wait clock-q" + (late ? " overdue" : ""), "data-t1": t1 && !ended(inc) ? inc.t.T1 : null },
+    t1 ? mmss((ended(inc) ? last : now) - t1) : "—",
+    h("small", { text: late ? "no one yet" : open ? "since call" : "call to end" }));
+}
+
+function roleText(inc, role, name) {
+  const c = roleCell(inc, role);
+  const what = c.who ? `${c.who} ${c.text}` : c.text;
+  return h("span", { class: "q-role" }, h("b", { text: name }), h("span", { class: "tone-" + c.tone, text: what + (c.ms !== null ? " in " + mmss(c.ms) : "") }));
+}
+
+// renderQueue draws the filter buttons and the rows, and returns the rows
+// shown. ctx: filter, selected, now, empty (the text for no incidents),
+// onFilter(group), onSelect(id), onHover(id or "").
+export function renderQueue(filters, list, incidents, ctx) {
+  const n = counts(incidents);
+  filters.replaceChildren(...["all", "waiting", "assigned", "escalated", "done"].map((g) => h("button", { type: "button", class: "filter",
+    "aria-pressed": String(ctx.filter === g), onclick: () => ctx.onFilter(g) }, GROUP_NAMES[g], h("span", { text: String(n[g]) }))));
+  const rows = filtered(incidents, ctx.filter);
+  if (!incidents.length) {
+    list.replaceChildren(h("p", { class: "placeholder", text: ctx.empty }));
+    return rows;
+  }
+  if (!rows.length) {
+    list.replaceChildren(h("p", { class: "placeholder", text: `No ${GROUP_NAMES[ctx.filter].toLowerCase()} incidents.` }));
+    return rows;
+  }
+  list.replaceChildren(h("div", { class: "queue-head", "aria-hidden": "true" }, h("span", { text: "Priority" }), h("span", { text: "Incident" }),
+    h("span", { text: "Responders" }), h("span", { class: "q-wait", text: "Wait" })),
+  ...rows.map((inc) => {
+    const sev = inc.severity || "none";
+    const group = groupOf(inc);
+    const where = [inc.landmark && inc.landmark !== "other" ? inc.landmark : "", inc.ward].filter(Boolean).join(", ");
+    return h("button", { type: "button", class: "qrow" + (group === "done" ? " done" : ""), "aria-pressed": String(inc.id === ctx.selected), "data-inc": inc.id,
+      "aria-label": `${SEV_WORD[sev]} incident ${inc.reference}, ${stateNames[inc.state] || inc.state}`,
+      onclick: () => ctx.onSelect(inc.id), onmouseenter: () => ctx.onHover(inc.id), onmouseleave: () => ctx.onHover(""),
+      onfocus: () => ctx.onHover(inc.id), onblur: () => ctx.onHover("") },
+    h("span", { class: "q-sevcell sev " + sev }, h("span", { class: "sev-dot " + sev, "aria-hidden": "true" }), SEV_WORD[sev]),
+    h("span", { class: "q-main" }, h("span", { class: "q-ref", text: inc.reference || "—" }),
+      h("span", { class: "q-sub", text: [inc.category, where].filter(Boolean).join(" · ") || "Answers not given yet" })),
+    h("span", { class: "q-who" }, h("span", { class: "q-state tone-" + STATE_TONE[group], text: stateNames[inc.state] || inc.state }),
+      roleText(inc, "vht", "VHT"), roleText(inc, "transporter", "Transport")),
+    waitClock(inc, ctx.now));
+  }));
+  return rows;
 }

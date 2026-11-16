@@ -198,9 +198,10 @@ func TestDemoEdgeCases(t *testing.T) {
 	// Scalable MVP Stack, §Edge cases, row 14 (more emergencies than free
 	// responders). Ours matches the reference (ADR-0028): queue by severity,
 	// drop nothing. The board lists the newest first and the queue order is
-	// internal (op.dispatch_surge), so only "nothing dropped" is observable.
-	// Distinct categories keep the calls apart (ADR-0022 merges the same
-	// category nearby).
+	// internal (op.dispatch_surge), so only "nothing dropped" is observable,
+	// and, since ADR-0044, that no responder holds two alerts: a call nobody
+	// is free for waits in dispatch. Distinct categories keep the calls apart
+	// (ADR-0022 merges the same category nearby).
 	t.Run("Surge", func(t *testing.T) {
 		c := freshDemo(t, base)
 		refs := map[string]bool{}
@@ -210,15 +211,19 @@ func TestDemoEdgeCases(t *testing.T) {
 		if len(refs) != 5 {
 			t.Fatalf("%d distinct incident numbers for 5 calls", len(refs))
 		}
-		eventually(t, "every surge call dispatching on the board", 60*time.Second, func() bool {
+		eventually(t, "every surge call dispatching on the board, each responder holding one alert at most", 60*time.Second, func() bool {
 			b := getBoard(c)
+			alerted := 0
 			for ref := range refs {
 				in := byRef(b, ref)
-				if in == nil || in.Severity != "red" || in.MergedInto != "" || len(in.Alerts)+len(in.Escalations) == 0 {
+				if in == nil || in.Severity != "red" || in.MergedInto != "" || in.State != "dispatching" && len(in.Alerts) == 0 {
 					return false
 				}
+				if len(in.Alerts) > 0 {
+					alerted++
+				}
 			}
-			return true
+			return alerted > 0 && oneAlertEach(b)
 		})
 		auditOK(t, c)
 	})
@@ -236,11 +241,16 @@ func TestDemoEdgeCases(t *testing.T) {
 		}
 		eventually(t, "every repeat call dispatched", 30*time.Second, func() bool {
 			b := getBoard(c)
-			for _, ref := range refs {
+			for i, ref := range refs {
+				// The first call takes Test Ward 1's responders; the others
+				// wait for one to be free (one alert per responder, ADR-0044).
 				in := byRef(b, ref)
-				if in == nil || in.State != "dispatching" || len(in.Flags) != 0 || len(in.Alerts) == 0 {
+				if in == nil || in.State != "dispatching" || len(in.Flags) != 0 || i == 0 && len(in.Alerts) == 0 {
 					return false
 				}
+			}
+			if !oneAlertEach(b) {
+				return false
 			}
 			return len(b.Incidents) == len(refs)
 		})
@@ -420,6 +430,26 @@ func getBoard(c client) board {
 		c.t.Fatalf("GET /api/board: %d", st)
 	}
 	return b
+}
+
+// oneAlertEach: no responder holds two pending alerts on open incidents
+// (ADR-0044).
+func oneAlertEach(b board) bool {
+	held := map[string]int{}
+	for _, in := range b.Incidents {
+		if in.State != "dispatching" && in.State != "assigned" && in.State != "on_scene" {
+			continue
+		}
+		for _, a := range in.Alerts {
+			if a.Outcome == "pending" {
+				held[a.Responder]++
+				if held[a.Responder] > 1 {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func byRef(b board, ref string) *boardIncident {

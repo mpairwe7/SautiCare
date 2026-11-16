@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"slices"
 	"time"
+	"uuid"
 
+	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/responder"
 )
@@ -34,6 +36,37 @@ type Candidate struct {
 	Cell      location.Cell // the responder's stage
 	Distance  int           // Chebyshev distance from the incident cell
 	History   History
+	// Moves is the pending alert the responder holds for a farther, no more
+	// urgent incident (zero: none). Alerting them for this one stands that
+	// alert down first: one alert per responder, for the nearest incident.
+	Moves uuid.UUID
+}
+
+// Holding is a pending alert a responder holds for another incident: how far
+// that incident is from them, and how urgent it is.
+type Holding struct {
+	AlertID  uuid.UUID
+	Distance int
+	Severity incident.Severity
+}
+
+// urgency orders severities, most urgent first. Anything that is not yellow
+// or green is planned as red (a triage error makes an incident red, rule 3.3).
+func urgency(s incident.Severity) int {
+	switch s {
+	case incident.SevYellow:
+		return 1
+	case incident.SevGreen:
+		return 2
+	}
+	return 0
+}
+
+// Movable reports whether a responder at distance here from an incident of
+// severity sev may be moved to it from the alert they hold: only to a
+// strictly nearer incident, and never away from a more urgent one (ADR-0044).
+func Movable(here int, sev incident.Severity, h Holding) bool {
+	return here < h.Distance && urgency(sev) <= urgency(h.Severity)
 }
 
 // Eligible returns the responders of role who pass the gates, have an open

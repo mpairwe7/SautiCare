@@ -7,8 +7,10 @@ const labelOf = (id) => id.replace(/^(\w)(\w*)-(\d+)$/, (_, a, b, n) => (a === "
 
 // fakeDemo answers the USSD API as intake-gw does, far enough for the
 // scenarios: Tool 1's eight answers end with an incident number; each call
-// alerts the responders named in `alerts`; the responder menu offers a
-// responder's latest pending alert. Its board follows.
+// alerts the responders named in `alerts` who hold no other pending alert
+// (one alert per responder, ADR-0044; the calls are all at one place, so
+// none is nearer); the responder menu offers a responder's pending alert.
+// Its board follows.
 function fakeDemo({ alerts = [], reasons = false } = {}) {
   const calls = [];
   const sessions = new Map();
@@ -16,6 +18,7 @@ function fakeDemo({ alerts = [], reasons = false } = {}) {
   let n = 0;
   let clock = 0;
   const latest = (label) => incidents.flatMap((i) => i.alerts.filter((a) => a.responder === label && a.outcome === "pending").map((a) => [i, a]))[0];
+  const busy = (label) => incidents.some((i) => !["closed", "merged"].includes(i.state) && i.alerts.some((a) => a.responder === label && a.outcome === "accepted"));
   const screen = (session, text, end) => ({ status: 200, data: { session: end ? "" : session, text, end } });
   const ussd = async (phone, body) => {
     calls.push([phone, body.code || body.input]);
@@ -33,7 +36,7 @@ function fakeDemo({ alerts = [], reasons = false } = {}) {
       if (s.inputs.length < 8) return screen(body.session, "PENDING-TOOL1 screen " + (s.inputs.length + 1), false);
       const ref = `853 402 446${incidents.length}`;
       incidents.unshift({ id: "i" + incidents.length, reference: ref, severity: "red", state: "dispatching", t: { T1: new Date(0).toISOString() },
-        escalations: [], events: [], alerts: alerts.map((r, k) => ({ id: ref + k, responder: r[0], role: r[1], wave: 1, outcome: "pending" })) });
+        escalations: [], events: [], alerts: alerts.filter((r) => !latest(r[0]) && !busy(r[0])).map((r, k) => ({ id: ref + k, responder: r[0], role: r[1], wave: 1, outcome: "pending" })) });
       return screen(body.session, `HELP IS COMING\nIncident ${ref}\nPENDING-TOOL1 first aid line`, true);
     }
     const [inc, a] = s.hit;
@@ -122,14 +125,14 @@ test("a decline that asks why answers with the last reason", async () => {
   await assert.rejects(answerAlert(demo.deps, "vht-4", "853 402 4460", "accept"), /did not offer the alert/, "an alert is answered once");
 });
 
-test("the responder menu offers the latest of two pending alerts", async () => {
+test("a responder holds one alert: a second call does not alert them while the first waits", async () => {
   const demo = fakeDemo({ alerts: [["VHT 4", "vht"]] });
   for (const phone of ["caller-a", "caller-b"]) {
     const { data } = await demo.deps.ussd(phone, { code: codes.caller });
     for (let k = 0; k < 8; k++) await demo.deps.ussd(phone, { session: data.session, input: "1" });
   }
-  assert.equal((await answerAlert(demo.deps, "vht-4", "", "accept")).ref, "853 402 4461", "the second call's alert");
-  assert.equal((await answerAlert(demo.deps, "vht-4", "", "accept")).ref, "853 402 4460", "then the first call's");
+  assert.equal(demo.incidents[0].alerts.length, 0, "the second call waits for a free responder");
+  assert.equal((await answerAlert(demo.deps, "vht-4", "", "accept")).ref, "853 402 4460", "the first call's alert, the only one");
 });
 
 test("the surge's branches run together, and every phone they drive is listed", async () => {
@@ -138,7 +141,7 @@ test("the surge's branches run together, and every phone they drive is listed", 
   const demo = fakeDemo({ alerts: [["VHT 4", "vht"]] });
   const end = await runScenario(surge, demo.deps);
   assert.equal(end.phase, "done", end.reason);
-  assert.match(end.result, /^5 calls, 5 incidents, none dropped: VHT 4 took 853 402 446\d; 0 escalated/);
+  assert.match(end.result, /^5 calls, 5 incidents, none dropped: VHT 4 took 853 402 4460; 4 waiting for a free responder, 0 with an alert out, 0 escalated; no responder held two alerts\.$/);
   const vht = demo.calls.findIndex(([p]) => p === "vht-4");
   const lastCall = demo.calls.findLastIndex(([p]) => p.startsWith("caller"));
   assert.ok(vht < lastCall, "VHT 4 answers while calls are still coming in");

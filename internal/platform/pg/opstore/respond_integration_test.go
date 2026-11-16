@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 	"time"
+	"uuid"
 
 	"sautihealth.com/sauti/internal/dispatch"
 	"sautihealth.com/sauti/internal/platform/pg"
@@ -58,8 +59,10 @@ func TestScenario10DeclineReasonStoredAndShown(t *testing.T) {
 // assignment (C1: an accepted responder sees where to go again, even with an
 // alert still pending that they could not take: CodeRabbit PR #11
 // 4560453593), else the newest pending alert of the hour, else the newest
-// alert of the hour (a retried answer finds it). Nothing about other
-// responders.
+// lapsed one still open (0041), else the newest alert of the hour (a retried
+// answer finds it). Nothing about other responders. A responder holds one
+// pending alert at a time (0042), so each newer alert follows the lapse of
+// the one before.
 func TestResponderMenuReads(t *testing.T) {
 	r := newDispatchRig(t)
 	ctx := context.Background()
@@ -77,14 +80,18 @@ func TestResponderMenuReads(t *testing.T) {
 		got.Facts.Reference == "" || got.Facts.Severity != "red" || got.Role != responder.RoleVHT || got.Assigned {
 		t.Fatalf("pending alert %+v %v %v", got, ok, err)
 	}
-	// A newer alert on another incident, stood down: the pending one is shown.
+	// x lapses (its role still open), then a newer alert on another incident
+	// is stood down: the lapsed one, still acceptable, is shown first.
+	if ok, err := r.dispatcher.CloseAlert(ctx, x.AlertID, dispatch.OutcomeNoResponse); err != nil || !ok {
+		t.Fatalf("lapse: %v %v", ok, err)
+	}
 	other := dispatchedIncident(t, r.intake).IncidentID
 	y := r.issue(t, other, vht, responder.RoleVHT)
 	if _, err := r.dispatcher.CloseAlert(ctx, y.AlertID, dispatch.OutcomeStoodDown); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := r.intake.MenuAlert(ctx, key(3), vht); got.AlertID != x.AlertID {
-		t.Fatalf("newer stood-down alert shown instead of the pending one: %+v", got)
+	if got, _, _ := r.intake.MenuAlert(ctx, key(3), vht); got.AlertID != x.AlertID || !got.Actionable {
+		t.Fatalf("newer stood-down alert shown instead of the lapsed one still open: %+v", got)
 	}
 	// A newer pending alert: a session under way keeps its alert, a new one sees the newer.
 	third := dispatchedIncident(t, r.intake).IncidentID
@@ -95,8 +102,9 @@ func TestResponderMenuReads(t *testing.T) {
 	if got, _, _ := r.intake.MenuAlert(ctx, key(4), vht); got.AlertID != z.AlertID {
 		t.Fatalf("new session %+v", got)
 	}
-	// Accepted while z is still pending: a new session shows the active
-	// assignment, flagged — z could not be accepted (already assigned).
+	// x accepted late (its role still open) while z is pending: a new session
+	// shows the active assignment, flagged — z could not be accepted (already
+	// assigned).
 	if _, err := r.intake.AcceptAlert(ctx, x.AlertID, vht); err != nil {
 		t.Fatal(err)
 	}
@@ -126,4 +134,57 @@ func TestResponderMenuReads(t *testing.T) {
 	if err != nil || !on || time.Until(until) < 7*time.Hour {
 		t.Fatalf("availability %v %v %v", until, on, err)
 	}
+}
+
+// F-26 (0041): an alert that lapsed while its incident still looks for help
+// and its role is open is offered on the menu as actionable, and accepting it
+// counts, for a VHT and a transporter alike. Once the role is taken, another
+// lapsed alert of that role is no longer actionable, and a pending alert is
+// still preferred over a lapsed one.
+func TestLapsedAlertWithTheRoleOpenIsOfferedOnTheMenu(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	key := func(n byte) []byte { b := make([]byte, 32); b[0], b[1] = 0x41, n; return b }
+	v1, v2, tr := r.responder(t, responder.RoleVHT), r.responder(t, responder.RoleVHT), r.responder(t, responder.RoleTransporter)
+	a1, a2, at := r.issue(t, r.incident, v1, responder.RoleVHT), r.issue(t, r.incident, v2, responder.RoleVHT),
+		r.issue(t, r.incident, tr, responder.RoleTransporter)
+	for _, a := range []dispatch.Issued{a1, a2, at} {
+		if ok, err := r.dispatcher.CloseAlert(ctx, a.AlertID, dispatch.OutcomeNoResponse); err != nil || !ok {
+			t.Fatalf("lapse: %v %v", ok, err)
+		}
+	}
+	for n, c := range []struct {
+		who   uuid.UUID
+		alert dispatch.Issued
+	}{{v1, a1}, {tr, at}} {
+		got, ok, err := r.intake.MenuAlert(ctx, key(byte(n)), c.who)
+		if err != nil || !ok || got.AlertID != c.alert.AlertID || got.Outcome != dispatch.OutcomeNoResponse || !got.Actionable || got.Assigned {
+			t.Fatalf("lapsed alert, role open: %+v %v %v", got, ok, err)
+		}
+		if res, err := r.intake.AcceptAlert(ctx, got.AlertID, c.who); err != nil || res.Result != dispatch.Accepted {
+			t.Fatalf("late accept: %+v %v", res, err)
+		}
+	}
+	// The VHT role is taken: VHT 2's lapsed alert is shown (newest of the
+	// hour) but is not actionable, and accepting it is refused.
+	got, ok, err := r.intake.MenuAlert(ctx, key(9), v2)
+	if err != nil || !ok || got.AlertID != a2.AlertID || got.Actionable {
+		t.Fatalf("lapsed alert, role taken: %+v %v %v", got, ok, err)
+	}
+	if res, err := r.intake.AcceptAlert(ctx, a2.AlertID, v2); err != nil || res.Result != dispatch.AlreadyTaken {
+		t.Fatalf("accept with the role taken: %+v %v", res, err)
+	}
+	// A pending alert on another incident comes before a lapsed actionable one.
+	v3 := r.responder(t, responder.RoleVHT)
+	other := dispatchedIncident(t, r.intake).IncidentID
+	lapsed := r.issue(t, other, v3, responder.RoleVHT)
+	if ok, err := r.dispatcher.CloseAlert(ctx, lapsed.AlertID, dispatch.OutcomeNoResponse); err != nil || !ok {
+		t.Fatalf("lapse: %v %v", ok, err)
+	}
+	third := dispatchedIncident(t, r.intake).IncidentID
+	fresh := r.issue(t, third, v3, responder.RoleVHT)
+	if got, _, _ := r.intake.MenuAlert(ctx, key(10), v3); got.AlertID != fresh.AlertID || got.Actionable {
+		t.Fatalf("pending alert not preferred: %+v", got)
+	}
+	r.noDrift(t)
 }

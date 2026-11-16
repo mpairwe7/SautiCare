@@ -30,6 +30,26 @@ func (p pool) Ranked(role responder.Role, ring int) []Candidate {
 	return out
 }
 
+// Held: the test pool holds nobody for another incident (heldPool does).
+func (p pool) Held(responder.Role, int) int { return 0 }
+
+// heldPool is a pool whose responders at each listed distance all hold an
+// alert for another incident at least as near to them.
+type heldPool struct {
+	pool
+	held map[int]int
+}
+
+func (p heldPool) Held(_ responder.Role, ring int) int {
+	n := 0
+	for d, k := range p.held {
+		if d <= ring {
+			n += k
+		}
+	}
+	return n
+}
+
 func makePool(perDistance map[int]int) pool {
 	p := pool{}
 	for _, role := range responder.Roles() {
@@ -625,5 +645,56 @@ func TestFollowUpAfterAcceptance(t *testing.T) {
 	if err := (Params{Mode: ModeProtocol, RingInterval: time.Minute, MaxRing: 1, CascadeTimeout: time.Minute, RedParallel: 1,
 		ForwardAckTimeout: time.Minute, RedEscalationAfter: time.Minute}).Validate(); err == nil {
 		t.Fatal("parameters without a follow-up interval accepted")
+	}
+}
+
+// ADR-0044: a responder holding another incident's alert is not alerted
+// here, and the search waits for them instead of escalating "no eligible
+// responder" at once; the red escalation at 3 minutes still comes.
+func TestHeldRespondersAreWaitedForNotEscalated(t *testing.T) {
+	t2 := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	p := heldPool{pool: pool{}, held: map[int]int{0: 2}}
+	s := State{Severity: incident.SevRed, DispatchedAt: t2, Assigned: map[responder.Role]uuid.UUID{}}
+	acts, wake := Plan(s, p, nil, protocol, t2)
+	for _, a := range acts {
+		if a.Kind == ActAlert || (a.Kind == ActEscalate && a.Reason == ReasonExhausted) {
+			t.Fatalf("held responders: %+v", acts)
+		}
+	}
+	if wake.IsZero() || wake.After(t2.Add(protocol.RingInterval)) {
+		t.Fatalf("the search must look again by the next ring step, wake %v", wake)
+	}
+	acts, _ = Plan(s, p, nil, protocol, t2.Add(protocol.RedEscalationAfter))
+	if !slices.ContainsFunc(acts, func(a Action) bool { return a.Kind == ActEscalate && a.Reason == ReasonRedNoAcceptance }) {
+		t.Fatalf("red at 3 minutes with everyone held: %+v", acts)
+	}
+	// Nobody at all, held or free: the coordinator hears it at once.
+	acts, _ = Plan(s, heldPool{pool: pool{}}, nil, protocol, t2)
+	if !slices.ContainsFunc(acts, func(a Action) bool { return a.Kind == ActEscalate && a.Reason == ReasonExhausted }) {
+		t.Fatalf("nobody at all: %+v", acts)
+	}
+}
+
+// A responder moved from a farther incident's alert carries that alert on
+// the action, so the worker stands it down before alerting them here.
+func TestAMovedResponderCarriesTheAlertToStandDown(t *testing.T) {
+	t2 := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	held := uuid.NewV7()
+	p := pool{}
+	for _, role := range responder.Roles() {
+		p[role] = []Candidate{{Responder: responder.Responder{ID: uuid.NewV7(), Role: role}, Distance: 0, Moves: held}}
+	}
+	acts, _ := Plan(State{Severity: incident.SevYellow, DispatchedAt: t2, Assigned: map[responder.Role]uuid.UUID{}}, p, nil, protocol, t2)
+	n := 0
+	for _, a := range acts {
+		if a.Kind == ActAlert {
+			n++
+			if a.Moves != held {
+				t.Fatalf("alert without the alert to move: %+v", a)
+			}
+		}
+	}
+	if n != 2 {
+		t.Fatalf("one alert per role, got %+v", acts)
 	}
 }

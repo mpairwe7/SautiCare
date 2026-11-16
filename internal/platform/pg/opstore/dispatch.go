@@ -50,8 +50,10 @@ func (s *Store) DeclineAlert(ctx context.Context, alert, responderID uuid.UUID, 
 
 // MenuAlert returns the alert a responder's menu session is about: pinned at
 // the session's first screen (sessionKey: SHA-256 of the provider and its
-// session ID) to the newest pending alert of the hour, else the responder's
-// active assignment, else the newest alert of the hour.
+// session ID) to the responder's active assignment, else the newest pending
+// alert of the hour, else the newest lapsed one whose role is still open
+// (Actionable: it can still be accepted, 0041), else the newest alert of the
+// hour.
 func (s *Store) MenuAlert(ctx context.Context, sessionKey []byte, responderID uuid.UUID) (dispatch.ResponderAlert, bool, error) {
 	rows, err := s.q.MenuAlert(ctx, opdb.MenuAlertParams{SessionKey: sessionKey, ResponderID: pgID(responderID)})
 	if err != nil || len(rows) == 0 {
@@ -59,7 +61,7 @@ func (s *Store) MenuAlert(ctx context.Context, sessionKey []byte, responderID uu
 	}
 	r := rows[0]
 	return dispatch.ResponderAlert{AlertID: uuid.UUID(r.ID.Bytes), IncidentID: uuid.UUID(r.IncidentID.Bytes), Role: responder.Role(r.Role),
-		Outcome: r.Outcome, Assigned: r.Assigned, Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference),
+		Outcome: r.Outcome, Assigned: r.Assigned, Actionable: r.Actionable, Facts: dispatch.MessageFacts{Reference: incident.Reference(r.Reference),
 			Severity: incident.Severity(r.Severity), Category: r.Category, Ward: r.Ward, Landmark: r.Landmark, Language: r.Language}}, true, nil
 }
 
@@ -244,6 +246,40 @@ func (s *Store) ResponderHistory(ctx context.Context) (map[uuid.UUID]dispatch.Hi
 			LastDispatched: tsOpt(r.LastDispatched)}
 	}
 	return out, nil
+}
+
+// HeldAlerts returns every pending alert on an incident still looking for
+// help, with where that incident is (one alert per responder, 0042).
+func (s *Store) HeldAlerts(ctx context.Context) ([]dispatch.HeldAlert, error) {
+	rows, err := s.q.HeldAlerts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("opstore: held alerts: %w", err)
+	}
+	out := make([]dispatch.HeldAlert, 0, len(rows))
+	for _, r := range rows {
+		h := dispatch.HeldAlert{AlertID: uuid.UUID(r.ID.Bytes), ResponderID: uuid.UUID(r.ResponderID.Bytes), IncidentID: uuid.UUID(r.IncidentID.Bytes),
+			Severity: incident.Severity(deref(r.Severity)), Ward: deref(r.Ward), LocationQuality: deref(r.LocationQuality)}
+		if r.ZoneCol != nil && r.ZoneRow != nil {
+			h.Zone = &incident.Zone{Col: int(*r.ZoneCol), Row: int(*r.ZoneRow)}
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// MoveAlert stands a pending alert down because its responder is wanted at a
+// nearer incident, and wakes its own incident's planner (op.move_alert);
+// false if it was no longer pending.
+func (s *Store) MoveAlert(ctx context.Context, alert uuid.UUID) (bool, error) {
+	ok, err := s.q.MoveAlert(ctx, pgID(alert))
+	return ok, mapErr(err)
+}
+
+// WakeOpenDispatch wakes every incident still looking for help
+// (op.wake_open_dispatch): a responder was freed.
+func (s *Store) WakeOpenDispatch(ctx context.Context) error {
+	_, err := s.q.WakeOpenDispatch(ctx)
+	return mapErr(err)
 }
 
 // BusyResponders returns the responders assigned to an open incident.

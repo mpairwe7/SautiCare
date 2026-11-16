@@ -101,11 +101,10 @@ export function renderFeed(mount, items, seen) {
         ` sealed it in the audit ledger after ${((Date.parse(it.relayedAt) - Date.parse(it.at)) / 1000).toFixed(1)} s`)
       : null;
     return h("li", { class: "item" + (fresh ? " new" : "") },
-      h("div", { class: "item-head" },
-        h("time", { datetime: it.at, text: clock(new Date(it.at)) }),
-        h("span", { class: "svc svc-" + it.service.toLowerCase(), text: it.service }),
-        it.ref ? h("span", { class: "item-ref", text: it.ref }) : null),
-      h("p", { class: "item-text", text: it.text }), relay);
+      h("time", { datetime: it.at, text: clock(new Date(it.at)) }),
+      h("span", { class: "svc svc-" + it.service.toLowerCase().replaceAll(" ", "-"), text: it.service }),
+      h("div", { class: "item-body" },
+        h("p", { class: "item-text" }, it.ref ? h("span", { class: "item-ref", text: it.ref }) : null, it.text), relay));
   }));
   if (!items.length) mount.replaceChildren(h("li", { class: "empty", text: "Nothing yet. Dial a phone or play a scenario." }));
 }

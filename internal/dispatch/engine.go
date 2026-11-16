@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -24,7 +25,10 @@ type Store interface {
 	Responders(ctx context.Context) ([]responder.Responder, error)
 	ResponderHistory(ctx context.Context) (map[uuid.UUID]History, error)
 	BusyResponders(ctx context.Context) (map[uuid.UUID]bool, error)
-	Now(ctx context.Context) (time.Time, error) // the database clock (rule 3.4)
+	HeldAlerts(ctx context.Context) ([]HeldAlert, error)          // one alert per responder (0042)
+	MoveAlert(ctx context.Context, alert uuid.UUID) (bool, error) // stand an alert down for a nearer incident, waking its own
+	WakeOpenDispatch(ctx context.Context) error                   // a responder was freed: incidents waiting for one try again
+	Now(ctx context.Context) (time.Time, error)                   // the database clock (rule 3.4)
 
 	IssueAlert(ctx context.Context, p IssueParams) (Issued, error)
 	CloseAlert(ctx context.Context, alert uuid.UUID, outcome string) (bool, error)
@@ -268,15 +272,56 @@ func (e *Engine) state(ctx context.Context, snap Snapshot, suspended bool, now t
 		return st, nil, err
 	}
 	rs = slices.DeleteFunc(rs, func(r responder.Responder) bool { return busy[r.ID] || refused[r.ID] })
-	pool := rankedPool{}
+	holding, err := e.holdings(ctx, snap.IncidentID, rs)
+	if err != nil {
+		return st, nil, err
+	}
+	pool := rankedPool{ranked: map[responder.Role][]Candidate{}, held: map[responder.Role][]int{}}
 	for _, role := range responder.Roles() {
-		cs := Eligible(rs, e.stageCells, role, centres, e.params.ringLimit(), now)
-		for i := range cs {
-			cs[i].History = history[cs[i].Responder.ID]
+		var cs []Candidate
+		for _, c := range Eligible(rs, e.stageCells, role, centres, e.params.ringLimit(), now) {
+			if h, ok := holding[c.Responder.ID]; ok {
+				if !Movable(c.Distance, snap.Severity, h) {
+					pool.held[role] = append(pool.held[role], c.Distance) // free once their own alert settles
+					continue
+				}
+				c.Moves = h.AlertID
+			}
+			c.History = history[c.Responder.ID]
+			cs = append(cs, c)
 		}
-		pool[role] = e.ranker.Rank(cs)
+		pool.ranked[role] = e.ranker.Rank(cs)
 	}
 	return st, pool, nil
+}
+
+// holdings maps each responder holding a pending alert for another incident
+// to that alert, with how far its incident is from them (one alert per
+// responder, 0042). An incident with no known place is as far as can be.
+func (e *Engine) holdings(ctx context.Context, incidentID uuid.UUID, rs []responder.Responder) (map[uuid.UUID]Holding, error) {
+	held, err := e.store.HeldAlerts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stage := make(map[uuid.UUID]string, len(rs))
+	for _, r := range rs {
+		stage[r.ID] = r.Stage
+	}
+	out := map[uuid.UUID]Holding{}
+	for _, h := range held {
+		if h.IncidentID == incidentID {
+			continue
+		}
+		d := math.MaxInt
+		if cell, ok := e.stageCells[stage[h.ResponderID]]; ok {
+			centres, _ := e.centres(Snapshot{Zone: h.Zone, LocationQuality: h.LocationQuality, Ward: h.Ward})
+			for _, c := range centres {
+				d = min(d, c.Chebyshev(cell))
+			}
+		}
+		out[h.ResponderID] = Holding{AlertID: h.AlertID, Distance: d, Severity: h.Severity}
+	}
+	return out, nil
 }
 
 // centres are the incident's zone, or every zone of its ward when only the
@@ -303,17 +348,31 @@ func (e *Engine) centres(snap Snapshot) ([]location.Cell, location.Cell) {
 }
 
 // rankedPool holds each role's eligible responders within the mode's ring
-// limit, best first; Ranked filters by ring, keeping the order.
-type rankedPool map[responder.Role][]Candidate
+// limit, best first, and the distances of those held by another incident's
+// alert; Ranked and Held filter by ring, keeping the order.
+type rankedPool struct {
+	ranked map[responder.Role][]Candidate
+	held   map[responder.Role][]int
+}
 
 func (p rankedPool) Ranked(role responder.Role, ring int) []Candidate {
 	var out []Candidate
-	for _, c := range p[role] {
+	for _, c := range p.ranked[role] {
 		if c.Distance <= ring {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+func (p rankedPool) Held(role responder.Role, ring int) int {
+	n := 0
+	for _, d := range p.held[role] {
+		if d <= ring {
+			n++
+		}
+	}
+	return n
 }
 
 // refusals are what the database refused during one wake.
@@ -326,6 +385,19 @@ func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, re
 	var err error
 	switch a.Kind {
 	case ActAlert:
+		if a.Moves != (uuid.UUID{}) {
+			// The responder is wanted nearer: their alert for the farther
+			// incident is stood down first (its planner is woken to look
+			// for someone else). Settled meanwhile: re-plan without them.
+			moved, merr := e.store.MoveAlert(ctx, a.Moves)
+			if merr != nil {
+				return merr
+			}
+			if !moved {
+				refused.responders[a.ResponderID] = true
+				return nil
+			}
+		}
 		_, err = e.store.IssueAlert(ctx, IssueParams{IncidentID: incidentID, ResponderID: a.ResponderID, Role: a.Role,
 			Ring: a.Ring, Wave: a.Wave, LogicVersion: e.logic})
 		if errors.Is(err, incident.ErrIllegalTransition) {
@@ -334,10 +406,16 @@ func (e *Engine) execute(ctx context.Context, incidentID uuid.UUID, a Action, re
 			refused.responders[a.ResponderID] = true
 			return nil
 		}
-	case ActExpire:
-		_, err = e.store.CloseAlert(ctx, a.AlertID, OutcomeNoResponse)
-	case ActStandDown:
-		_, err = e.store.CloseAlert(ctx, a.AlertID, OutcomeStoodDown)
+	case ActExpire, ActStandDown:
+		outcome := OutcomeNoResponse
+		if a.Kind == ActStandDown {
+			outcome = OutcomeStoodDown
+		}
+		var freed bool
+		if freed, err = e.store.CloseAlert(ctx, a.AlertID, outcome); err == nil && freed {
+			// A responder is free again: incidents waiting for one try now.
+			err = e.store.WakeOpenDispatch(ctx)
+		}
 	case ActEscalate:
 		_, err = e.store.DispatchEscalate(ctx, incidentID, a.Reason, a.Role, e.logic)
 	case ActForward:

@@ -6,17 +6,19 @@
 <title>Sauti Dispatch demo</title>
 <meta name="description" content="Emergency medical dispatch from any phone: a demo with synthetic data only.">
 <link rel="icon" href="data:,">
+<link rel="preload" href="fonts/hanken-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="app.css">
 <script type="module" src="app.js"></script>
 </head>
 <body>
-<a class="skip" href="#board-h">Skip to the dispatch board</a>
-<p class="banner" role="note"><strong>Demo — synthetic data only.</strong> Do not enter real names, phone numbers or health information. Everything is erased on restart.</p>
+<a class="skip" href="#queue-h">Skip to the live queue</a>
+<p class="banner" role="note"><strong>Demo, synthetic data only.</strong> Do not enter real names, phone numbers or health information. Everything is erased on restart.</p>
 
 <header class="top">
   <div class="brand">
-    <h1>Sauti Dispatch</h1>
-    <p>Emergency medical dispatch from any phone — no data, no airtime. Kawempe Division, Kampala. MVP demo.</p>
+    <p class="wordmark">Sauti <span>Dispatch</span></p>
+    <h1>Emergency medical dispatch from any phone</h1>
+    <p class="lede">No data, no airtime. Kawempe Division, Kampala. MVP demo.</p>
   </div>
   <div class="actions">
     <p id="status" class="status" role="status" aria-live="polite">Connecting…</p>
@@ -64,31 +66,74 @@
   </fieldset>
 </section>
 
-<main class="grid">
-  <section class="panel panel-phone" aria-labelledby="caller-h">
-    <h2 id="caller-h"><span class="step">1</span> Caller phone</h2>
-    <p class="hint">Dial <kbd>*384*1#</kbd> and answer each screen. Any basic phone can do this: USSD needs no data and no airtime.</p>
-    <div id="caller-tabs" class="tabs" role="tablist" aria-label="Caller SIM"></div>
-    <div id="caller-phone" role="tabpanel" aria-labelledby="caller-h"></div>
-  </section>
+<main class="layout">
+  <section class="phones" aria-label="Phones">
+    <section class="panel panel-phone" aria-labelledby="caller-h" data-kind="caller">
+      <div class="panel-head">
+        <h2 id="caller-h">Caller</h2>
+        <div class="mode" role="group" aria-label="Caller's phone type" data-mode-for="caller"></div>
+      </div>
+      <p class="hint" data-hint="caller"></p>
+      <div id="caller-tabs" class="tabs" role="tablist" aria-label="Caller SIM"></div>
+      <div id="caller-phone" class="phone-mount" role="tabpanel" aria-labelledby="caller-h"></div>
+    </section>
 
-  <section class="panel panel-phone" aria-labelledby="resp-h">
-    <h2 id="resp-h"><span class="step">2</span> Responder phones</h2>
-    <p class="hint">Village Health Team members and transporters get alerts by SMS. Dial <kbd>*384*2#</kbd> to accept or decline.</p>
-    <div id="resp-tabs" class="tabs" role="tablist" aria-label="Responder"></div>
-    <div id="resp-phone" role="tabpanel" aria-labelledby="resp-h"></div>
+    <section class="panel panel-phone" aria-labelledby="vht-h" data-kind="vht">
+      <div class="panel-head">
+        <h2 id="vht-h">VHT</h2>
+        <div class="mode" role="group" aria-label="VHT's phone type" data-mode-for="vht"></div>
+      </div>
+      <p class="hint" data-hint="vht"></p>
+      <div id="vht-tabs" class="tabs" role="tablist" aria-label="Village Health Team member"></div>
+      <div id="vht-phone" class="phone-mount" role="tabpanel" aria-labelledby="vht-h"></div>
+    </section>
+
+    <section class="panel panel-phone" aria-labelledby="trans-h" data-kind="transporter">
+      <div class="panel-head">
+        <h2 id="trans-h">Transporter</h2>
+        <div class="mode" role="group" aria-label="Transporter's phone type" data-mode-for="transporter"></div>
+      </div>
+      <p class="hint" data-hint="transporter"></p>
+      <div id="transporter-tabs" class="tabs" role="tablist" aria-label="Transporter"></div>
+      <div id="transporter-phone" class="phone-mount" role="tabpanel" aria-labelledby="trans-h"></div>
+    </section>
   </section>
 
   <section class="panel panel-feed" aria-labelledby="feed-h">
-    <h2 id="feed-h">Activity</h2>
-    <p class="hint">Every incident event and SMS, newest first, tagged with the service that produced it.</p>
+    <div class="panel-head">
+      <h2 id="feed-h">Activity</h2>
+      <p class="hint inline">Every incident event and SMS, newest first, with the service that produced it.</p>
+    </div>
     <ol id="feed" class="feed" tabindex="0" aria-labelledby="feed-h"></ol>
+  </section>
+
+  <section class="panel panel-queue" aria-labelledby="queue-h">
+    <div class="panel-head">
+      <h2 id="queue-h" tabindex="-1">Live queue</h2>
+      <p class="hint inline">Live from the operational store, read with the read-only role. Most urgent first. A caller's number is never shown.</p>
+    </div>
+    <div id="audit-result" class="audit" role="status" aria-live="polite" hidden></div>
+    <p id="board-stale" class="warn" role="status" hidden>The queue could not be refreshed. It shows the last copy; retrying.</p>
+    <p id="suspended" class="warn" hidden>Dispatch is suspended: no responder is alerted and a coordinator handles every call.</p>
+    <div id="queue-filters" class="filters" role="group" aria-label="Show"></div>
+    <div class="queue-wrap">
+      <div id="queue" class="queue"></div>
+      <aside id="queue-detail" class="queue-detail" aria-label="Selected incident"></aside>
+    </div>
+  </section>
+
+  <section class="panel panel-analytics" aria-labelledby="analytics-h">
+    <div class="panel-head">
+      <h2 id="analytics-h">Analytics</h2>
+      <p class="hint inline">The protocol timestamps the pilot study analyses, T1 (the call) to T7 (at the facility), from the incidents in the queue.</p>
+    </div>
+    <div id="analytics" class="analytics"></div>
   </section>
 
   <section class="panel panel-map" aria-labelledby="map-h">
     <div class="map-head">
       <h2 id="map-h">Map of the wards</h2>
-      <p class="hint">Each ward is the area nearest its centre, drawn from the gazetteer's placeholder wards and landmarks. Select an incident pin to open its card.</p>
+      <p class="hint">Each ward is the area nearest its centre, drawn from the gazetteer's placeholder wards and landmarks. Select an incident pin to open it in the queue.</p>
     </div>
     <figure class="map">
       <div id="map" class="map-mount"></div>
@@ -105,19 +150,10 @@
       <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-stood_down" x1="2" y1="5" x2="32" y2="5"/></svg> Stood down</li>
     </ul>
   </section>
-
-  <section class="panel panel-board" aria-labelledby="board-h">
-    <h2 id="board-h" tabindex="-1"><span class="step">3</span> Dispatch board</h2>
-    <p class="hint">Live from the operational store, read with the read-only role. A caller's number is never shown.</p>
-    <div id="audit-result" class="audit" role="status" aria-live="polite" hidden></div>
-    <p id="board-stale" class="warn" role="status" hidden>The dispatch board could not be refreshed. It shows the last copy; retrying.</p>
-    <p id="suspended" class="warn" hidden>Dispatch is suspended: no responder is alerted and a coordinator handles every call.</p>
-    <div id="board" class="board"></div>
-  </section>
 </main>
 
 <footer class="foot">
-  <p>Texts marked <code>PENDING</code> are placeholders awaiting the study's approved wording, shown exactly as the system sends them. SMS goes to a local simulator of the provider; voice calls are not part of this demo. Responders, numbers and places are synthetic. The figures, map and activity cover the incidents on the board, the latest 25.</p>
+  <p>Texts marked <code>PENDING</code> are placeholders awaiting the study's approved wording, shown exactly as the system sends them. SMS goes to a local simulator of the provider; voice calls are not part of this demo. The smartphone views use the same USSD service as the basic phones; a responder's location is their registered stage, standing in for GPS. Arrival, departure and arrival at the facility are a preview of M3, recorded through the single write path. Responders, numbers and places are synthetic. The figures, map and activity cover the incidents in the queue, the latest 25.</p>
 </footer>
 </body>
 </html>

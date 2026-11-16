@@ -217,3 +217,35 @@ export function summary(lay) {
     lay.links.length ? `${count(lay.links.length, "alert line", "alert lines")}: ${lines}.` : "",
   ].filter(Boolean).join(" ");
 }
+
+// distanceM is the great-circle distance between two {lat, lon} points, in
+// metres (haversine; the wards span a few kilometres).
+export function distanceM(a, b) {
+  const R = 6371000;
+  const rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat);
+  const dLon = rad(b.lon - a.lon);
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+// nearest returns the place in places nearest point, or null for none.
+export function nearest(point, places) {
+  let best = null;
+  let bestD = Infinity;
+  for (const p of places || []) {
+    const d = distanceM(point, p);
+    if (d < bestD) [best, bestD] = [p, d];
+  }
+  return best;
+}
+
+// SPEED: what a trip estimate assumes, km/h: a VHT on foot, a transporter on
+// a boda-boda in town. An estimate for the demo, labelled as one.
+export const SPEED = { vht: 5, transporter: 25 };
+
+// trip estimates a trip's distance (km, one decimal) and minutes, at least 1.
+export function trip(from, to, role) {
+  const km = distanceM(from, to) / 1000;
+  return { km: Math.round(km * 10) / 10, min: Math.max(1, Math.round((km / (SPEED[role] || SPEED.vht)) * 60)) };
+}

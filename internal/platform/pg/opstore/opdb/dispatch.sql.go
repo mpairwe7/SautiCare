@@ -983,6 +983,55 @@ func (q *Queries) FinishNoticeAttempt(ctx context.Context, arg FinishNoticeAttem
 	return changed, err
 }
 
+const heldAlerts = `-- name: HeldAlerts :many
+SELECT a.id, a.responder_id, a.incident_id, i.severity, i.zone_col, i.zone_row, i.ward, i.location_quality
+FROM op.alerts a JOIN op.incidents i ON i.id = a.incident_id
+WHERE a.outcome = 'pending' AND i.state IN ('dispatching', 'assigned', 'on_scene')
+`
+
+type HeldAlertsRow struct {
+	ID              pgtype.UUID
+	ResponderID     pgtype.UUID
+	IncidentID      pgtype.UUID
+	Severity        *string
+	ZoneCol         *int32
+	ZoneRow         *int32
+	Ward            *string
+	LocationQuality *string
+}
+
+// One responder, one alert (0042): every pending alert on an incident still
+// looking for help, with where that incident is, so the planner can tell
+// whether a new incident is nearer to the responder holding it.
+func (q *Queries) HeldAlerts(ctx context.Context) ([]HeldAlertsRow, error) {
+	rows, err := q.db.Query(ctx, heldAlerts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []HeldAlertsRow
+	for rows.Next() {
+		var i HeldAlertsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ResponderID,
+			&i.IncidentID,
+			&i.Severity,
+			&i.ZoneCol,
+			&i.ZoneRow,
+			&i.Ward,
+			&i.LocationQuality,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const issueAlert = `-- name: IssueAlert :one
 
 SELECT a.alert_id::uuid AS alert_id, a.sent_at::timestamptz AS sent_at, a.duplicate::boolean AS duplicate
@@ -1025,9 +1074,9 @@ const menuAlert = `-- name: MenuAlert :many
 SELECT m.alert_id::uuid AS id, m.incident_id::uuid AS incident_id, m.role::text AS role, m.outcome::text AS outcome,
        m.reference::text AS reference, coalesce(m.severity, '')::text AS severity, coalesce(m.category, '')::text AS category,
        coalesce(m.ward, '')::text AS ward, coalesce(m.landmark, '')::text AS landmark, coalesce(m.language, '')::text AS language,
-       m.assigned::boolean AS assigned
+       m.assigned::boolean AS assigned, m.actionable::boolean AS actionable
 FROM op.responder_menu_alert($1::bytea, $2::uuid)
-     AS m(alert_id, incident_id, role, outcome, reference, severity, category, ward, landmark, language, assigned)
+     AS m(alert_id, incident_id, role, outcome, reference, severity, category, ward, landmark, language, assigned, actionable)
 `
 
 type MenuAlertParams struct {
@@ -1047,9 +1096,11 @@ type MenuAlertRow struct {
 	Landmark   string
 	Language   string
 	Assigned   bool
+	Actionable bool
 }
 
-// The alert a responder's menu session is about (pinned at its first screen).
+// The alert a responder's menu session is about (pinned at its first screen);
+// actionable: lapsed, and its role still open (0041).
 func (q *Queries) MenuAlert(ctx context.Context, arg MenuAlertParams) ([]MenuAlertRow, error) {
 	rows, err := q.db.Query(ctx, menuAlert, arg.SessionKey, arg.ResponderID)
 	if err != nil {
@@ -1071,6 +1122,7 @@ func (q *Queries) MenuAlert(ctx context.Context, arg MenuAlertParams) ([]MenuAle
 			&i.Landmark,
 			&i.Language,
 			&i.Assigned,
+			&i.Actionable,
 		); err != nil {
 			return nil, err
 		}
@@ -1107,6 +1159,17 @@ func (q *Queries) MessageFacts(ctx context.Context, id pgtype.UUID) (MessageFact
 		&i.Language,
 	)
 	return i, err
+}
+
+const moveAlert = `-- name: MoveAlert :one
+SELECT op.move_alert($1::uuid)::boolean AS changed
+`
+
+func (q *Queries) MoveAlert(ctx context.Context, alertID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, moveAlert, alertID)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
 }
 
 const noticeFacility = `-- name: NoticeFacility :one
@@ -1450,4 +1513,15 @@ func (q *Queries) TimeOutForward(ctx context.Context, arg TimeOutForwardParams) 
 	var changed bool
 	err := row.Scan(&changed)
 	return changed, err
+}
+
+const wakeOpenDispatch = `-- name: WakeOpenDispatch :one
+SELECT op.wake_open_dispatch()::int AS woken
+`
+
+func (q *Queries) WakeOpenDispatch(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, wakeOpenDispatch)
+	var woken int32
+	err := row.Scan(&woken)
+	return woken, err
 }

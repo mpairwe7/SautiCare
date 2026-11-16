@@ -111,7 +111,9 @@ func (s *Service) HandleUSSD(ctx context.Context, r intake.USSDRequest) (intake.
 	if err != nil {
 		return intake.Screen{}, err
 	}
-	pending := hasAlert && alert.Outcome == dispatch.OutcomePending
+	// A lapsed alert whose role is still open is offered as pending: the store
+	// counts a late acceptance (F-26; audit R-6 leaves the policy to the PI).
+	pending := hasAlert && (alert.Outcome == dispatch.OutcomePending || alert.Actionable)
 	at, invalid := atTop, false
 	for _, in := range tokens(r.Text) {
 		invalid = false
@@ -207,7 +209,10 @@ func (s *Service) decline(ctx context.Context, id uuid.UUID, a dispatch.Responde
 		return intake.Screen{}, err
 	}
 	name := "declined"
-	if out != dispatch.OutcomeDeclined {
+	// A decline of a lapsed alert writes nothing (it already counts as no
+	// response). While its role is open the responder still hears their
+	// answer, not "no longer needed": someone is still being looked for.
+	if out != dispatch.OutcomeDeclined && (!a.Actionable || out != dispatch.OutcomeNoResponse) {
 		name = "no_longer_needed"
 	}
 	return intake.Screen{Text: s.fill(s.c.Copy.Text(name, s.c.Language), s.values(a.Facts, s.c.Language)), End: true}, nil

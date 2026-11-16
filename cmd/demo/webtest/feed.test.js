@@ -51,6 +51,8 @@ test("an escalation's reason names the service that wrote it", () => {
   assert.equal(serviceOf("incident.escalated", { reason: "red_no_acceptance" }), "dispatch-worker");
   assert.equal(serviceOf("alert.declined", {}), "intake-gw", "a decline comes through the responder menu");
   assert.equal(serviceOf("alert.no_response", {}), "dispatch-worker");
+  assert.equal(serviceOf("responder.arrived", { role: "vht" }), "responder app", "the steps after accepting come from the demo app");
+  assert.equal(serviceOf("incident.closed", { reason: "completed" }), "responder app");
 });
 
 test("a payload that is not JSON still gives an item", () => {

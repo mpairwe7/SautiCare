@@ -121,9 +121,13 @@ type State struct {
 }
 
 // Pool returns the eligible responders of a role within ring k of the
-// incident, ranked best first (Eligible + Ranker, minus busy responders).
+// incident, ranked best first (Eligible + Ranker, minus busy responders and
+// those holding an alert for an incident at least as near to them). Held
+// counts the latter: they are not free now, but will be once their alert is
+// answered or lapses, so the search waits for them rather than giving up.
 type Pool interface {
 	Ranked(role responder.Role, ring int) []Candidate
+	Held(role responder.Role, ring int) int
 }
 
 // ActionKind names what the worker must do.
@@ -144,6 +148,7 @@ const (
 type Action struct {
 	Kind        ActionKind
 	AlertID     uuid.UUID // expire and stand-down
+	Moves       uuid.UUID // alert: the responder's alert for a farther incident, stood down first
 	ResponderID uuid.UUID
 	Role        responder.Role
 	Ring, Wave  int
@@ -291,18 +296,21 @@ func Plan(s State, pool Pool, facilities []location.Facility, p Params, now time
 			w = wave + 1
 		}
 		for _, c := range send {
-			acts = append(acts, Action{Kind: ActAlert, ResponderID: c.Responder.ID, Role: role, Ring: ring, Wave: w})
+			acts = append(acts, Action{Kind: ActAlert, ResponderID: c.Responder.ID, Moves: c.Moves, Role: role, Ring: ring, Wave: w})
 			alerted[c.Responder.ID] = true
 			pending++
 		}
-		// Nobody left to try inside the mode's limit and nobody on the way:
-		// the coordinator is alerted now (dispatch never ends silently).
-		if pending == 0 && len(fresh(p.ringLimit())) == 0 {
+		// Nobody left to try inside the mode's limit, nobody on the way, and
+		// nobody who will be free once their own alert is answered: the
+		// coordinator is alerted now (dispatch never ends silently). Waiting
+		// for a held responder is bounded by the red escalation (decision 2)
+		// and by each held alert's lapse.
+		if pending == 0 && len(fresh(p.ringLimit())) == 0 && pool.Held(role, p.ringLimit()) == 0 {
 			escalate(ReasonExhausted, role)
 		}
 		// Amended mode: nobody at all in ring 1 at T2 — the coordinator hears
 		// it now, while the search widens (review focus 3).
-		if p.Mode == ModeAmended && step == 0 && len(pool.Ranked(role, 1)) == 0 && !slices.ContainsFunc(s.Alerts, func(a Alert) bool { return a.Role == role }) {
+		if p.Mode == ModeAmended && step == 0 && len(pool.Ranked(role, 1))+pool.Held(role, 1) == 0 && !slices.ContainsFunc(s.Alerts, func(a Alert) bool { return a.Role == role }) {
 			escalate(ReasonNoneNearby, role)
 		}
 	}

@@ -124,8 +124,13 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/ussd", a.ussd)
 	mux.HandleFunc("POST /api/audit", a.audit)
 	mux.HandleFunc("POST /api/reset", a.reset)
+	mux.HandleFunc("POST /api/progress", a.progress)
 	return headers(mux)
 }
+
+// The demo's self-hosted font (web/fonts): Go's built-in table has no woff2,
+// and the response is sent with nosniff.
+func init() { _ = mime.AddExtensionType(".woff2", "font/woff2") }
 
 // headers: no third-party content, no inline script, no caching of state.
 // frame-ancestors is left open: Hugging Face shows a Space in an iframe.
@@ -166,7 +171,7 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 	st, phase, run := a.st, a.phase, a.run
 	a.mu.Unlock()
 	out := map[string]any{"phase": phase, "run": run, "codes": map[string]string{"caller": callerCode, "responder": responderCode},
-		"map": a.geo}
+		"map": a.geo, "dispatch": map[string]int64{"cascadeTimeoutMs": a.cfg.Dispatch.CascadeTimeout.Milliseconds()}}
 	if st != nil {
 		phones := make([]phone, len(st.phones))
 		for i, p := range st.phones {

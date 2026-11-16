@@ -3,15 +3,19 @@
 // action goes through the same USSD API as the on-screen phones. Every
 // value from the server is set as text, never as HTML. The server only ever
 // sends masked phone numbers.
-import { h, clock } from "./dom.js";
-import { mmss } from "./format.js";
+import { h, svg } from "./dom.js";
+import { mmss, REF } from "./format.js";
 import { metrics, boardSms } from "./metrics.js";
 import { feedItems } from "./feed.js";
 import { layout } from "./geo.js";
 import { renderKpis, renderMap, renderFeed, highlight } from "./views.js";
-import { renderIncident, timelineChart } from "./cards.js";
+import { renderIncident, renderQueue, timelineChart } from "./cards.js";
 import { SCENARIOS, runScenario, phonesOf, answerAlert, lockPhones, lockedBy, IDLE } from "./scenarios.js";
 import { AUTOPILOT, plan } from "./autopilot.js";
+import { BasicPhone, sleep } from "./phone.js";
+import { SmartPhone } from "./smart.js";
+import { responderStatus } from "./responders.js";
+import { Analytics } from "./charts.js";
 
 const $ = (sel) => document.querySelector(sel);
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -32,14 +36,14 @@ async function api(method, path, body) {
   }
 }
 
-// sleep resolves after ms, or rejects once signal is aborted.
-function sleep(ms, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) { reject(signal.reason); return; }
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => { clearTimeout(t); reject(signal.reason); }, { once: true });
-  });
-}
+// Per-viewer conveniences, kept in this browser only: which phone type each
+// panel shows. Storage may be unavailable; the page works without it.
+const store = {
+  get(k, d) { try { return localStorage.getItem("sauti-demo:" + k) || d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("sauti-demo:" + k, v); } catch { /* not kept */ } },
+};
+
+const KINDS = ["caller", "vht", "transporter"];
 
 const app = {
   phase: "", // the last phase the server reported; a failed poll leaves it as it was
@@ -49,220 +53,119 @@ const app = {
   phones: [],
   codes: { caller: "*384*1#", responder: "*384*2#" },
   map: null, // the gazetteer, from /api/state
+  timeoutMs: 90000, // an alert's answer window, from /api/state
   board: null,
   inbox: {},
   seen: {},
-  selected: { caller: "caller-a", responder: "" },
+  selected: { caller: "caller-a", vht: "", transporter: "" },
+  modes: Object.fromEntries(KINDS.map((k) => [k, store.get("mode-" + k, "basic") === "smart" ? "smart" : "basic"])),
+  gps: {}, // each caller SIM's simulated GPS fix
+  reports: {}, // each caller SIM's last incident reference
   open: new Set(),
   skew: 0, // server clock minus browser clock, ms
   snapKey: "",
   gen: 0, // bumped by clearRun: a response to a request from an earlier run is dropped
-  incident: "", // the incident picked on the map
-  hover: "", // the incident whose card the pointer or focus is on
+  incident: "", // the incident selected in the queue or on the map
+  hover: "", // the incident under the pointer or focus
+  filter: "all",
+  closing: null, // {id, busy, text, bad}: the coordinator's close under way or its answer
   feedSeen: new Set(),
   locks: new Set(), // the locks ({why, phones}) of the scenario and the autopilot dialling phones
   scenario: IDLE,
 };
 
 const serverNow = () => Date.now() + app.skew;
+const kindOf = (p) => (p.kind === "caller" ? "caller" : p.role);
 
 // ---------- Phones ----------
 
-const READ_MS = 650; // the audience reads a screen before the next key
-const KEY_MS = 110;
+// ctx is what a phone widget may read and do.
+const ctx = {
+  api,
+  live: () => live(),
+  codes: () => app.codes,
+  locked: (id) => lockedBy(app.locks, id),
+  inbox: (id) => app.inbox[id] || [],
+  seen: (id, n) => { app.seen[id] = n; },
+  board: () => app.board,
+  map: () => app.map,
+  now: () => serverNow(),
+  timeoutMs: () => app.timeoutMs,
+  ussd: (phone, body, keys) => drive(phone, body, keys, undefined, true),
+  progress: (body) => api("POST", "api/progress", body),
+  gps: { get: (id) => app.gps[id], set: (id, g) => { app.gps[id] = g; } },
+  report: { get: (id) => app.reports[id], set: (id, ref) => { app.reports[id] = ref; } },
+  ended: (p, text) => {
+    const ref = (REF.exec(text || "") || [""])[0];
+    if (p && p.kind === "caller" && ref) app.reports[p.id] = ref;
+  },
+};
 
-class Phone {
-  constructor(mount, kind) {
-    this.kind = kind;
-    this.p = null;
-    this.mode = "idle"; // idle | con | end
-    this.session = "";
-    this.busy = false;
-    this.gen = 0; // bumped when the phone changes or hangs up: a late reply is then dropped
-    const id = "in-" + kind;
-    this.text = h("p", { class: "screen-text", "aria-live": "polite", "aria-atomic": "true" });
-    this.meta = h("span", { class: "screen-meta" });
-    this.label = h("label", { class: "screen-meta", for: id, text: "Number" });
-    this.input = h("input", { id, class: "screen-input", autocomplete: "off", spellcheck: "false", maxlength: "64", inputmode: "tel",
-      onkeydown: (e) => {
-        if (e.key === "Enter") { e.preventDefault(); this.primary(); }
-        if (e.key === "Escape") { e.preventDefault(); this.end(); }
-      } });
-    this.note = h("p", { class: "screen-note", role: "alert", hidden: true });
-    this.lock = h("p", { class: "phone-lock", hidden: true });
-    this.callBtn = h("button", { type: "button", class: "key-call", onclick: () => this.primary() });
-    this.endBtn = h("button", { type: "button", class: "key-end", text: "End", onclick: () => this.end() });
-    const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
-    const names = { "*": "Star", "#": "Hash" };
-    this.keypad = h("div", { class: "keypad", role: "group", "aria-label": "Keypad" },
-      keys.map((k) => h("button", { type: "button", text: k, "aria-label": names[k] || k, onclick: () => this.press(k) })));
-    this.quick = h("button", { type: "button", class: "quick", onclick: () => this.dial(this.code()) });
-    this.name = h("span", { class: "phone-name" });
-    this.number = h("span", { class: "phone-num" });
-    this.root = h("article", { class: "phone" },
-      h("div", { class: "phone-head" }, this.name, this.number),
-      h("div", { class: "screen" }, this.meta, this.text, this.note, this.label, this.input),
-      h("div", { class: "soft" }, this.callBtn, this.endBtn),
-      this.keypad, this.quick);
-    this.msgs = h("ol", { class: "msgs" });
-    this.empty = h("p", { class: "empty", text: "No messages yet." });
-    this.count = h("span", { class: "badge", hidden: true });
-    this.inbox = h("section", { class: "inbox", "aria-label": "SMS inbox" },
-      h("h3", {}, "SMS inbox", this.count), this.empty, this.msgs);
-    mount.replaceChildren(this.lock, this.root, this.inbox);
-    this.render();
+const widgets = {};
+const mountOf = (kind) => $(`#${kind}-phone`);
+
+function makeWidget(kind) {
+  const W = app.modes[kind] === "smart" ? SmartPhone : BasicPhone;
+  widgets[kind] = new W(mountOf(kind), kind, ctx);
+  const p = app.phones.find((x) => x.id === app.selected[kind]);
+  if (p) widgets[kind].setPhone(p);
+}
+
+const HINTS = {
+  caller: {
+    basic: () => `Dial ${app.codes.caller} and answer each screen. Any basic phone can do this: USSD needs no data and no airtime.`,
+    smart: () => "The Sauti app asks the same questions as USSD, through the same service, and fills in the ward and place from the phone's location.",
+  },
+  vht: {
+    basic: () => `Village Health Team members get alerts by SMS. Dial ${app.codes.responder} to accept or decline.`,
+    smart: () => "Alerts arrive as notifications. Accept, see the way to the patient, and record the arrival.",
+  },
+  transporter: {
+    basic: () => `Transporters get alerts by SMS. Dial ${app.codes.responder} to accept or decline.`,
+    smart: () => "Accept, find the patient, then record the pickup and the arrival at the facility.",
+  },
+};
+
+const ICON = {
+  basic: () => svg("svg", { viewBox: "0 0 14 14", "aria-hidden": "true" }, svg("rect", { x: "3", y: "0.75", width: "8", height: "12.5", rx: "1.5", fill: "none", stroke: "currentColor", "stroke-width": "1.5" }),
+    svg("rect", { x: "5", y: "3", width: "4", height: "2.5", fill: "currentColor" }), [0, 1, 2].map((r) => svg("rect", { x: "5", y: String(7 + r * 1.8), width: "4", height: "0.9", fill: "currentColor" }))),
+  smart: () => svg("svg", { viewBox: "0 0 14 14", "aria-hidden": "true" }, svg("rect", { x: "3", y: "0.75", width: "8", height: "12.5", rx: "2", fill: "none", stroke: "currentColor", "stroke-width": "1.5" }),
+    svg("rect", { x: "4.6", y: "2.6", width: "4.8", height: "7.6", rx: "0.5", fill: "currentColor" })),
+};
+
+function buildModes() {
+  for (const kind of KINDS) {
+    const group = document.querySelector(`[data-mode-for="${kind}"]`);
+    group.replaceChildren(...["basic", "smart"].map((m) => h("button", { type: "button", "data-mode": m, "aria-pressed": String(app.modes[kind] === m),
+      onclick: () => setMode(kind, m) }, ICON[m](), m === "basic" ? "Basic phone" : "Smartphone")));
   }
+}
 
-  code() { return this.kind === "caller" ? app.codes.caller : app.codes.responder; }
-
-  setPhone(p) {
-    if (this.p && p && this.p.id === p.id) return;
-    this.p = p;
-    this.gen++;
-    this.mode = "idle";
-    this.session = "";
-    this.input.value = ""; // one box serves every phone: keys typed for the last one are not this one's
-    this.lastCount = undefined;
-    this.render();
-    this.renderInbox();
+function setMode(kind, mode) {
+  if (app.modes[kind] === mode) return;
+  if (app.phones.some((p) => kindOf(p) === kind && lockedBy(app.locks, p.id))) {
+    window.alert("A scenario or the autopilot is using this phone. Switch when it has finished.");
+    return;
   }
+  app.modes[kind] = mode;
+  store.set("mode-" + kind, mode);
+  for (const b of document.querySelectorAll(`[data-mode-for="${kind}"] button`)) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+  makeWidget(kind);
+  renderHints();
+}
 
-  locked() { return this.p ? lockedBy(app.locks, this.p.id) : undefined; }
-
-  press(k) {
-    if (this.mode === "end" || this.locked()) return;
-    this.input.value += k;
-    this.input.focus();
-  }
-
-  primary() {
-    if (this.busy || !this.p || !live() || this.locked()) return; // Enter must not act while the page is not live
-    if (this.mode === "idle") this.dial(this.input.value.trim());
-    else if (this.mode === "con") this.reply(this.input.value);
-    else this.end();
-  }
-
-  end() {
-    // Hanging up a USSD session simply abandons it, as on a handset.
-    if (this.locked()) return;
-    this.gen++;
-    this.mode = "idle";
-    this.session = "";
-    this.note.hidden = true;
-    this.render();
-  }
-
-  async dial(code) {
-    if (!code || !this.p || this.busy) return;
-    await this.send({ phone: this.p.id, code });
-  }
-
-  async reply(input) {
-    await this.send({ session: this.session, input });
-  }
-
-  async send(body) {
-    const gen = this.gen;
-    this.busy = true;
-    this.note.hidden = true;
-    this.render();
-    const { status, data } = await api("POST", "api/ussd", body);
-    this.busy = false;
-    if (gen !== this.gen) {
-      // Another phone was selected, or this one hung up, while the reply was on its way.
-      this.render();
-      return;
-    }
-    this.show(status, data);
-    if (this.mode === "con") this.input.focus();
-    else this.callBtn.focus();
-  }
-
-  // show puts a USSD answer on the screen, from a key typed here or one a
-  // scenario or the autopilot sent.
-  show(status, data) {
-    if (status === 200 || status === 410) {
-      this.mode = data.end ? "end" : "con";
-      this.session = data.session || "";
-      this.screen = data.text || "";
-      this.input.value = "";
-    } else {
-      this.note.textContent = data.error || "Something went wrong.";
-      this.note.hidden = false;
-    }
-    this.render();
-  }
-
-  // type shows keys going into the reply box, as a person would press them.
-  // It stops once another phone is selected or a reset clears this one: the
-  // box then belongs to a phone the keys were not meant for.
-  async type(keys, signal) {
-    const gen = this.gen;
-    this.input.value = "";
-    await sleep(READ_MS, signal);
-    for (const k of keys) {
-      if (gen !== this.gen) return;
-      this.input.value += k;
-      await sleep(KEY_MS, signal);
-    }
-  }
-
-  render() {
-    const p = this.p;
-    this.name.textContent = p ? p.label : "…";
-    this.number.textContent = p ? [p.ward, p.number].filter(Boolean).join(" · ") : "";
-    this.root.setAttribute("aria-label", p ? p.label + "'s phone" : "Phone");
-    this.quick.textContent = "Dial " + this.code();
-    const idle = this.mode === "idle";
-    if (idle) {
-      this.meta.textContent = "Ready";
-      this.text.textContent = this.kind === "caller"
-        ? "Dial " + app.codes.caller + "\nto report an emergency."
-        : "Dial " + app.codes.responder + "\nfor the responder menu.";
-      this.label.textContent = "Number to dial";
-    } else {
-      this.meta.textContent = this.mode === "con" ? "USSD" : "USSD — session ended";
-      this.text.textContent = this.screen;
-      this.label.textContent = "Reply";
-    }
-    const lock = this.locked();
-    this.lock.textContent = lock || "";
-    this.lock.hidden = !lock;
-    this.root.classList.toggle("driven", Boolean(lock));
-    this.label.hidden = this.input.hidden = this.mode === "end";
-    this.input.setAttribute("inputmode", idle ? "tel" : "text");
-    this.callBtn.textContent = idle ? "Call" : this.mode === "con" ? "Send" : "OK";
-    const off = this.busy || !p || !live() || Boolean(lock);
-    for (const b of [this.callBtn, this.endBtn, this.quick, ...this.keypad.children]) b.disabled = off;
-    this.input.disabled = off;
-    this.quick.hidden = !idle;
-  }
-
-  renderInbox() {
-    const list = (this.p && app.inbox[this.p.id]) || [];
-    const fresh = this.lastCount !== undefined && list.length > this.lastCount;
-    this.lastCount = list.length;
-    app.seen[this.p ? this.p.id : ""] = list.length;
-    this.empty.hidden = list.length > 0;
-    this.count.hidden = list.length === 0;
-    this.count.textContent = String(list.length);
-    const items = list.slice().reverse().map((m, i) =>
-      h("li", { class: fresh && i === 0 ? "new" : "" },
-        h("time", { datetime: m.at, text: clock(new Date(m.at)) }), h("p", { text: m.text })));
-    this.msgs.replaceChildren(...items);
-  }
+function renderHints() {
+  for (const kind of KINDS) document.querySelector(`[data-hint="${kind}"]`).textContent = HINTS[kind][app.modes[kind]]();
 }
 
 // ---------- Tabs ----------
 
-let callerPhone, respPhone;
-
 // buildTabs builds a phone selector once per phone list; refreshTabs keeps
-// its selection and unread badges current without replacing the buttons, so
+// its selection and live state current without replacing the buttons, so
 // keyboard focus stays put.
 function buildTabs(mount, phones, kind) {
   mount.replaceChildren(...phones.map((p) => h("button", { type: "button", role: "tab", class: "tab", id: "tab-" + p.id,
-    "data-id": p.id, onclick: () => select(kind, p.id) }, p.label, h("span", { class: "badge", hidden: true }))));
+    "data-id": p.id, onclick: () => select(kind, p.id) }, p.label, h("span", { class: "tab-state" }))));
   mount.onkeydown = (e) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     const i = phones.findIndex((p) => p.id === app.selected[kind]);
@@ -272,70 +175,83 @@ function buildTabs(mount, phones, kind) {
   };
 }
 
+// tabState is what a person's tab says about them: a live alert and its
+// countdown, an open job, or unread SMS.
+function tabState(p, sel) {
+  if (p.kind === "responder" && app.board) {
+    const st = responderStatus(app.board, p.label, app.timeoutMs);
+    if (st.kind === "busy") return { cls: "busy", text: "On a job" };
+    if (st.kind === "alert" && st.late) return { cls: "late", text: "Open alert" };
+    if (st.kind === "alert") return { cls: "alert", text: "Alert " + mmss(Math.max(0, st.deadline - serverNow())) };
+  }
+  const unread = sel ? 0 : Math.max(0, (app.inbox[p.id] || []).length - (app.seen[p.id] || 0));
+  return unread ? { cls: "unread", text: unread + " new" } : { cls: "", text: "" };
+}
+
 function refreshTabs() {
   for (const tab of document.querySelectorAll(".tab")) {
-    const id = tab.dataset.id;
-    const sel = id === app.selected.caller || id === app.selected.responder;
-    const unread = sel ? 0 : Math.max(0, (app.inbox[id] || []).length - (app.seen[id] || 0));
+    const p = app.phones.find((x) => x.id === tab.dataset.id);
+    if (!p) continue;
+    const sel = app.selected[kindOf(p)] === p.id;
     tab.setAttribute("aria-selected", String(sel));
     tab.tabIndex = sel ? 0 : -1;
-    tab.classList.toggle("driven", Boolean(lockedBy(app.locks, id)));
-    const badge = tab.querySelector(".badge");
-    badge.hidden = unread === 0;
-    badge.textContent = String(unread);
-    badge.setAttribute("aria-label", unread + " new");
+    tab.classList.toggle("driven", Boolean(lockedBy(app.locks, p.id)));
+    const s = tabState(p, sel);
+    const out = tab.querySelector(".tab-state");
+    if (out.textContent !== s.text) out.textContent = s.text;
+    out.className = "tab-state " + s.cls;
   }
 }
 
-const widget = (kind) => (kind === "caller" ? callerPhone : respPhone);
-
 function select(kind, id) {
   app.selected[kind] = id;
-  widget(kind).setPhone(app.phones.find((p) => p.id === id));
+  widgets[kind].setPhone(app.phones.find((p) => p.id === id));
   refreshTabs();
 }
 
 function buildAllTabs() {
-  buildTabs($("#caller-tabs"), app.phones.filter((p) => p.kind === "caller"), "caller");
-  buildTabs($("#resp-tabs"), app.phones.filter((p) => p.kind === "responder"), "responder");
+  for (const kind of KINDS) buildTabs($(`#${kind}-tabs`), app.phones.filter((p) => kindOf(p) === kind), kind);
   refreshTabs();
 }
 
 function renderPhones() {
-  callerPhone.render();
-  respPhone.render();
+  for (const kind of KINDS) widgets[kind].render(true);
   refreshTabs();
 }
 
-// drive sends one USSD request for a scenario or the autopilot, showing it
-// on that phone's widget: the widget switches to the phone, the keys appear
-// one by one, then the answer. The autopilot leaves a widget alone while a
-// person is part way through a session on another phone; it then sends the
-// request without showing it.
+// drive sends one USSD request for a scenario, the autopilot or a smartphone
+// action, showing it on that phone's widget: the widget switches to the
+// phone, the key appears (typed, or tapped), then the answer. The autopilot
+// leaves a widget alone while a person is part way through a session on
+// another phone; it then sends the request without showing it.
 async function drive(phoneId, body, keys, signal, takeOver) {
   const p = app.phones.find((x) => x.id === phoneId);
   if (!p) return { status: 0, data: { error: `${phoneId} is not on screen.` } };
-  const w = widget(p.kind);
+  const kind = kindOf(p);
+  const w = widgets[kind];
   const person = w.p && w.p.id !== phoneId && w.mode === "con" && !lockedBy(app.locks, w.p.id);
   const shown = takeOver || !person;
-  if (shown && w.p?.id !== phoneId) select(p.kind, phoneId);
+  if (shown && w.p?.id !== phoneId) select(kind, phoneId);
   const gen = w.gen; // a reset or another phone bumps it, even if the widget is back on this phone
   if (shown) await w.type(keys, signal);
   const res = await api("POST", "api/ussd", body);
-  if (shown && gen === w.gen) w.show(res.status, res.data);
+  if (shown && gen === w.gen && widgets[kind] === w) w.show(res.status, res.data);
   return res;
 }
 
-// ---------- Snapshot views ----------
+// ---------- The live queue ----------
 
-function onSelectIncident(id) {
+function onSelectIncident(id, from) {
   app.incident = id;
+  const inc = app.board?.incidents.find((i) => i.id === id);
+  if (inc && app.filter !== "all" && !document.querySelector(`.qrow[data-inc="${CSS.escape(id)}"]`)) app.filter = "all";
   highlight($("#map"), id);
-  for (const card of document.querySelectorAll(".incident")) card.classList.toggle("selected", card.dataset.inc === id);
-  const card = document.getElementById("inc-" + id);
-  if (!card) return;
-  card.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
-  card.focus({ preventScroll: true });
+  renderQueueView();
+  if (from === "map") {
+    const target = window.matchMedia("(max-width: 1100px)").matches ? $("#queue-detail") : document.querySelector(`.qrow[data-inc="${CSS.escape(id)}"]`);
+    target?.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+    document.querySelector(`.qrow[data-inc="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+  }
 }
 
 function onHoverIncident(id) {
@@ -343,27 +259,51 @@ function onHoverIncident(id) {
   highlight($("#map"), id || app.incident);
 }
 
-function renderBoard(b) {
-  $("#suspended").hidden = !b.suspended;
-  const board = $("#board");
-  if (!b.incidents.length) {
-    board.replaceChildren(h("p", { class: "placeholder", text: "No incidents yet. Dial " + app.codes.caller + " on the caller phone, or play a scenario." }));
-    return;
-  }
-  // Rebuilding the cards drops keyboard focus: it goes back to the same summary, by its key, or card.
-  const active = board.contains(document.activeElement) ? document.activeElement : null;
-  const key = active?.closest("details")?.dataset.key;
-  const card = active?.closest(".incident")?.id;
-  const ctx = { open: app.open, now: serverNow(), selected: app.incident, onHover: onHoverIncident };
-  board.replaceChildren(...b.incidents.map((inc) => renderIncident(inc, ctx)));
-  renderTimelines(true);
-  const again = key ? board.querySelector(`details[data-key="${CSS.escape(key)}"] > summary`) : card && document.getElementById(card);
-  again?.focus({ preventScroll: true });
+async function closeIncident(id) {
+  if (app.closing?.busy) return;
+  if (!window.confirm("Close this incident as completed? Alerts still waiting are stood down, and its responders become free for the next call.")) return;
+  const gen = app.gen;
+  app.closing = { id, busy: true, text: "Closing…", bad: false };
+  renderQueueView();
+  const { status, data } = await api("POST", "api/progress", { incident: id, step: "close" });
+  if (gen !== app.gen) return;
+  app.closing = { id, busy: false, text: status === 200 ? "Closed. Its responders can be alerted again." : data.error || "The incident could not be closed.", bad: status !== 200 };
+  renderQueueView();
 }
 
-// renderTimelines redraws the timeline charts at their mounts' width: every
-// one after a board change, then each second the open ones, whose current
-// interval runs to now.
+function renderQueueView() {
+  if (!app.board) return;
+  const b = app.board;
+  $("#suspended").hidden = !b.suspended;
+  const rows = renderQueue($("#queue-filters"), $("#queue"), b.incidents, {
+    filter: app.filter, selected: app.incident, now: serverNow(),
+    empty: "No incidents yet. Report one from the caller phone, or play a scenario.",
+    onFilter: (g) => { app.filter = g; renderQueueView(); },
+    onSelect: (id) => onSelectIncident(id, "queue"),
+    onHover: onHoverIncident,
+  });
+  if (!rows.some((i) => i.id === app.incident)) app.incident = rows.length ? rows[0].id : "";
+  for (const r of document.querySelectorAll(".qrow")) r.setAttribute("aria-pressed", String(r.dataset.inc === app.incident));
+  renderDetail();
+}
+
+function renderDetail() {
+  const pane = $("#queue-detail");
+  const inc = app.board?.incidents.find((i) => i.id === app.incident);
+  if (!inc) {
+    pane.replaceChildren(h("p", { class: "placeholder", text: "Select an incident to see its timeline, alerts and events." }));
+    return;
+  }
+  // Rebuilding drops keyboard focus: it goes back to the same summary, by its key.
+  const active = pane.contains(document.activeElement) ? document.activeElement : null;
+  const key = active?.closest("details")?.dataset.key;
+  pane.replaceChildren(renderIncident(inc, { open: app.open, now: serverNow(), onHover: onHoverIncident, onClose: closeIncident, closing: app.closing }));
+  renderTimelines(true);
+  if (key) pane.querySelector(`details[data-key="${CSS.escape(key)}"] > summary`)?.focus({ preventScroll: true });
+}
+
+// renderTimelines redraws the timeline chart at its mount's width: after a
+// change, then each second while the incident is open.
 function renderTimelines(all) {
   if (!app.board) return;
   const byId = Object.fromEntries(app.board.incidents.map((i) => [i.id, i]));
@@ -374,10 +314,13 @@ function renderTimelines(all) {
   }
 }
 
+// ---------- Snapshot views ----------
+
 // drawMap lays the map out at its mount's size, one SVG unit to the pixel.
 function drawMap() {
   const mount = $("#map");
-  renderMap(mount, layout(app.map, app.phones, app.board, { width: mount.clientWidth, height: mount.clientHeight }), app.hover || app.incident, onSelectIncident);
+  renderMap(mount, layout(app.map, app.phones, app.board, { width: mount.clientWidth, height: mount.clientHeight }), app.hover || app.incident,
+    (id) => onSelectIncident(id, "map"));
 }
 
 // renderSnapshot renders every view of the snapshot, when it changed.
@@ -390,14 +333,20 @@ function renderSnapshot() {
   renderKpis($("#kpis"), metrics(app.board, sms));
   drawMap();
   renderFeed($("#feed"), feedItems(app.board, sms, app.phones, app.map), app.feedSeen);
-  renderBoard(app.board);
+  renderQueueView();
+  analytics.render(app.board, serverNow());
 }
 
+let ticks = 0;
+
 function tick() {
-  for (const el of document.querySelectorAll(".clock[data-t1]")) {
+  for (const el of document.querySelectorAll(".clock[data-t1], .clock-q[data-t1]")) {
     el.firstChild.textContent = mmss(serverNow() - Date.parse(el.dataset.t1));
   }
   renderTimelines(false);
+  for (const kind of KINDS) widgets[kind].refresh();
+  refreshTabs();
+  if (++ticks % 5 === 0) analytics.render(app.board, serverNow()); // an open stage grows
 }
 
 // ---------- Scenarios ----------
@@ -439,10 +388,10 @@ async function resetAndWait(signal) {
 async function play(sc) {
   if (app.scenario.phase === "running" || !live()) return;
   const n = app.board ? app.board.incidents.length : 0;
-  if (sc.needsReset && n && !window.confirm(`"${sc.title}" starts from a fresh demo. Erase the ${n} incident(s) on the board and start?`)) return;
+  if (sc.needsReset && n && !window.confirm(`"${sc.title}" starts from a fresh demo. Erase the ${n} incident(s) in the queue and start?`)) return;
   runCtl = new AbortController();
   const signal = runCtl.signal;
-  const unlock = lockPhones(app.locks, phonesOf(sc.steps), `A scenario is dialling this phone: "${sc.title}". Cancel it to use the keys.`);
+  const unlock = lockPhones(app.locks, phonesOf(sc.steps), `A scenario is using this phone: "${sc.title}". Cancel it to use the phone.`);
   ap.since = Infinity; // the autopilot leaves a scenario's alerts to the scenario
   const deps = {
     codes: app.codes, signal, now: () => Date.now(),
@@ -487,7 +436,7 @@ function autopilotPlan() {
 }
 
 // pumpAutopilot answers the queue one alert at a time, each when its delay
-// is up, so the responder widget shows one answer at a time.
+// is up, so each responder widget shows one answer at a time.
 async function pumpAutopilot() {
   if (ap.busy) return;
   ap.busy = true;
@@ -556,6 +505,7 @@ async function verify() {
   out.hidden = false;
   out.className = "audit";
   out.replaceChildren(h("p", { text: "Signing a checkpoint and verifying the ledger…" }));
+  out.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "nearest" });
   const gen = app.gen;
   const { status, data: r } = await api("POST", "api/audit", {});
   app.verifying = false;
@@ -568,7 +518,7 @@ async function verify() {
   }
   out.className = "audit " + (r.ok ? "pass" : "fail");
   const lines = [
-    r.entries + " ledger entries in an unbroken SHA-256 hash chain" + (r.firstBadSeq ? " — broken at entry " + r.firstBadSeq : ""),
+    r.entries + " ledger entries in an unbroken SHA-256 hash chain" + (r.firstBadSeq ? ", broken at entry " + r.firstBadSeq : ""),
     r.checkpointSeq >= 0 ? "Checkpoint at entry " + r.checkpointSeq + " signed with ML-DSA-65 and written to the witness" : "Nothing to sign yet: the ledger is empty",
     r.checkpointsOk + " signed checkpoint(s) and " + r.witnessesOk + " witness note(s) verified" + (r.checkpointsBad + r.witnessesBad ? ", " + (r.checkpointsBad + r.witnessesBad) + " failed" : ""),
     r.events + " incident events; " + r.pending + " waiting for the relay",
@@ -592,8 +542,8 @@ async function reset() {
 }
 
 // clearRun forgets everything that belonged to the run that ended, whether
-// this browser or another one reset it: sessions, inboxes, board, audit,
-// and the autopilot's queue.
+// this browser or another one reset it: sessions, inboxes, queue, audit,
+// reports and the autopilot's queue.
 function clearRun() {
   app.gen++;
   app.inbox = {};
@@ -603,14 +553,16 @@ function clearRun() {
   app.snapKey = "";
   app.incident = "";
   app.hover = "";
+  app.closing = null;
+  app.reports = {};
   app.feedSeen = new Set();
   ap.queue = [];
   ap.decided = new Set();
   $("#audit-result").hidden = true;
-  for (const id of ["#board", "#kpis", "#map", "#feed"]) $(id).replaceChildren();
+  for (const id of ["#queue", "#queue-detail", "#queue-filters", "#kpis", "#map", "#feed"]) $(id).replaceChildren();
+  analytics = new Analytics($("#analytics"));
   $("#map-summary").textContent = "";
-  callerPhone.setPhone(null);
-  respPhone.setPhone(null);
+  for (const kind of KINDS) widgets[kind].setPhone(null);
 }
 
 // ---------- Polling ----------
@@ -631,12 +583,11 @@ function showPhase(down) {
   s.className = "status " + (ready && !(down && down.length) ? "ok" : app.lost || app.phase === "failed" || (down && down.length) ? "bad" : "");
   $("#audit-btn").disabled = !ready || app.verifying;
   $("#reset-btn").disabled = app.phase === "starting" || app.phase === "resetting" || app.scenario.phase === "running";
-  callerPhone.render();
-  respPhone.render();
+  for (const kind of KINDS) widgets[kind].render(true);
   renderRunStatus();
 }
 
-// The page's sessions, inboxes, board and audit result belong to one ready
+// The page's sessions, inboxes, queue and audit result belong to one ready
 // run, named by the server's run counter. Any other state the server reports
 // ends that run on the page: a reset here or in another browser, a start
 // that failed, a run the page has not seen. A failed poll changes nothing,
@@ -651,15 +602,18 @@ async function pollState() {
   app.run = data.run;
   if (data.codes) app.codes = data.codes;
   if (data.map) app.map = data.map;
+  if (data.dispatch?.cascadeTimeoutMs) app.timeoutMs = data.dispatch.cascadeTimeoutMs;
   if (data.phase === "ready" && data.phones) {
     const changed = JSON.stringify(data.phones) !== JSON.stringify(app.phones) || was !== "ready";
     app.phones = data.phones;
     if (changed) {
-      const resps = app.phones.filter((p) => p.kind === "responder");
-      if (!resps.some((p) => p.id === app.selected.responder)) app.selected.responder = resps.length ? resps[0].id : "";
-      callerPhone.setPhone(app.phones.find((p) => p.id === app.selected.caller));
-      respPhone.setPhone(app.phones.find((p) => p.id === app.selected.responder));
+      for (const kind of KINDS) {
+        const mine = app.phones.filter((p) => kindOf(p) === kind);
+        if (!mine.some((p) => p.id === app.selected[kind])) app.selected[kind] = mine.length ? mine[0].id : "";
+        widgets[kind].setPhone(app.phones.find((p) => p.id === app.selected[kind]));
+      }
       buildAllTabs();
+      renderHints();
     }
   }
   showPhase(data.down);
@@ -670,17 +624,17 @@ async function pollData() {
   const gen = app.gen;
   const [sms, board] = await Promise.all([api("GET", "api/sms"), api("GET", "api/board")]);
   if (gen !== app.gen) return; // started before a reset: the data belongs to the old run
-  if (sms.status === 200) {
-    app.inbox = sms.data;
-    callerPhone.renderInbox();
-    respPhone.renderInbox();
-    refreshTabs();
-  }
   if (board.status === 200) {
     app.skew = new Date(board.data.now) - Date.now();
     app.board = board.data;
     autopilotPlan();
   }
+  if (sms.status === 200) {
+    app.inbox = sms.data;
+    for (const kind of KINDS) widgets[kind].renderInbox();
+  }
+  for (const kind of KINDS) widgets[kind].refresh();
+  refreshTabs();
   renderSnapshot();
   $("#board-stale").hidden = board.status === 200; // a failed refresh is shown, not hidden behind the last copy
 }
@@ -690,13 +644,16 @@ function loop(fn, ms) {
   run();
 }
 
-callerPhone = new Phone($("#caller-phone"), "caller");
-respPhone = new Phone($("#resp-phone"), "responder");
+let analytics = new Analytics($("#analytics"));
+for (const kind of KINDS) makeWidget(kind);
+buildModes();
+renderHints();
 $("#audit-btn").addEventListener("click", verify);
 $("#reset-btn").addEventListener("click", reset);
 buildScenarios();
 buildAutopilot();
 new ResizeObserver(() => { if (app.board && app.map) drawMap(); }).observe($("#map"));
+new ResizeObserver(() => analytics.render(app.board, serverNow())).observe($("#analytics"));
 loop(pollState, 2000);
 loop(pollData, 1500);
 setInterval(tick, 1000);

@@ -91,7 +91,7 @@ Every scenario button starts with a Reset, so on a public Space one viewer's sce
 
 ## What the demo does not show
 - **Voice**: the toll-free IVR line, voice alerts at 20 s, coordinator and facility calls, and the masked bridge. `ivr-controller` needs Asterisk ARI. The fake ARI (`internal/platform/sim/ari.go`) drives tests by API, and a browser telephone for it would be a project of its own. The SMS alerts, the USSD menu and the 90-second cascade work without voice.
-- The coordinator console (M5), arrival and field status (M3), payments (M4), the analytic store and the pseudonymiser (M6).
+- The coordinator console (M5), payments (M4), the analytic store and the pseudonymiser (M6). Arrival, departure and arrival at the facility (M3) are previewed: the smartphone records them through `/api/progress`, a demo-only endpoint that appends `responder.arrived`, `responder.departed`, `responder.at_facility` and then `incident.closed` through the single write path, as the M0 demo's fixtures do. The queue's **Close incident** stands in for the M5 console.
 - Approved clinical and message wording: every `PENDING` text is shown as the system sends it.
 - Production hardening: OpenBao, TLS, the network controls and hosting in Uganda (P0).
 
@@ -125,12 +125,13 @@ The repository owner, by the team's usual chat. The demo holds no clinical matte
 3. Within seconds, VHT 1, VHT 2, VHT 3 and Transporters 1 and 2 have the alert SMS. VHT 1 dials `*384*2#` and presses 1: "Accepted". The other two VHTs get "no longer needed", and Caller A gets "help is on the way".
 4. The board shows the incident as red, "Help assigned", with T1–T4, the alerts with "alert by sms: sent (Success)", and the event timeline.
 5. **Verify audit ledger** reports "Audit ledger verified", 0 waiting for the relay, and the projections matching.
-6. The map shows a red pin at Test Clinic 1 with solid green lines from VHT 1 and Transporter 1 once they accept, and the activity feed lists the events tagged `intake-gw`, `dispatch-worker` and `SMS`, each sealed by `outbox-relay`.
+6. The map shows a red pin at Test Clinic 1 with solid green lines from VHT 1 and Transporter 1 once they accept, and the activity feed lists the events from `intake-gw`, `dispatch-worker` and `SMS`, each sealed by `outbox-relay`.
+6a. With the phones set to **Smartphone**: the caller reports with **Use this location**; VHT 1 accepts from the notification and records **I've arrived**; once Transporter 1's tab reads **Open alert** (more than 90 s), Transporter 1 still accepts, then records the pickup and the arrival at the facility. The incident closes, the queue shows it under **Done** with T1 to T7, and the next call alerts the same responders again.
 7. Click each **Play a scenario** button in turn. Each status line ends with "done" and a result read from the board.
-8. Automated: `cmd/demo/main_integration_test.go::TestDemoScenario1OverHTTP` runs steps 2–5 over HTTP, then Reset and SIGTERM. `SAUTI_DEMO_URL=<url> go test -tags integration ./cmd/demo/ -run TestDemoEdgeCases` runs the flows the scenario buttons play. `node --test cmd/demo/webtest/*.test.js` tests the page's figures, feed, map layout, scenario runner and autopilot.
+8. Automated: `cmd/demo/main_integration_test.go::TestDemoScenario1OverHTTP` runs steps 2–5 over HTTP, then Reset and SIGTERM. `cmd/demo/progress_integration_test.go::TestDemoStepsAfterAcceptance` runs the steps after accepting, the close, and the next call alerting the same responders. `SAUTI_DEMO_URL=<url> go test -tags integration ./cmd/demo/ -run TestDemoEdgeCases` runs the flows the scenario buttons play. `node --test cmd/demo/webtest/*.test.js` tests the page's figures, feed, map layout, scenario runner and autopilot.
 9. Accessibility, to WCAG 2.2 AA, at widths from 320 to 1920 px:
    - axe-core (WCAG 2.2 A and AA rules) reports no violations, on the idle page and after the scenarios. Run it once animations have settled: new feed items fade in for 0.5 s.
-   - From a fresh load, the first Tab lands on "Skip to the dispatch board". Tab reaches every scenario button, the autopilot controls, each map pin and the activity feed, and each shows a focus ring.
+   - From a fresh load, the first Tab lands on "Skip to the live queue". Tab reaches every scenario button, the autopilot controls, each map pin and the activity feed, and each shows a focus ring.
    - With every incident section open, the page never scrolls sideways, and every control is at least 24 by 24 px.
    - With reduced motion set in the browser or OS, the pins do not pulse and the alert lines do not move.
    - A pin's name starts with what it shows, for example "R 3390: incident 213 750 3390, red, open, at Test Clinic 1", so speech input can name it.

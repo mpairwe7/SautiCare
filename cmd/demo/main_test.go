@@ -355,7 +355,7 @@ func TestStateCarriesTheGazetteerMap(t *testing.T) {
 	a := newApp(context.Background(), options{}, slog.New(slog.NewTextHandler(io.Discard, nil)), config.Bundle{}, gaz, geo)
 	st := &stack{phones: []phone{
 		{Handle: "caller-a", Label: "Caller A", Kind: "caller", e164: "+256772123456"},
-		{Handle: "vht-4", Label: "VHT 4", Kind: "responder", Role: "vht", Ward: "w02", e164: "+256772000206"},
+		{Handle: "vht-4", Label: "VHT 4", Kind: "responder", Role: "vht", Ward: "w02", Stage: "w02_stage_a", e164: "+256772000206"},
 	}}
 	for i := range st.phones {
 		if st.phones[i].Number, err = pii.ParsePhone(st.phones[i].e164); err != nil {
@@ -366,8 +366,9 @@ func TestStateCarriesTheGazetteerMap(t *testing.T) {
 	rec := httptest.NewRecorder()
 	a.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/state", nil))
 	var got struct {
-		Map    mapView
-		Phones []struct{ ID, Ward, WardID string }
+		Map      mapView
+		Phones   []struct{ ID, Ward, WardID, Stage string }
+		Dispatch struct{ CascadeTimeoutMs int64 }
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -381,6 +382,20 @@ func TestStateCarriesTheGazetteerMap(t *testing.T) {
 	}
 	if got.Phones[1].Ward != "Test Ward 2" || got.Phones[1].WardID != "w02" || got.Phones[0].WardID != "" {
 		t.Fatalf("phones %+v, want VHT 4 in Test Ward 2 (w02) and no ward for the caller", got.Phones)
+	}
+	// A responder's stage stands in for a smartphone's location: the map
+	// carries every stage and facility at its point.
+	if got.Phones[1].Stage != "w02_stage_a" || got.Phones[0].Stage != "" ||
+		!slices.Contains(got.Map.Stages, mapPlace{ID: "w02_stage_a", Ward: "w02", Name: "Test Stage 2A", Lat: 0.3890, Lon: 32.5630}) ||
+		len(got.Map.Stages) != len(gaz.Stages) {
+		t.Fatalf("stages: phones %+v, map %+v", got.Phones, got.Map.Stages)
+	}
+	if !slices.Contains(got.Map.Facilities, mapPlace{ID: "hc_test_1", Name: "Test Health Centre 1", Lat: 0.3830, Lon: 32.5590}) ||
+		len(got.Map.Facilities) != len(gaz.Facilities) {
+		t.Fatalf("facilities %+v", got.Map.Facilities)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "12025550101") {
+		t.Fatalf("/api/state reveals a facility's number: %s", body)
 	}
 	if body := rec.Body.String(); strings.Contains(body, "772123456") || strings.Contains(body, "772000206") {
 		t.Fatalf("/api/state reveals a number: %s", body)
@@ -405,5 +420,73 @@ func TestBoardKeepsPlaceIDsBesideNames(t *testing.T) {
 	other := project(incident.Projection{Ward: "w03", Landmark: location.LandmarkOther}, nil, config.Bundle{}, gaz)
 	if other.WardID != "w03" || other.LandmarkID != location.LandmarkOther {
 		t.Fatalf("free-text landmark: ward %q, landmark %q", other.WardID, other.LandmarkID)
+	}
+}
+
+// A step after an acceptance is checked before anything is read: a known
+// responder phone, a step its role records (a VHT attests arrival; a
+// transporter arrives, leaves with the patient and reaches a facility of the
+// gazetteer), and a close only from the coordinator, never a phone.
+func TestProgressRequestsAreChecked(t *testing.T) {
+	raw, err := os.ReadFile("../../config/gated/gazetteer.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gaz, err := location.ParseFile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phones := []phone{
+		{Handle: "caller-a", Kind: "caller"},
+		{Handle: "vht-1", Kind: "responder", Role: "vht"},
+		{Handle: "transporter-1", Kind: "responder", Role: "transporter"},
+	}
+	inc := "0196a4f0-0000-7000-8000-000000000001"
+	for _, c := range []struct {
+		q    progressRequest
+		want int // 0: accepted
+	}{
+		{progressRequest{Phone: "vht-1", Incident: inc, Step: stepArrived}, 0},
+		{progressRequest{Phone: "transporter-1", Incident: inc, Step: stepArrived}, 0},
+		{progressRequest{Phone: "transporter-1", Incident: inc, Step: stepDeparted}, 0},
+		{progressRequest{Phone: "transporter-1", Incident: inc, Step: stepAtFacility, Facility: "hc_test_1"}, 0},
+		{progressRequest{Incident: inc, Step: stepClose}, 0},
+		{progressRequest{Phone: "vht-1", Incident: inc, Step: stepDeparted}, http.StatusBadRequest},
+		{progressRequest{Phone: "vht-1", Incident: inc, Step: stepAtFacility, Facility: "hc_test_1"}, http.StatusBadRequest},
+		{progressRequest{Phone: "transporter-1", Incident: inc, Step: stepAtFacility, Facility: "kawempe-nrh"}, http.StatusBadRequest},
+		{progressRequest{Phone: "transporter-1", Incident: inc, Step: stepArrived, Facility: "hc_test_1"}, http.StatusBadRequest},
+		{progressRequest{Phone: "caller-a", Incident: inc, Step: stepArrived}, http.StatusBadRequest},
+		{progressRequest{Phone: "vht-9", Incident: inc, Step: stepArrived}, http.StatusBadRequest},
+		{progressRequest{Phone: "vht-1", Incident: inc, Step: stepClose}, http.StatusBadRequest},
+		{progressRequest{Phone: "vht-1", Incident: "284 262 7491", Step: stepArrived}, http.StatusBadRequest},
+		{progressRequest{Phone: "vht-1", Incident: inc, Step: "closed"}, http.StatusBadRequest},
+	} {
+		_, _, err := checkProgress(c.q, phones, gaz)
+		var pe *progressError
+		switch {
+		case c.want == 0 && err != nil:
+			t.Errorf("%+v refused: %v", c.q, err)
+		case c.want != 0 && (!errors.As(err, &pe) || pe.status != c.want):
+			t.Errorf("%+v: %v, want status %d", c.q, err, c.want)
+		}
+	}
+}
+
+// /api/progress answers 503 before the system is up and refuses a body that
+// is not JSON, like every other write.
+func TestProgressNeedsAStackAndJSON(t *testing.T) {
+	a := newApp(context.Background(), options{}, slog.New(slog.NewTextHandler(io.Discard, nil)), config.Bundle{}, location.File{}, mapView{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/progress", strings.NewReader(`{"step":"close"}`))
+	req.Header.Set("Content-Type", "application/json")
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("before start: %d %s", rec.Code, rec.Body)
+	}
+	a.st, a.phase = &stack{}, phaseReady
+	rec = httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/progress", strings.NewReader("step=close")))
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("form body: %d %s", rec.Code, rec.Body)
 	}
 }
