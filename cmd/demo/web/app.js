@@ -121,6 +121,7 @@ class Phone {
     this.gen++;
     this.mode = "idle";
     this.session = "";
+    this.input.value = ""; // one box serves every phone: keys typed for the last one are not this one's
     this.lastCount = undefined;
     this.render();
     this.renderInbox();
