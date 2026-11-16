@@ -5,13 +5,13 @@
 | Owner | repository owner (engineering) |
 | Severity | SEV-4: a demo with synthetic data; no caller or responder depends on it |
 | Alert / trigger | the Space shows "Runtime error", or the demo's status line says "The system did not start" or "Stopped: …" |
-| Last reviewed: | 2026-11-14 |
+| Last reviewed: | 2026-11-16 |
 | Last drilled | 2026-11-14 natively (`go run ./cmd/demo`); the Docker image has not been built yet |
 
 **Type:** How-to (Diátaxis) · **Code:** `cmd/demo/`, `Dockerfile`, `.dockerignore`, `scripts/deploy/hf-space-stage.sh`, `deploy/hf-space/README.md` · **Decision:** [ADR-0039](../adr/ADR-0039-public-demo-on-hugging-face.md)
 
 ## Summary
-`cmd/demo` runs Sauti Dispatch in one process tree for a presentation. It starts a private PostgreSQL 18 on loopback, provisions the five stores, roles, keys and gazetteer (`internal/platform/demo/provision.go`, shared with the M0 demo), registers synthetic responders, and launches `intake-gw`, `dispatch-worker` and `outbox-relay`. It then serves a web UI on port 7860 with a caller phone, the responders' phones, the dispatch board, the ledger verifier and Reset. The data is synthetic and throwaway. ADR-0039 lists the conditions that make hosting it outside Uganda acceptable.
+`cmd/demo` runs Sauti Dispatch in one process tree for a presentation. It starts a private PostgreSQL 18 on loopback, provisions the five stores, roles, keys and gazetteer (`internal/platform/demo/provision.go`, shared with the M0 demo), registers synthetic responders, and launches `intake-gw`, `dispatch-worker` and `outbox-relay`. It then serves a web UI on port 7860 with a caller phone, the responders' phones, live figures, a map of the wards, an activity feed, scenario buttons, a responder autopilot, the dispatch board, the ledger verifier and Reset. The data is synthetic and throwaway. ADR-0039 lists the conditions that make hosting it outside Uganda acceptable.
 
 What runs where:
 
@@ -20,7 +20,9 @@ What runs where:
 | USSD (Tool 1 and the responder menu) | the real `intake-gw`, driven through the Africa's Talking callback contract by `sim.USSD` |
 | SMS (alerts, stand-downs, caller notices) | the real `dispatch-worker` and SMS adapter, pointed at a fake Africa's Talking endpoint on loopback that keeps each message for the phone on screen and returns a "Success" delivery report |
 | Audit ledger | the real `outbox-relay`. **Verify audit ledger** signs a checkpoint (as `sautictl checkpoint`), then runs `verify-ledger` with the witness and `verify-projections`. |
-| Board | read with `op_readonly`, which cannot read a number. Event payloads are masked again. |
+| Board | read with `op_readonly`, which cannot read a number. Event payloads are masked again. Each event shows when `outbox-relay` sealed it into the ledger (`op.outbox.delivered_at`). |
+| Figures, map and activity feed | computed in the browser (`cmd/demo/web/*.js`) from `/api/state` (which carries the gazetteer's ward centres and landmark points), `/api/board` and `/api/sms`. They cover the latest 25 incidents, as the board does. |
+| Scenario buttons and responder autopilot | the browser sends each key through `POST /api/ussd`, as the on-screen phones do. The scenarios are the input paths of `cmd/demo/edge_integration_test.go`; each starts with a Reset. |
 | Responders | VHT 1–3 and Transporter 1–2 in Test Ward 1 (three VHTs, so a red call shows the parallel alerts and the first acceptance winning), VHT 4 and Transporter 3 in Test Ward 2, none in Wards 3 and 4 (a call there shows the escalation). Numbers +256772000201 to +256772000207; callers +256772123456 and +256772000777, all from the test ranges. |
 
 ## Run it locally (no Docker)
@@ -46,7 +48,7 @@ docker build -t sauti-demo .
 docker run --rm -p 7860:7860 --user 1000:1000 sauti-demo
 ```
 
-Or `docker compose up --build`, which builds the same image from `compose.yaml` and publishes it on 127.0.0.1 only. For rootless Podman without a working network, see step 10 of [the local tutorial](../tutorials/run-the-prototype-locally.md).
+Or `docker compose up --build`, which builds the same image from `compose.yaml` and publishes it on 127.0.0.1 only. For rootless Podman without a working network, see step 11 of [the local tutorial](../tutorials/run-the-prototype-locally.md).
 
 Stage 1 builds every command with `golang:1.27.4`. The runtime image is `postgres:18.6`, pinned to the digest CI uses, with the binaries in `/app/bin`, `config/` and `triage-rules/` beside them, a data directory `/app/var`, user 1000 and port 7860. The SQL migrations are compiled into the binaries. These risks are checked only when the image is built or run, not by CI:
 
@@ -85,6 +87,8 @@ Never add Space secrets or variables: the demo needs none and refuses provider s
 ## Reset
 **Reset demo** in the UI erases the run (services, PostgreSQL, data, keys, witness, messages) and starts a new one with fresh secrets and the same synthetic responders. Restarting the Space does the same. Responders are available for 8 hours from the start. After that, a responder can switch back on through the menu (3 Availability, then 1), or anyone can press Reset.
 
+Every scenario button starts with a Reset, so on a public Space one viewer's scenario erases the run for every viewer, as the Reset button does. The page asks before it erases incidents already on the board. The responder autopilot runs in the browser that switched it on, and stops when that page closes.
+
 ## What the demo does not show
 - **Voice**: the toll-free IVR line, voice alerts at 20 s, coordinator and facility calls, and the masked bridge. `ivr-controller` needs Asterisk ARI. The fake ARI (`internal/platform/sim/ari.go`) drives tests by API, and a browser telephone for it would be a project of its own. The SMS alerts, the USSD menu and the 90-second cascade work without voice.
 - The coordinator console (M5), arrival and field status (M3), payments (M4), the analytic store and the pseudonymiser (M6).
@@ -121,7 +125,9 @@ The repository owner, by the team's usual chat. The demo holds no clinical matte
 3. Within seconds, VHT 1, VHT 2, VHT 3 and Transporters 1 and 2 have the alert SMS. VHT 1 dials `*384*2#` and presses 1: "Accepted". The other two VHTs get "no longer needed", and Caller A gets "help is on the way".
 4. The board shows the incident as red, "Help assigned", with T1–T4, the alerts with "alert by sms: sent (Success)", and the event timeline.
 5. **Verify audit ledger** reports "Audit ledger verified", 0 waiting for the relay, and the projections matching.
-6. Automated: `cmd/demo/main_integration_test.go::TestDemoScenario1OverHTTP` runs steps 2–5 over HTTP, then Reset and SIGTERM.
+6. The map shows a red pin at Test Clinic 1 with solid green lines from VHT 1 and Transporter 1 once they accept, and the activity feed lists the events tagged `intake-gw`, `dispatch-worker` and `SMS`, each sealed by `outbox-relay`.
+7. Click each **Play a scenario** button in turn. Each status line ends with "done" and a result read from the board.
+8. Automated: `cmd/demo/main_integration_test.go::TestDemoScenario1OverHTTP` runs steps 2–5 over HTTP, then Reset and SIGTERM. `SAUTI_DEMO_URL=<url> go test -tags integration ./cmd/demo/ -run TestDemoEdgeCases` runs the flows the scenario buttons play. `node --test cmd/demo/webtest/*.test.js` tests the page's figures, feed, map layout, scenario runner and autopilot.
 
 ## References
 - [ADR-0039](../adr/ADR-0039-public-demo-on-hugging-face.md) (the conditions), [ADR-0008](../adr/ADR-0008-interim-hosting-and-confidentiality.md) (confidential documents), [ADR-0027](../adr/ADR-0027-channels-and-the-alert-ladder.md) (channels)

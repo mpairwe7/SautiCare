@@ -75,10 +75,14 @@ func run(log *slog.Logger, args, environ []string) error {
 	if err != nil {
 		return err
 	}
+	geo, err := newMapView(raw, gaz)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	a := newApp(ctx, o, log, cfg, gaz)
+	a := newApp(ctx, o, log, cfg, gaz, geo)
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.addr)
 	if err != nil {
 		return err

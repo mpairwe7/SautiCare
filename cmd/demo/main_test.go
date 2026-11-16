@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 
 	"sautihealth.com/sauti/internal/config"
 	"sautihealth.com/sauti/internal/dispatch"
+	"sautihealth.com/sauti/internal/incident"
 	"sautihealth.com/sauti/internal/location"
 	"sautihealth.com/sauti/internal/pii"
 	"sautihealth.com/sauti/internal/platform/africastalking"
@@ -236,7 +238,7 @@ func TestBootRetriesAFailedStart(t *testing.T) {
 		fails, calls int
 		phase        string
 	}{{2, 3, phaseReady}, {99, startAttempts, phaseFailed}} {
-		a := newApp(context.Background(), options{}, slog.New(slog.NewTextHandler(io.Discard, nil)), config.Bundle{}, location.File{})
+		a := newApp(context.Background(), options{}, slog.New(slog.NewTextHandler(io.Discard, nil)), config.Bundle{}, location.File{}, mapView{})
 		calls := 0
 		a.start = func(context.Context, options, io.Writer) (*stack, error) {
 			calls++
@@ -331,5 +333,77 @@ func TestStagingReadsTheCommittedDockerignore(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, ".env")); err == nil {
 		t.Fatal(".env staged: the exclusions came from the working tree, not HEAD")
+	}
+}
+
+// The UI's map draws the gazetteer from /api/state: each ward's centre and
+// each landmark's point, and each responder in its ward by ID. No field the
+// map adds holds a number.
+func TestStateCarriesTheGazetteerMap(t *testing.T) {
+	raw, err := os.ReadFile("../../config/gated/gazetteer.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gaz, err := location.ParseFile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	geo, err := newMapView(raw, gaz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(context.Background(), options{}, slog.New(slog.NewTextHandler(io.Discard, nil)), config.Bundle{}, gaz, geo)
+	st := &stack{phones: []phone{
+		{Handle: "caller-a", Label: "Caller A", Kind: "caller", e164: "+256772123456"},
+		{Handle: "vht-4", Label: "VHT 4", Kind: "responder", Role: "vht", Ward: "w02", e164: "+256772000206"},
+	}}
+	for i := range st.phones {
+		if st.phones[i].Number, err = pii.ParsePhone(st.phones[i].e164); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.st, a.phase = st, phaseReady
+	rec := httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	var got struct {
+		Map    mapView
+		Phones []struct{ ID, Ward, WardID string }
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Map.Wards) != 4 || got.Map.Wards[1] != (mapPlace{ID: "w02", Name: "Test Ward 2", Lat: 0.3880, Lon: 32.5620}) {
+		t.Fatalf("wards %+v, want the gazetteer's four with w02 centred at 0.3880, 32.5620", got.Map.Wards)
+	}
+	if !slices.Contains(got.Map.Landmarks, mapPlace{ID: "w01_clinic", Ward: "w01", Name: "Test Clinic 1", Lat: 0.3785, Lon: 32.5548}) ||
+		len(got.Map.Landmarks) != len(gaz.Landmarks) {
+		t.Fatalf("landmarks %+v, want every gazetteer landmark at its point", got.Map.Landmarks)
+	}
+	if got.Phones[1].Ward != "Test Ward 2" || got.Phones[1].WardID != "w02" || got.Phones[0].WardID != "" {
+		t.Fatalf("phones %+v, want VHT 4 in Test Ward 2 (w02) and no ward for the caller", got.Phones)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "772123456") || strings.Contains(body, "772000206") {
+		t.Fatalf("/api/state reveals a number: %s", body)
+	}
+}
+
+// Each board incident keeps the gazetteer IDs of its ward and landmark beside
+// their names, so the map can place it; a free-text landmark keeps its code.
+func TestBoardKeepsPlaceIDsBesideNames(t *testing.T) {
+	raw, err := os.ReadFile("../../config/gated/gazetteer.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gaz, err := location.ParseFile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := project(incident.Projection{Ward: "w01", Landmark: "w01_clinic"}, nil, config.Bundle{}, gaz)
+	if in.Ward != "Test Ward 1" || in.WardID != "w01" || in.Landmark != "Test Clinic 1" || in.LandmarkID != "w01_clinic" {
+		t.Fatalf("ward %q (%q), landmark %q (%q)", in.Ward, in.WardID, in.Landmark, in.LandmarkID)
+	}
+	other := project(incident.Projection{Ward: "w03", Landmark: location.LandmarkOther}, nil, config.Bundle{}, gaz)
+	if other.WardID != "w03" || other.LandmarkID != location.LandmarkOther {
+		t.Fatalf("free-text landmark: ward %q, landmark %q", other.WardID, other.LandmarkID)
 	}
 }

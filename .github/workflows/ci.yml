@@ -58,6 +58,9 @@ jobs:
       - run: scripts/ci/unit.sh
         env:
           CGO_ENABLED: "1"
+      # The demo dashboard's pure ES modules (cmd/demo/web), with the
+      # runner's preinstalled Node: no dependencies, no build step.
+      - run: node --test cmd/demo/webtest/*.test.js
 
   integration:
     name: integration + e2e (PostgreSQL 18.6)

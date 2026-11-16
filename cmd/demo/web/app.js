@@ -1,22 +1,20 @@
-"use strict";
-// Sauti Dispatch demo UI. Every value from the server is set as text, never
-// as HTML. The server only ever sends masked phone numbers.
+// Sauti Dispatch demo UI: the composition root. It polls one snapshot
+// ({state, board, sms}) and renders every view from it; every simulated
+// action goes through the same USSD API as the on-screen phones. Every
+// value from the server is set as text, never as HTML. The server only ever
+// sends masked phone numbers.
+import { h, clock } from "./dom.js";
+import { mmss } from "./format.js";
+import { metrics, boardSms } from "./metrics.js";
+import { feedItems } from "./feed.js";
+import { layout } from "./geo.js";
+import { renderKpis, renderMap, renderFeed, highlight } from "./views.js";
+import { renderIncident, timelineChart } from "./cards.js";
+import { SCENARIOS, runScenario, phonesOf, answerAlert, lockPhones, lockedBy, IDLE } from "./scenarios.js";
+import { AUTOPILOT, plan } from "./autopilot.js";
 
 const $ = (sel) => document.querySelector(sel);
-
-// h builds an element: h("p", {class: "x", text: "y"}, child, ...).
-function h(tag, attrs, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k === "text") el.textContent = v;
-    else if (k === "class") el.className = v;
-    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else el.setAttribute(k, v === true ? "" : v);
-  }
-  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
-  return el;
-}
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 async function api(method, path, body) {
   const opt = { method, headers: {} };
@@ -34,22 +32,44 @@ async function api(method, path, body) {
   }
 }
 
+// sleep resolves after ms, or rejects once signal is aborted.
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(t); reject(signal.reason); }, { once: true });
+  });
+}
+
 const app = {
   phase: "", // the last phase the server reported; a failed poll leaves it as it was
+  run: 0,
   lost: false, // the last state poll failed
   verifying: false, // an audit verification is in flight
   phones: [],
   codes: { caller: "*384*1#", responder: "*384*2#" },
+  map: null, // the gazetteer, from /api/state
+  board: null,
   inbox: {},
   seen: {},
   selected: { caller: "caller-a", responder: "" },
   open: new Set(),
   skew: 0, // server clock minus browser clock, ms
-  boardKey: "",
+  snapKey: "",
   gen: 0, // bumped by clearRun: a response to a request from an earlier run is dropped
+  incident: "", // the incident picked on the map
+  hover: "", // the incident whose card the pointer or focus is on
+  feedSeen: new Set(),
+  locks: new Set(), // the locks ({why, phones}) of the scenario and the autopilot dialling phones
+  scenario: IDLE,
 };
 
+const serverNow = () => Date.now() + app.skew;
+
 // ---------- Phones ----------
+
+const READ_MS = 650; // the audience reads a screen before the next key
+const KEY_MS = 110;
 
 class Phone {
   constructor(mount, kind) {
@@ -69,6 +89,7 @@ class Phone {
         if (e.key === "Escape") { e.preventDefault(); this.end(); }
       } });
     this.note = h("p", { class: "screen-note", role: "alert", hidden: true });
+    this.lock = h("p", { class: "phone-lock", hidden: true });
     this.callBtn = h("button", { type: "button", class: "key-call", onclick: () => this.primary() });
     this.endBtn = h("button", { type: "button", class: "key-end", text: "End", onclick: () => this.end() });
     const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
@@ -88,7 +109,7 @@ class Phone {
     this.count = h("span", { class: "badge", hidden: true });
     this.inbox = h("section", { class: "inbox", "aria-label": "SMS inbox" },
       h("h3", {}, "SMS inbox", this.count), this.empty, this.msgs);
-    mount.replaceChildren(this.root, this.inbox);
+    mount.replaceChildren(this.lock, this.root, this.inbox);
     this.render();
   }
 
@@ -100,19 +121,22 @@ class Phone {
     this.gen++;
     this.mode = "idle";
     this.session = "";
+    this.input.value = ""; // one box serves every phone: keys typed for the last one are not this one's
     this.lastCount = undefined;
     this.render();
     this.renderInbox();
   }
 
+  locked() { return this.p ? lockedBy(app.locks, this.p.id) : undefined; }
+
   press(k) {
-    if (this.mode === "end") return;
+    if (this.mode === "end" || this.locked()) return;
     this.input.value += k;
     this.input.focus();
   }
 
   primary() {
-    if (this.busy || !this.p || !live()) return; // Enter must not act while the page is not live
+    if (this.busy || !this.p || !live() || this.locked()) return; // Enter must not act while the page is not live
     if (this.mode === "idle") this.dial(this.input.value.trim());
     else if (this.mode === "con") this.reply(this.input.value);
     else this.end();
@@ -120,6 +144,7 @@ class Phone {
 
   end() {
     // Hanging up a USSD session simply abandons it, as on a handset.
+    if (this.locked()) return;
     this.gen++;
     this.mode = "idle";
     this.session = "";
@@ -148,6 +173,14 @@ class Phone {
       this.render();
       return;
     }
+    this.show(status, data);
+    if (this.mode === "con") this.input.focus();
+    else this.callBtn.focus();
+  }
+
+  // show puts a USSD answer on the screen, from a key typed here or one a
+  // scenario or the autopilot sent.
+  show(status, data) {
     if (status === 200 || status === 410) {
       this.mode = data.end ? "end" : "con";
       this.session = data.session || "";
@@ -158,8 +191,20 @@ class Phone {
       this.note.hidden = false;
     }
     this.render();
-    if (this.mode === "con") this.input.focus();
-    else this.callBtn.focus();
+  }
+
+  // type shows keys going into the reply box, as a person would press them.
+  // It stops once another phone is selected or a reset clears this one: the
+  // box then belongs to a phone the keys were not meant for.
+  async type(keys, signal) {
+    const gen = this.gen;
+    this.input.value = "";
+    await sleep(READ_MS, signal);
+    for (const k of keys) {
+      if (gen !== this.gen) return;
+      this.input.value += k;
+      await sleep(KEY_MS, signal);
+    }
   }
 
   render() {
@@ -180,11 +225,16 @@ class Phone {
       this.text.textContent = this.screen;
       this.label.textContent = "Reply";
     }
+    const lock = this.locked();
+    this.lock.textContent = lock || "";
+    this.lock.hidden = !lock;
+    this.root.classList.toggle("driven", Boolean(lock));
     this.label.hidden = this.input.hidden = this.mode === "end";
     this.input.setAttribute("inputmode", idle ? "tel" : "text");
     this.callBtn.textContent = idle ? "Call" : this.mode === "con" ? "Send" : "OK";
-    for (const b of [this.callBtn, this.endBtn, this.quick, ...this.keypad.children]) b.disabled = this.busy || !p || !live();
-    this.input.disabled = this.busy || !p || !live();
+    const off = this.busy || !p || !live() || Boolean(lock);
+    for (const b of [this.callBtn, this.endBtn, this.quick, ...this.keypad.children]) b.disabled = off;
+    this.input.disabled = off;
     this.quick.hidden = !idle;
   }
 
@@ -201,10 +251,6 @@ class Phone {
         h("time", { datetime: m.at, text: clock(new Date(m.at)) }), h("p", { text: m.text })));
     this.msgs.replaceChildren(...items);
   }
-}
-
-function clock(d) {
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 // ---------- Tabs ----------
@@ -233,6 +279,7 @@ function refreshTabs() {
     const unread = sel ? 0 : Math.max(0, (app.inbox[id] || []).length - (app.seen[id] || 0));
     tab.setAttribute("aria-selected", String(sel));
     tab.tabIndex = sel ? 0 : -1;
+    tab.classList.toggle("driven", Boolean(lockedBy(app.locks, id)));
     const badge = tab.querySelector(".badge");
     badge.hidden = unread === 0;
     badge.textContent = String(unread);
@@ -240,9 +287,11 @@ function refreshTabs() {
   }
 }
 
+const widget = (kind) => (kind === "caller" ? callerPhone : respPhone);
+
 function select(kind, id) {
   app.selected[kind] = id;
-  (kind === "caller" ? callerPhone : respPhone).setPhone(app.phones.find((p) => p.id === id));
+  widget(kind).setPhone(app.phones.find((p) => p.id === id));
   refreshTabs();
 }
 
@@ -252,99 +301,248 @@ function buildAllTabs() {
   refreshTabs();
 }
 
-// ---------- Board ----------
-
-const tNames = { T1: "call", T2: "ready to dispatch", T3: "first alert", T4: "accepted", T5: "arrived", T6: "departed", T7: "at facility" };
-const stateNames = { intake: "Taking the call", triaged: "Triaged", dispatching: "Finding help", assigned: "Help assigned",
-  on_scene: "On scene", transporting: "Transporting", at_facility: "At facility", closed: "Closed", merged: "Merged" };
-const outcomeNames = { pending: "waiting", accepted: "accepted", declined: "declined", no_response: "no response", stood_down: "stood down" };
-
-function since(from, to) {
-  const s = Math.max(0, Math.round((to - from) / 1000));
-  const m = Math.floor(s / 60);
-  return m + ":" + String(s % 60).padStart(2, "0");
+function renderPhones() {
+  callerPhone.render();
+  respPhone.render();
+  refreshTabs();
 }
 
-function details(key, summary, body) {
-  const d = h("details", { open: app.open.has(key), ontoggle: () => (d.open ? app.open.add(key) : app.open.delete(key)) },
-    h("summary", { text: summary }), body);
-  return d;
+// drive sends one USSD request for a scenario or the autopilot, showing it
+// on that phone's widget: the widget switches to the phone, the keys appear
+// one by one, then the answer. The autopilot leaves a widget alone while a
+// person is part way through a session on another phone; it then sends the
+// request without showing it.
+async function drive(phoneId, body, keys, signal, takeOver) {
+  const p = app.phones.find((x) => x.id === phoneId);
+  if (!p) return { status: 0, data: { error: `${phoneId} is not on screen.` } };
+  const w = widget(p.kind);
+  const person = w.p && w.p.id !== phoneId && w.mode === "con" && !lockedBy(app.locks, w.p.id);
+  const shown = takeOver || !person;
+  if (shown && w.p?.id !== phoneId) select(p.kind, phoneId);
+  const gen = w.gen; // a reset or another phone bumps it, even if the widget is back on this phone
+  if (shown) await w.type(keys, signal);
+  const res = await api("POST", "api/ussd", body);
+  if (shown && gen === w.gen) w.show(res.status, res.data);
+  return res;
 }
 
-function table(head, rows) {
-  return h("table", {}, h("thead", {}, h("tr", {}, head.map((c) => h("th", { scope: "col", text: c })))),
-    h("tbody", {}, rows.map((r) => h("tr", {}, r.map((c) => (c instanceof Node ? h("td", {}, c) : h("td", { text: c })))))));
+// ---------- Snapshot views ----------
+
+function onSelectIncident(id) {
+  app.incident = id;
+  highlight($("#map"), id);
+  for (const card of document.querySelectorAll(".incident")) card.classList.toggle("selected", card.dataset.inc === id);
+  const card = document.getElementById("inc-" + id);
+  if (!card) return;
+  card.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+  card.focus({ preventScroll: true });
 }
 
-function attempts(list) {
-  return list.map((a) => a.kind + " by " + a.channel + ": " + a.status + (a.delivery ? " (" + a.delivery + ")" : "")).join("; ") || "—";
-}
-
-function renderIncident(inc) {
-  const t1 = inc.t.T1 ? new Date(inc.t.T1) : null;
-  const sev = inc.severity || "none";
-  const open = inc.state !== "closed" && inc.state !== "merged";
-  const clockEl = h("span", { class: "clock", "data-t1": t1 && open ? inc.t.T1 : null },
-    t1 ? since(t1, open ? Date.now() + app.skew : Math.max(...Object.values(inc.t).map((v) => new Date(v)))) : "—",
-    h("small", { text: open ? "since T1" : "T1 to last" }));
-  const facts = [inc.category, inc.ward, inc.landmark].filter(Boolean).join(" · ") || "Answers not given yet";
-  const tags = [];
-  if (inc.escalated) tags.push(h("li", { class: "esc", text: "Escalated to a coordinator" }));
-  for (const f of inc.flags || []) tags.push(h("li", { text: f.replaceAll("_", " ") }));
-  if (inc.location) tags.push(h("li", { text: "located by " + inc.location }));
-  if (inc.wake && open) tags.push(h("li", { text: "next dispatch step " + clock(new Date(inc.wake)) }));
-  const ttimes = h("ol", { class: "ttimes", "aria-label": "Protocol timestamps" },
-    ["T1", "T2", "T3", "T4", "T5", "T6", "T7"].map((k) => {
-      const v = inc.t[k];
-      return h("li", { class: v ? "done" : "" }, h("b", { text: k }),
-        h("span", { class: "v", text: v && t1 ? "+" + since(t1, new Date(v)) : "—" }), " " + tNames[k]);
-    }));
-  const alerts = details(inc.id + ":alerts", "Alerts (" + inc.alerts.length + ")",
-    inc.alerts.length ? table(["Responder", "Ring", "Sent", "Outcome", "Delivery"], inc.alerts.map((a) => [
-      a.responder + " (" + a.role + ")", String(a.ring), clock(new Date(a.sentAt)),
-      outcomeNames[a.outcome] + (a.reason ? " — " + a.reason : "") + (a.respondedAt ? " at " + clock(new Date(a.respondedAt)) : ""),
-      attempts(a.attempts)])) : h("p", { class: "empty", text: "No responder alerted yet." }));
-  const kids = [alerts];
-  if (inc.escalations.length) {
-    kids.push(details(inc.id + ":esc", "Escalations (" + inc.escalations.length + ")",
-      table(["Time", "Reason", "Role"], inc.escalations.map((e) => [clock(new Date(e.at)), e.reason.replaceAll("_", " "), e.role || "—"]))));
-  }
-  if (inc.notices.length) {
-    kids.push(details(inc.id + ":notices", "Caller notices (" + inc.notices.length + ")",
-      table(["Notice", "Channel", "Status"], inc.notices.map((n) => [n.kind.replaceAll("_", " "), n.channel, n.status + (n.delivery ? " (" + n.delivery + ")" : "")]))));
-  }
-  kids.push(details(inc.id + ":events", "Event timeline (" + inc.events.length + ")",
-    table(["#", "Time", "Event", "Actor", "Coded payload"], inc.events.map((e) => [
-      String(e.seq), clock(new Date(e.at)), e.type, e.actor, h("span", { class: "payload", text: e.payload })]))));
-  return h("article", { class: "incident " + sev, "aria-labelledby": "ref-" + inc.id },
-    h("div", { class: "inc-head" },
-      h("span", { class: "chip " + sev, text: sev === "none" ? "UNCLASSIFIED" : sev.toUpperCase() }),
-      h("h3", { id: "ref-" + inc.id, "aria-label": "Incident " + (inc.reference || ""), text: inc.reference || "—" }),
-      h("span", { class: "state", text: stateNames[inc.state] || inc.state }),
-      clockEl),
-    h("p", { class: "facts", text: facts }),
-    tags.length ? h("ul", { class: "tags" }, tags) : null,
-    ttimes, kids);
+function onHoverIncident(id) {
+  app.hover = id;
+  highlight($("#map"), id || app.incident);
 }
 
 function renderBoard(b) {
-  app.skew = new Date(b.now) - Date.now();
   $("#suspended").hidden = !b.suspended;
-  const key = JSON.stringify(b.incidents);
-  if (key === app.boardKey) return;
-  app.boardKey = key;
   const board = $("#board");
   if (!b.incidents.length) {
-    board.replaceChildren(h("p", { class: "placeholder", text: "No incidents yet. Dial " + app.codes.caller + " on the caller phone to report one." }));
+    board.replaceChildren(h("p", { class: "placeholder", text: "No incidents yet. Dial " + app.codes.caller + " on the caller phone, or play a scenario." }));
     return;
   }
-  board.replaceChildren(...b.incidents.map(renderIncident));
+  // Rebuilding the cards drops keyboard focus: it goes back to the same summary, by its key, or card.
+  const active = board.contains(document.activeElement) ? document.activeElement : null;
+  const key = active?.closest("details")?.dataset.key;
+  const card = active?.closest(".incident")?.id;
+  const ctx = { open: app.open, now: serverNow(), selected: app.incident, onHover: onHoverIncident };
+  board.replaceChildren(...b.incidents.map((inc) => renderIncident(inc, ctx)));
+  renderTimelines(true);
+  const again = key ? board.querySelector(`details[data-key="${CSS.escape(key)}"] > summary`) : card && document.getElementById(card);
+  again?.focus({ preventScroll: true });
+}
+
+// renderTimelines redraws the timeline charts at their mounts' width: every
+// one after a board change, then each second the open ones, whose current
+// interval runs to now.
+function renderTimelines(all) {
+  if (!app.board) return;
+  const byId = Object.fromEntries(app.board.incidents.map((i) => [i.id, i]));
+  for (const mount of document.querySelectorAll(".tl-mount")) {
+    const inc = byId[mount.dataset.tl];
+    if (!inc || (!all && (inc.state === "closed" || inc.state === "merged"))) continue;
+    mount.replaceChildren(timelineChart(inc, serverNow(), mount.clientWidth) || "");
+  }
+}
+
+// drawMap lays the map out at its mount's size, one SVG unit to the pixel.
+function drawMap() {
+  const mount = $("#map");
+  renderMap(mount, layout(app.map, app.phones, app.board, { width: mount.clientWidth, height: mount.clientHeight }), app.hover || app.incident, onSelectIncident);
+}
+
+// renderSnapshot renders every view of the snapshot, when it changed.
+function renderSnapshot() {
+  if (!app.board || !app.map) return;
+  const key = JSON.stringify([app.board.incidents, app.board.suspended, app.inbox, app.phones]);
+  if (key === app.snapKey) return;
+  app.snapKey = key;
+  const sms = boardSms(app.board, app.inbox);
+  renderKpis($("#kpis"), metrics(app.board, sms));
+  drawMap();
+  renderFeed($("#feed"), feedItems(app.board, sms, app.phones, app.map), app.feedSeen);
+  renderBoard(app.board);
 }
 
 function tick() {
   for (const el of document.querySelectorAll(".clock[data-t1]")) {
-    el.firstChild.textContent = since(new Date(el.dataset.t1), Date.now() + app.skew);
+    el.firstChild.textContent = mmss(serverNow() - Date.parse(el.dataset.t1));
   }
+  renderTimelines(false);
+}
+
+// ---------- Scenarios ----------
+
+let runCtl = null;
+
+function renderRunStatus() {
+  const s = app.scenario;
+  const sc = SCENARIOS.find((x) => x.id === s.id);
+  const out = $("#run-status");
+  out.className = "run-status " + s.phase;
+  const text = {
+    idle: () => "Pick a scenario to watch it play on the phones.",
+    running: () => `${sc.title}. Step ${s.step + 1} of ${s.total}: ${s.label}.`,
+    done: () => `${sc.title}: done. ${s.result}`,
+    failed: () => `${sc.title} stopped at step ${s.step + 1}: ${s.reason}`,
+    cancelled: () => `${sc.title} cancelled at step ${s.step + 1}.`,
+  }[s.phase]();
+  if (out.textContent !== text) out.textContent = text; // a live region: announce changes only
+  $("#run-cancel").hidden = s.phase !== "running";
+  for (const b of document.querySelectorAll(".scenario")) {
+    b.disabled = s.phase === "running" || !live();
+    b.classList.toggle("running", s.phase === "running" && b.dataset.id === s.id);
+  }
+  $("#ap-paused").hidden = !(ap.enabled && s.phase === "running");
+}
+
+// resetAndWait resets the demo and resolves once the new run is live.
+async function resetAndWait(signal) {
+  const before = app.run;
+  const { status, data } = await api("POST", "api/reset", {});
+  if (status !== 202) throw new Error(data.error || "The demo could not be reset.");
+  app.phase = "resetting";
+  clearRun();
+  showPhase();
+  while (!(live() && app.run > before && app.phones.length)) await sleep(400, signal);
+}
+
+async function play(sc) {
+  if (app.scenario.phase === "running" || !live()) return;
+  const n = app.board ? app.board.incidents.length : 0;
+  if (sc.needsReset && n && !window.confirm(`"${sc.title}" starts from a fresh demo. Erase the ${n} incident(s) on the board and start?`)) return;
+  runCtl = new AbortController();
+  const signal = runCtl.signal;
+  const unlock = lockPhones(app.locks, phonesOf(sc.steps), `A scenario is dialling this phone: "${sc.title}". Cancel it to use the keys.`);
+  ap.since = Infinity; // the autopilot leaves a scenario's alerts to the scenario
+  const deps = {
+    codes: app.codes, signal, now: () => Date.now(),
+    ussd: (phone, body, keys) => drive(phone, body, keys, signal, true),
+    board: async () => { const r = await api("GET", "api/board"); return r.status === 200 ? r.data : null; },
+    sleep: (ms) => sleep(ms, signal),
+    reset: () => resetAndWait(signal),
+  };
+  renderPhones();
+  await runScenario(sc, deps, (s) => { app.scenario = s; renderRunStatus(); });
+  runCtl.abort(); // stops a parallel branch still running after its sibling failed
+  unlock();
+  ap.since = serverNow();
+  renderPhones();
+}
+
+function buildScenarios() {
+  $("#scenarios").replaceChildren(...SCENARIOS.map((sc) => h("button", { type: "button", class: "scenario", "data-id": sc.id,
+    "aria-describedby": "sc-" + sc.id, onclick: () => play(sc) },
+  h("b", { text: sc.title }), h("span", { id: "sc-" + sc.id, text: sc.description }))));
+  $("#run-cancel").addEventListener("click", () => runCtl?.abort());
+  renderRunStatus();
+}
+
+// ---------- Responder autopilot ----------
+
+const ap = { ...AUTOPILOT, since: Infinity, decided: new Set(), queue: [], busy: false };
+
+function apLog(text) { $("#ap-log").textContent = text; }
+
+// autopilotPlan takes the decisions for alerts it has not seen; called on
+// every board poll, it plans each alert once (ap.decided).
+function autopilotPlan() {
+  if (!ap.enabled || !app.board || app.scenario.phase === "running") return;
+  for (const d of plan(app.board, app.phones, ap, ap.decided, ap.since)) {
+    ap.decided.add(d.key);
+    if (d.action === "ignore") apLog(`${d.responder} leaves the alert for ${d.ref} unanswered.`);
+    else ap.queue.push(d);
+  }
+  ap.queue.sort((a, b) => a.at - b.at);
+  pumpAutopilot();
+}
+
+// pumpAutopilot answers the queue one alert at a time, each when its delay
+// is up, so the responder widget shows one answer at a time.
+async function pumpAutopilot() {
+  if (ap.busy) return;
+  ap.busy = true;
+  try {
+    while (ap.enabled && ap.queue.length) {
+      const d = ap.queue[0];
+      if (app.scenario.phase === "running" || d.at > serverNow()) { await sleep(500); continue; }
+      ap.queue.shift();
+      const inc = app.board && app.board.incidents.find((i) => i.reference === d.ref);
+      if (!inc || !inc.alerts.some((a) => a.responder === d.responder && a.outcome === "pending")) {
+        apLog(`${d.responder}'s alert for ${d.ref} ended before the autopilot answered.`);
+        continue;
+      }
+      const unlock = lockPhones(app.locks, [d.phone], "The autopilot is answering an alert on this phone.");
+      renderPhones();
+      const gen = app.gen;
+      try {
+        const deps = { codes: app.codes, signal: new AbortController().signal, ussd: (phone, body, keys) => drive(phone, body, keys, undefined, false) };
+        await answerAlert(deps, d.phone, d.ref, d.action);
+        if (gen === app.gen) apLog(`${d.responder} ${d.action === "accept" ? "accepted" : "declined"} ${d.ref} on ${app.codes.responder}.`);
+      } catch (err) {
+        if (gen === app.gen) apLog(`${d.responder} did not answer ${d.ref}: ${err.message}`);
+      } finally {
+        unlock();
+        renderPhones();
+      }
+    }
+  } finally {
+    ap.busy = false;
+  }
+}
+
+function buildAutopilot() {
+  const shares = ["accept", "decline", "ignore"];
+  const showShares = () => {
+    const total = shares.reduce((n, k) => n + ap[k], 0);
+    for (const k of shares) $(`#ap-${k}-v`).textContent = total ? Math.round((100 * ap[k]) / total) + "%" : "0%";
+  };
+  for (const k of shares) {
+    const input = $(`#ap-${k}`);
+    input.value = String(ap[k]);
+    input.addEventListener("input", () => { ap[k] = Number(input.value); showShares(); });
+  }
+  const delay = $("#ap-delay");
+  delay.value = String(ap.delayMs);
+  delay.addEventListener("change", () => { ap.delayMs = Number(delay.value); });
+  $("#ap-on").addEventListener("change", (e) => {
+    ap.enabled = e.target.checked;
+    ap.since = app.scenario.phase === "running" ? Infinity : serverNow();
+    ap.queue = [];
+    apLog(ap.enabled ? "On. New alerts are answered on the responder phones after the delay." : "Off. Alerts wait for a person to answer.");
+    renderRunStatus();
+    autopilotPlan();
+  });
+  showShares();
 }
 
 // ---------- Audit and reset ----------
@@ -394,15 +592,23 @@ async function reset() {
 }
 
 // clearRun forgets everything that belonged to the run that ended, whether
-// this browser or another one reset it: sessions, inboxes, board, audit.
+// this browser or another one reset it: sessions, inboxes, board, audit,
+// and the autopilot's queue.
 function clearRun() {
   app.gen++;
   app.inbox = {};
   app.seen = {};
   app.phones = [];
-  app.boardKey = "";
+  app.board = null;
+  app.snapKey = "";
+  app.incident = "";
+  app.hover = "";
+  app.feedSeen = new Set();
+  ap.queue = [];
+  ap.decided = new Set();
   $("#audit-result").hidden = true;
-  $("#board").replaceChildren();
+  for (const id of ["#board", "#kpis", "#map", "#feed"]) $(id).replaceChildren();
+  $("#map-summary").textContent = "";
   callerPhone.setPhone(null);
   respPhone.setPhone(null);
 }
@@ -424,9 +630,10 @@ function showPhase(down) {
   s.textContent = down && down.length ? "Stopped: " + down.join(", ") + ". Press Reset." : text;
   s.className = "status " + (ready && !(down && down.length) ? "ok" : app.lost || app.phase === "failed" || (down && down.length) ? "bad" : "");
   $("#audit-btn").disabled = !ready || app.verifying;
-  $("#reset-btn").disabled = app.phase === "starting" || app.phase === "resetting";
+  $("#reset-btn").disabled = app.phase === "starting" || app.phase === "resetting" || app.scenario.phase === "running";
   callerPhone.render();
   respPhone.render();
+  renderRunStatus();
 }
 
 // The page's sessions, inboxes, board and audit result belong to one ready
@@ -443,6 +650,7 @@ async function pollState() {
   if (data.phase !== "ready" || data.run !== app.run) clearRun();
   app.run = data.run;
   if (data.codes) app.codes = data.codes;
+  if (data.map) app.map = data.map;
   if (data.phase === "ready" && data.phones) {
     const changed = JSON.stringify(data.phones) !== JSON.stringify(app.phones) || was !== "ready";
     app.phones = data.phones;
@@ -468,7 +676,12 @@ async function pollData() {
     respPhone.renderInbox();
     refreshTabs();
   }
-  if (board.status === 200) renderBoard(board.data);
+  if (board.status === 200) {
+    app.skew = new Date(board.data.now) - Date.now();
+    app.board = board.data;
+    autopilotPlan();
+  }
+  renderSnapshot();
   $("#board-stale").hidden = board.status === 200; // a failed refresh is shown, not hidden behind the last copy
 }
 
@@ -477,12 +690,13 @@ function loop(fn, ms) {
   run();
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  callerPhone = new Phone($("#caller-phone"), "caller");
-  respPhone = new Phone($("#resp-phone"), "responder");
-  $("#audit-btn").addEventListener("click", verify);
-  $("#reset-btn").addEventListener("click", reset);
-  loop(pollState, 2000);
-  loop(pollData, 1500);
-  setInterval(tick, 1000);
-});
+callerPhone = new Phone($("#caller-phone"), "caller");
+respPhone = new Phone($("#resp-phone"), "responder");
+$("#audit-btn").addEventListener("click", verify);
+$("#reset-btn").addEventListener("click", reset);
+buildScenarios();
+buildAutopilot();
+new ResizeObserver(() => { if (app.board && app.map) drawMap(); }).observe($("#map"));
+loop(pollState, 2000);
+loop(pollData, 1500);
+setInterval(tick, 1000);

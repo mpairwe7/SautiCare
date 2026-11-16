@@ -64,7 +64,8 @@ type phone struct {
 	Label  string    `json:"label"`
 	Kind   string    `json:"kind"` // caller or responder
 	Role   string    `json:"role,omitempty"`
-	Ward   string    `json:"ward,omitempty"`
+	Ward   string    `json:"ward,omitempty"` // an ID; /api/state sends the English name, and the ID as WardID
+	WardID string    `json:"wardId,omitempty"`
 	Number pii.Phone `json:"number"`
 	e164   string
 }

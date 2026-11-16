@@ -7,7 +7,7 @@
 <meta name="description" content="Emergency medical dispatch from any phone: a demo with synthetic data only.">
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="app.css">
-<script src="app.js" defer></script>
+<script type="module" src="app.js"></script>
 </head>
 <body>
 <a class="skip" href="#board-h">Skip to the dispatch board</a>
@@ -25,19 +25,85 @@
   </div>
 </header>
 
+<section class="strip" aria-labelledby="kpi-h">
+  <h2 id="kpi-h" class="visually-hidden">Live figures</h2>
+  <div id="kpis" class="kpis"></div>
+</section>
+
+<section class="runbar" aria-labelledby="run-h">
+  <div class="run-main">
+    <h2 id="run-h">Play a scenario</h2>
+    <p class="hint">Each scenario resets the demo, then presses the keys on the phones below through the real USSD service, one screen at a time.</p>
+    <div id="scenarios" class="scenarios" role="group" aria-labelledby="run-h"></div>
+    <div class="run-line">
+      <p id="run-status" class="run-status" role="status" aria-live="polite"></p>
+      <button id="run-cancel" type="button" class="btn btn-quiet" hidden>Cancel scenario</button>
+    </div>
+  </div>
+  <fieldset class="autopilot">
+    <legend>Responder autopilot</legend>
+    <label class="ap-switch"><input id="ap-on" type="checkbox"> Answer new alerts on the responder phones</label>
+    <div class="shares">
+      <label for="ap-accept">Accept <output id="ap-accept-v" for="ap-accept"></output></label>
+      <input id="ap-accept" type="range" min="0" max="100" step="5">
+      <label for="ap-decline">Decline <output id="ap-decline-v" for="ap-decline"></output></label>
+      <input id="ap-decline" type="range" min="0" max="100" step="5">
+      <label for="ap-ignore">Ignore <output id="ap-ignore-v" for="ap-ignore"></output></label>
+      <input id="ap-ignore" type="range" min="0" max="100" step="5">
+    </div>
+    <label class="ap-delay">Answer after
+      <select id="ap-delay">
+        <option value="3000">about 3 seconds</option>
+        <option value="8000">about 8 seconds</option>
+        <option value="20000">about 20 seconds</option>
+        <option value="45000">about 45 seconds</option>
+      </select>
+    </label>
+    <p id="ap-log" class="ap-log">Off. Alerts wait for a person to answer.</p>
+    <p id="ap-paused" class="ap-log" hidden>Paused while a scenario runs.</p>
+  </fieldset>
+</section>
+
 <main class="grid">
-  <section class="panel" aria-labelledby="caller-h">
+  <section class="panel panel-phone" aria-labelledby="caller-h">
     <h2 id="caller-h"><span class="step">1</span> Caller phone</h2>
     <p class="hint">Dial <kbd>*384*1#</kbd> and answer each screen. Any basic phone can do this: USSD needs no data and no airtime.</p>
     <div id="caller-tabs" class="tabs" role="tablist" aria-label="Caller SIM"></div>
     <div id="caller-phone" role="tabpanel" aria-labelledby="caller-h"></div>
   </section>
 
-  <section class="panel" aria-labelledby="resp-h">
+  <section class="panel panel-phone" aria-labelledby="resp-h">
     <h2 id="resp-h"><span class="step">2</span> Responder phones</h2>
     <p class="hint">Village Health Team members and transporters get alerts by SMS. Dial <kbd>*384*2#</kbd> to accept or decline.</p>
     <div id="resp-tabs" class="tabs" role="tablist" aria-label="Responder"></div>
     <div id="resp-phone" role="tabpanel" aria-labelledby="resp-h"></div>
+  </section>
+
+  <section class="panel panel-feed" aria-labelledby="feed-h">
+    <h2 id="feed-h">Activity</h2>
+    <p class="hint">Every incident event and SMS, newest first, tagged with the service that produced it.</p>
+    <ol id="feed" class="feed"></ol>
+  </section>
+
+  <section class="panel panel-map" aria-labelledby="map-h">
+    <div class="map-head">
+      <h2 id="map-h">Map of the wards</h2>
+      <p class="hint">Each ward is the area nearest its centre, drawn from the gazetteer's placeholder wards and landmarks. Select an incident pin to open its card.</p>
+    </div>
+    <figure class="map">
+      <div id="map" class="map-mount"></div>
+      <figcaption id="map-summary" class="map-summary"></figcaption>
+    </figure>
+    <ul class="legend" aria-label="Map key">
+      <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="pin sev-red" transform="translate(14 14)"><circle class="dot" r="12"/><text class="letter" y="4.5">R</text></g></svg> Incident: R red, Y yellow, G green; it pulses while open</li>
+      <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="landmark"><circle cx="5" cy="14" r="3.5"/></g><line class="leader" x1="5" y1="14" x2="25" y2="14"/></svg> Landmark. Incidents at one place fan out around it, each on a thin line</li>
+      <li><svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true"><g class="resp" transform="translate(14 14)"><rect x="-12" y="-12" width="24" height="24" rx="4"/><text y="4">V1</text></g></svg> Responder, grouped under their ward's name: V VHT, T transporter</li>
+      <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-pending" x1="2" y1="5" x2="32" y2="5"/></svg> Alert waiting for an answer</li>
+      <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-accepted" x1="2" y1="5" x2="32" y2="5"/></svg> Accepted</li>
+      <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-declined" x1="2" y1="5" x2="32" y2="5"/></svg> Declined</li>
+      <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-no_response" x1="2" y1="5" x2="32" y2="5"/></svg> No response</li>
+      <li><svg viewBox="0 0 34 10" width="34" height="10" aria-hidden="true"><line class="link o-stood_down" x1="2" y1="5" x2="32" y2="5"/></svg> Stood down</li>
+    </ul>
   </section>
 
   <section class="panel panel-board" aria-labelledby="board-h">
@@ -51,7 +117,7 @@
 </main>
 
 <footer class="foot">
-  <p>Texts marked <code>PENDING</code> are placeholders awaiting the study's approved wording, shown exactly as the system sends them. SMS goes to a local simulator of the provider; voice calls are not part of this demo. Responders, numbers and places are synthetic.</p>
+  <p>Texts marked <code>PENDING</code> are placeholders awaiting the study's approved wording, shown exactly as the system sends them. SMS goes to a local simulator of the provider; voice calls are not part of this demo. Responders, numbers and places are synthetic. The figures, map and activity cover the incidents on the board, the latest 25.</p>
 </footer>
 </body>
 </html>
