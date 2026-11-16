@@ -126,6 +126,25 @@ test("incidents at one landmark fan out a pin apart, in order of their call, eac
   }
 });
 
+test("a fan at a landmark on the map's edge stays inside the frame, each pin still tied to the landmark", () => {
+  // Test Well 2 is the northmost place, on the padding of a wide frame; Test Well 4 the westmost, on the padding of a narrow one.
+  for (const [landmark, size] of [["w02_well", SIZE], ["w04_well", { width: 320, height: 560 }]]) {
+    const l = map.landmarks.find((x) => x.id === landmark);
+    const P = projector([...map.wards, ...map.landmarks], size.width, size.height, 56);
+    for (const n of [9, 13]) {
+      const list = Array.from({ length: n }, (_, i) => inc(String(i), { landmarkId: landmark, t: at(i) }));
+      const pins = layout(map, phones, { incidents: list }, size).incidents;
+      const within = ([x0, y0, x1, y1]) => x0 > -1e-9 && y0 > -1e-9 && x1 < size.width + 1e-9 && y1 < size.height + 1e-9;
+      for (const p of pins) {
+        assert.ok(within([p.x - PIN_R, p.y - PIN_R, p.x + PIN_R, p.y + PIN_R]), `${landmark}, ${n} pins: pin ${p.id} at (${p.x}, ${p.y}) is inside`);
+        assert.ok(within(p.label.box), `${landmark}, ${n} pins: ${p.id}'s label ${p.label.box} is inside`);
+        assert.deepEqual(p.at, { x: P.x(l.lon), y: P.y(l.lat) }, "its leader runs to the landmark's true place");
+        for (const q of pins) if (q !== p) assert.ok(!overlap(p.label.box, q.label.box), `${n} pins: the labels of ${p.id} and ${q.id} do not overlap`);
+      }
+    }
+  }
+});
+
 test("each ward's responders sit together in their own territory, clear of every pin, and each alert draws one line styled by its outcome", () => {
   const near = ["w01_market", "w01_clinic", "w02_market", "w02_market", "w02_market", "w02_market", "w02_market"];
   const list = near.map((l, i) => inc(String(i), { landmarkId: l, t: at(i) }));

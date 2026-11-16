@@ -84,6 +84,17 @@ function fan(x, y, n) {
   });
 }
 
+// fanned fans list's pins and their labels around (x, y), moved as little
+// as keeps them all inside the width × height frame.
+function fanned(x, y, list, width, height) {
+  const at = (ox, oy) => fan(ox, oy, list.length).map((pos, i) =>
+    ({ ...pos, label: beside(pos.x, pos.y, PIN_R, pos.ux, pos.uy, list[i].reference.slice(-4), SIZE.pin) }));
+  const boxes = at(0, 0).flatMap((p) => [box(p.x - PIN_R, p.y - PIN_R, 2 * PIN_R, 2 * PIN_R), p.label.box]);
+  const edge = (k, f) => f(...boxes.map((b) => b[k]));
+  return at(Math.min(Math.max(x, -edge(0, Math.min)), width - edge(2, Math.max)),
+    Math.min(Math.max(y, -edge(1, Math.min)), height - edge(3, Math.max)));
+}
+
 // spots lists the points of a grid through (x, y), step px apart, that
 // cover the polygon's bounding box, nearest (x, y) first.
 function spots(poly, x, y, step) {
@@ -123,9 +134,8 @@ export function layout(map, phones, board, { width = 640, height = 640, pad = 56
   const marks = []; // the pins and their labels
   for (const { place, list } of groups.values()) {
     list.sort((a, b) => t1(a) - t1(b) || a.id.localeCompare(b.id));
-    fan(place.x, place.y, list.length).forEach((pos, i) => {
+    fanned(place.x, place.y, list, width, height).forEach(({ label, ...pos }, i) => {
       const inc = list[i];
-      const label = beside(pos.x, pos.y, PIN_R, pos.ux, pos.uy, inc.reference.slice(-4), SIZE.pin);
       incidents.push({ id: inc.id, ref: inc.reference, severity: inc.severity || "none", state: inc.state, active: !ended(inc),
         merged: inc.state === "merged", place: place.name, x: pos.x, y: pos.y, at: list.length > 1 ? { x: place.x, y: place.y } : null, label });
       const pin = box(pos.x - PIN_R, pos.y - PIN_R, 2 * PIN_R, 2 * PIN_R);
