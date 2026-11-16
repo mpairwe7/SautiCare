@@ -66,6 +66,7 @@ type phone struct {
 	Role   string    `json:"role,omitempty"`
 	Ward   string    `json:"ward,omitempty"` // an ID; /api/state sends the English name, and the ID as WardID
 	WardID string    `json:"wardId,omitempty"`
+	Stage  string    `json:"stage,omitempty"` // a responder's stage: the smartphone's location in the demo
 	Number pii.Phone `json:"number"`
 	e164   string
 }
@@ -83,13 +84,16 @@ type stack struct {
 
 	keys       *devkeys.Store
 	witnessDir string
-	ro         *pgxpool.Pool // op_readonly: the board
-	auditRead  *pgxpool.Pool // audit_reader: the verifier
-	auditWrite *pgxpool.Pool // audit_appender: on-demand checkpoints, as `sautictl checkpoint`
+	ro         *pgxpool.Pool  // op_readonly: the board
+	intake     *opstore.Store // op_intake: the steps after an acceptance (progress.go), through the single write path
+	dispatcher *opstore.Store // op_dispatch: a coordinator's close stands the alerts in flight down first (progress.go)
+	auditRead  *pgxpool.Pool  // audit_reader: the verifier
+	auditWrite *pgxpool.Pool  // audit_appender: on-demand checkpoints, as `sautictl checkpoint`
 	pools      []*pgxpool.Pool
 
 	phones []phone
 	labels map[string]string // responder ID → label
+	ids    map[string]string // phone handle → responder ID
 	routes map[string]*sim.USSD
 
 	mu       sync.Mutex
@@ -113,7 +117,7 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 	}
 	sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	st = &stack{dir: dir, cancel: cancel, witnessDir: filepath.Join(dir, "witness"),
-		labels: map[string]string{}, routes: map[string]*sim.USSD{}, sessions: map[string]*session{}}
+		labels: map[string]string{}, ids: map[string]string{}, routes: map[string]*sim.USSD{}, sessions: map[string]*session{}}
 	defer func() {
 		if err != nil {
 			st.stop()
@@ -167,15 +171,22 @@ func startStack(ctx context.Context, o options, log io.Writer) (st *stack, err e
 	if st.auditWrite, err = pool(pg.StoreAudit, "audit_appender", 2); err != nil {
 		return st, err
 	}
-	ids, err := demo.RegisterResponders(ctx, opstore.New(console), opstore.New(intake), st.keys, seeds)
+	st.intake = opstore.New(intake)
+	dispatcher, err := pool(pg.StoreOperational, "op_dispatch", 2)
+	if err != nil {
+		return st, err
+	}
+	st.dispatcher = opstore.New(dispatcher)
+	ids, err := demo.RegisterResponders(ctx, opstore.New(console), st.intake, st.keys, seeds)
 	if err != nil {
 		return st, fmt.Errorf("demo: register responders: %w", err)
 	}
 	st.phones = append(st.phones, callers...)
 	for i, d := range seeds {
 		st.labels[ids[i].String()] = d.Label
+		st.ids[handleOf(d.Label)] = ids[i].String()
 		st.phones = append(st.phones, phone{Handle: handleOf(d.Label), Label: d.Label, Kind: "responder",
-			Role: string(d.Role), Ward: d.Ward, e164: d.Phone})
+			Role: string(d.Role), Ward: d.Ward, Stage: d.Stage, e164: d.Phone})
 	}
 	for i := range st.phones {
 		if st.phones[i].Number, err = pii.ParsePhone(st.phones[i].e164); err != nil {

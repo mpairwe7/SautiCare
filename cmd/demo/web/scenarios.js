@@ -11,6 +11,16 @@ const path = (danger, category, ward, landmark) => ["1", danger, category, "3", 
 const byRef = (b, ref) => b.incidents.find((i) => i.reference === ref);
 const accepted = (inc, role) => inc.alerts.filter((a) => a.role === role && a.outcome === "accepted").length;
 const pendingFor = (inc, names) => names.every((n) => inc.alerts.some((a) => a.responder === n && a.outcome === "pending"));
+// holders counts the pending alerts each responder holds on open incidents:
+// one at most (one alert per responder, ADR-0044).
+const holders = (b) => {
+  const n = {};
+  for (const i of b.incidents) {
+    if (["dispatching", "assigned", "on_scene"].includes(i.state)) for (const a of i.alerts) if (a.outcome === "pending") n[a.responder] = (n[a.responder] || 0) + 1;
+  }
+  return n;
+};
+const oneEach = (b) => Object.values(holders(b)).every((k) => k <= 1);
 const list = (xs) => (xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1]);
 
 export const SCENARIOS = [
@@ -77,27 +87,30 @@ export const SCENARIOS = [
   {
     id: "surge",
     title: "A surge of five calls",
-    description: "Five red calls from Test Ward 2 in quick succession, while VHT 4 answers its latest alert. Every call is dispatched; none is dropped.",
+    description: "Five red calls from Test Ward 2 in quick succession. Each responder holds one alert at a time, for the nearest call: VHT 4 takes the first, and the calls nobody can take yet wait for the next free responder. None is dropped.",
     needsReset: true,
     steps: [
       { kind: "parallel", label: "Five calls arrive while VHT 4 answers", branches: [
         ["1", "2", "3", "4", "5"].map((cat, i) => ({ kind: "dial", label: `Call ${i + 1} of 5`, phone: i % 2 ? "caller-b" : "caller-a",
           inputs: path("1", cat, "2", "1"), as: "ref" + (i + 1) })),
         [
-          { kind: "wait", label: "Waiting for VHT 4's first alert", timeoutMs: 30000, until: (b, v) => v.ref1 && byRef(b, v.ref1) && pendingFor(byRef(b, v.ref1), ["VHT 4"]) },
-          { kind: "respond", label: "VHT 4 accepts its latest alert", phone: "vht-4", answer: "accept", as: "taken" },
+          { kind: "wait", label: "Waiting for VHT 4's alert, for the first call", timeoutMs: 30000, until: (b, v) => v.ref1 && byRef(b, v.ref1) && pendingFor(byRef(b, v.ref1), ["VHT 4"]) },
+          { kind: "respond", label: "VHT 4 accepts the one alert it holds", phone: "vht-4", answer: "accept", as: "taken" },
         ],
       ] },
-      { kind: "wait", label: "Waiting for every call to be dispatched", timeoutMs: 60000,
-        until: (b, v) => [1, 2, 3, 4, 5].every((n) => {
+      { kind: "wait", label: "Waiting for every call to be in the queue, each responder holding one alert at most", timeoutMs: 60000,
+        until: (b, v) => oneEach(b) && [1, 2, 3, 4, 5].every((n) => {
           const i = byRef(b, v["ref" + n]);
-          return i && i.severity === "red" && !i.mergedInto && i.alerts.length + i.escalations.length > 0;
+          return i && i.severity === "red" && !i.mergedInto && i.state !== "intake" && i.state !== "triaged";
         }) },
     ],
     result: (b, v) => {
       const refs = [1, 2, 3, 4, 5].map((n) => v["ref" + n]);
-      const escalated = refs.filter((r) => byRef(b, r).escalated).length;
-      return `${new Set(refs).size} calls, ${new Set(refs).size} incidents, none dropped: VHT 4 took ${v.taken}; ${escalated} escalated to a coordinator.`;
+      const incs = refs.map((r) => byRef(b, r));
+      const out = incs.filter((i) => i.alerts.some((a) => a.outcome === "pending")).length;
+      const waiting = incs.filter((i) => i.state === "dispatching" && !i.alerts.some((a) => a.outcome === "pending" || a.outcome === "accepted")).length;
+      const escalated = incs.filter((i) => i.escalated).length;
+      return `${new Set(refs).size} calls, ${new Set(refs).size} incidents, none dropped: VHT 4 took ${v.taken}; ${waiting} waiting for a free responder, ${out} with an alert out, ${escalated} escalated; ${oneEach(b) ? "no responder held two alerts" : "A RESPONDER HELD TWO ALERTS"}.`;
     },
   },
   {

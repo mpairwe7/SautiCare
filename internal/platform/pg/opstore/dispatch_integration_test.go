@@ -431,3 +431,70 @@ func gazetteerVersion(t *testing.T, c *pgtest.TestCluster) string {
 	}
 	return f.Version
 }
+
+// One alert per responder (0042, ADR-0044): a responder holding a pending
+// alert for an open incident is refused another; op.move_alert stands the
+// first down (for a nearer incident) and wakes its planner, after which the
+// responder can be alerted; an alert on a merged incident no longer holds
+// them; op.wake_open_dispatch wakes only incidents still looking for help.
+func TestOneAlertPerResponder(t *testing.T) {
+	r := newDispatchRig(t)
+	ctx := context.Background()
+	owner := r.c.Owner(t, pg.StoreOperational)
+	vht := r.responder(t, responder.RoleVHT)
+	first := r.issue(t, r.incident, vht, responder.RoleVHT)
+	nearer := dispatchedIncident(t, r.intake).IncidentID
+	params := dispatch.IssueParams{IncidentID: nearer, ResponderID: vht, Role: responder.RoleVHT, Ring: 1, Wave: 1, LogicVersion: dispatchLogic}
+	if _, err := r.dispatcher.IssueAlert(ctx, params); !errors.Is(err, incident.ErrIllegalTransition) {
+		t.Fatalf("a second pending alert: err = %v, want refused", err)
+	}
+	if _, err := owner.Exec(ctx, `UPDATE op.dispatch_timers SET due_at = 'infinity' WHERE incident_id = $1`, r.incident); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := r.dispatcher.MoveAlert(ctx, first.AlertID); err != nil || !moved {
+		t.Fatalf("move: %v %v", moved, err)
+	}
+	var outcome string
+	var woken bool
+	if err := owner.QueryRow(ctx, `SELECT a.outcome, t.due_at <= clock_timestamp() FROM op.alerts a
+		JOIN op.dispatch_timers t ON t.incident_id = a.incident_id WHERE a.id = $1`, first.AlertID).Scan(&outcome, &woken); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != dispatch.OutcomeStoodDown || !woken {
+		t.Fatalf("after the move: outcome %q, first incident woken %v", outcome, woken)
+	}
+	if moved, err := r.dispatcher.MoveAlert(ctx, first.AlertID); err != nil || moved {
+		t.Fatalf("moving a settled alert: %v %v", moved, err)
+	}
+	if _, err := r.dispatcher.IssueAlert(ctx, params); err != nil {
+		t.Fatalf("alerted for the nearer incident: %v", err)
+	}
+
+	// An incident merges only once its alerts in flight are stood down
+	// (0018 I7); its responder is then free for the surviving incident.
+	tr := r.responder(t, responder.RoleTransporter)
+	merged := dispatchedIncident(t, r.intake).IncidentID
+	inFlight := r.issue(t, merged, tr, responder.RoleTransporter)
+	if ok, err := r.dispatcher.CloseAlert(ctx, inFlight.AlertID, dispatch.OutcomeStoodDown); err != nil || !ok {
+		t.Fatalf("stand down before the merge: %v %v", ok, err)
+	}
+	appendEv(t, r.intake, merged, incident.EvMerged, `{"into":"`+nearer.String()+`"}`, "")
+	r.issue(t, nearer, tr, responder.RoleTransporter)
+
+	if _, err := owner.Exec(ctx, `UPDATE op.dispatch_timers SET due_at = 'infinity'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.dispatcher.WakeOpenDispatch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var open, parked int
+	if err := owner.QueryRow(ctx, `SELECT count(*) FILTER (WHERE i.state IN ('dispatching', 'assigned', 'on_scene') AND t.due_at <= clock_timestamp()),
+		count(*) FILTER (WHERE i.state NOT IN ('dispatching', 'assigned', 'on_scene') AND isfinite(t.due_at))
+		FROM op.dispatch_timers t JOIN op.incidents i ON i.id = t.incident_id`).Scan(&open, &parked); err != nil {
+		t.Fatal(err)
+	}
+	if open < 2 || parked != 0 {
+		t.Fatalf("wake: %d open incidents woken, %d others touched", open, parked)
+	}
+	r.noDrift(t)
+}

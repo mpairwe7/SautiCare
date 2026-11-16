@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"math"
 	"math/rand/v2"
 	"slices"
 	"testing"
@@ -139,5 +140,30 @@ func TestEligibleFromSeveralCentres(t *testing.T) {
 	}
 	if got := Eligible([]responder.Responder{near}, stages, responder.RoleTransporter, nil, 5, t0); len(got) != 0 {
 		t.Fatal("no centre: nobody is eligible")
+	}
+}
+
+// ADR-0044: a responder holding one incident's alert moves only to a
+// strictly nearer incident, and never away from a more urgent one.
+func TestMovableOnlyToANearerNoLessUrgentIncident(t *testing.T) {
+	h := func(d int, sev incident.Severity) Holding { return Holding{Distance: d, Severity: sev} }
+	for _, c := range []struct {
+		here int
+		sev  incident.Severity
+		held Holding
+		want bool
+	}{
+		{0, incident.SevRed, h(1, incident.SevRed), true},
+		{1, incident.SevRed, h(1, incident.SevRed), false},      // as near: they keep the first
+		{2, incident.SevRed, h(1, incident.SevRed), false},      // farther
+		{0, incident.SevGreen, h(1, incident.SevRed), false},    // never away from a more urgent one
+		{0, incident.SevRed, h(1, incident.SevGreen), true},     // to a more urgent one
+		{0, incident.SevYellow, h(1, incident.SevYellow), true}, // as urgent, nearer
+		{0, "", h(1, incident.SevRed), true},                    // a triage error is planned as red
+		{0, incident.SevRed, h(math.MaxInt, incident.SevRed), true},
+	} {
+		if got := Movable(c.here, c.sev, c.held); got != c.want {
+			t.Errorf("Movable(%d, %q, %+v) = %v, want %v", c.here, c.sev, c.held, got, c.want)
+		}
 	}
 }

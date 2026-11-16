@@ -285,6 +285,38 @@ func TestARetriedDeclineGetsTheSameAnswer(t *testing.T) {
 	}
 }
 
+// F-26: an alert that lapsed while its role is still open (Actionable) is
+// offered like a pending one, and "1" accepts it: the store counts a late
+// acceptance. Its decline writes nothing and is thanked; a lapsed alert whose
+// role was taken is not offered at all.
+func TestALapsedAlertWithItsRoleOpenCanBeAccepted(t *testing.T) {
+	for _, role := range []responder.Role{responder.RoleVHT, responder.RoleTransporter} {
+		a := pending(role)
+		a.Outcome, a.Actionable = dispatch.OutcomeNoResponse, true
+		f := &fakeStore{id: uuid.NewV7(), known: true, alert: a, hasAlert: true, accept: dispatch.Accepted}
+		s := service(t, f, false)
+		if menu := dial(t, s, ""); menu.End || !strings.Contains(menu.Text, "1 Accept") || !strings.Contains(menu.Text, "123 456 7894") {
+			t.Fatalf("%s: lapsed, role open: menu %q", role, menu.Text)
+		}
+		if done := dial(t, s, "1"); !done.End || len(f.accepted) != 1 || f.accepted[0] != a.AlertID || !strings.Contains(done.Text, "bridge line") {
+			t.Fatalf("%s: late accept %q %v", role, done.Text, f.accepted)
+		}
+		if sc := dial(t, s, "2"); !sc.End || strings.Contains(sc.Text, "No longer needed") || len(f.declined) != 0 {
+			t.Fatalf("%s: decline of a lapsed alert still open %q %v", role, sc.Text, f.declined)
+		}
+	}
+	a := pending(responder.RoleVHT)
+	a.Outcome = dispatch.OutcomeNoResponse // lapsed, and the role was taken since
+	f := &fakeStore{id: uuid.NewV7(), known: true, alert: a, hasAlert: true, accept: dispatch.Accepted}
+	s := service(t, f, false)
+	if menu := dial(t, s, ""); strings.Contains(menu.Text, "1 Accept") {
+		t.Fatalf("lapsed, role taken: menu %q", menu.Text)
+	}
+	if sc := dial(t, s, "1"); sc.End || len(f.accepted) != 0 {
+		t.Fatalf("lapsed, role taken: 1 %q %v", sc.Text, f.accepted)
+	}
+}
+
 // CodeRabbit PR #11 (4560453670): every availability screen is checked at
 // start, off duty as well as on, with and without the invalid-choice line:
 // an off-duty text that fits alone but not with the two options is refused.

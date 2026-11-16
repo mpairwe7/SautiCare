@@ -79,6 +79,17 @@ type Snapshot struct {
 	CallerNotified  []string
 }
 
+// HeldAlert is a pending alert on an incident still looking for help. Its
+// responder holds it and may hold no other (one alert per responder, 0042):
+// where its incident is decides whether a new incident is nearer to them.
+type HeldAlert struct {
+	AlertID, ResponderID, IncidentID uuid.UUID
+	Severity                         incident.Severity
+	Zone                             *incident.Zone
+	LocationQuality                  string
+	Ward                             string
+}
+
 // ControlEntry is one row of the dispatch control log: the dated register
 // of suspensions, resumptions and stopping-rule breaches (O6).
 type ControlEntry struct {
@@ -122,6 +133,10 @@ type ResponderAlert struct {
 	Outcome             string
 	Facts               MessageFacts
 	Assigned            bool // the responder holds the incident's open assignment
+	// Actionable: the alert lapsed (no_response) while its incident still
+	// looks for help and its role is open, so an acceptance still counts
+	// (op.accept_alert since 0015; the menu offers it since 0041, F-26).
+	Actionable bool
 }
 
 // AlertHistory is one line of a responder's history (scenario 10).

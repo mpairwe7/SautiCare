@@ -221,6 +221,8 @@ Each entry gives the source IDs, the surfaces, the evidence on `main`, a short u
 - **Decision:** UX-8. A fixed-bucket histogram, the USSD, IVR and delivery counters, and a Prometheus rules file tested with `promtool` in CI. Paging is P0 (R-16); the SLO numbers are the PI's (R-10).
 
 ### F-75 · High · (e: M3 Part A, M5) · An assignment is never released, so the responder pool shrinks with every call
+
+*In the demo only (2026-11-16): the transporter's arrival at the facility closes the incident, and the queue's Close incident stands in for the M5 console, so responders are freed for the next call. Production still needs M3 Part A and M5.*
 - **Sources:** SO-9, RS-15, and the M3 planning finding. **Surfaces:** dispatch, the responder menu.
 - **Evidence:** busy means an assignment with `released_at IS NULL` on an open incident (`db/operational/queries/dispatch.sql:90-93`); `released_at` is declared (`db/operational/migrations/0015_dispatch.sql:155`) and never written; only intake's out-of-area path closes an incident (`internal/intake/service.go:438`).
 - **Story:** In a two-week drill each acceptance locks a responder for good. By the second week ring 1 is empty, and every call escalates "no eligible responder".
@@ -271,7 +273,7 @@ Each entry gives the severity and class, the source IDs and surfaces, the eviden
 
 ### UX-3: responder and coordinator voice correctness
 
-**F-26 · Medium (was High) · (a) · A lapsed alert is hidden on USSD while voice still accepts it.** RS-4 · responder menu. Evidence: the menu offers Accept only while pending (`internal/respond/ussd.go:114`, `internal/respond/ussd.go:121`); the store accepts after a lapse while the role is open (`db/operational/migrations/0015_dispatch.sql:527-529`). Story: a rider dials two minutes after the SMS, reads "no active alert" and goes home, while the role is still open. Standard: ETSI ETR 329 §5.1.4, consistency. Decision: UX-3; a `no_response` alert on an incident still dispatching is offered as pending, as the store already allows. The PI confirms the late-accept policy (R-6).
+**F-26 · Medium (was High) · (a) · A lapsed alert is hidden on USSD while voice still accepts it.** *Fixed 2026-11-16 (migration 0041, `internal/respond/ussd.go`): the menu offers a lapsed alert as actionable while its incident still looks for help and its role is open, as the store already allowed. The late-accept policy still awaits the PI (R-6).* RS-4 · responder menu. Evidence: the menu offers Accept only while pending (`internal/respond/ussd.go:114`, `internal/respond/ussd.go:121`); the store accepts after a lapse while the role is open (`db/operational/migrations/0015_dispatch.sql:527-529`). Story: a rider dials two minutes after the SMS, reads "no active alert" and goes home, while the role is still open. Standard: ETSI ETR 329 §5.1.4, consistency. Decision: UX-3; a `no_response` alert on an incident still dispatching is offered as pending, as the store already allows. The PI confirms the late-accept policy (R-6).
 
 **F-27 · Medium (was High) · (a) · The voice decline-reason list is one recording, not the configured list.** RS-5 · voice alerts. Evidence: `internal/platform/ivr/alerts.go:289-290` plays one file; the digit maps to the YAML list (`internal/platform/ivr/alerts.go:261-262`). Story: the PI reorders the list; voice still says the old order, and a reason is stored wrongly. Standard: ETSI ETR 329 §5.5.1.5 (one function per key). Decision: UX-3; compose "press k" and a per-code recording from the configured list.
 
@@ -368,7 +370,7 @@ Every entry here is class (b): built behind a gated flag that defaults to today'
 | ID | Sev | Class | Sources | Finding | Decision |
 |---|---|---|---|---|---|
 | F-77 | Medium | (c) | SO-14 | Routine follow-ups and life-threatening escalations share one ring-until-acknowledged line; a suspension rings once per incident. | PI and Medical Director choose which reasons ring and which are tasks (R-2). TJC 2026 NPG.01.05.01 on alarm noise. |
-| F-78 | Medium | (c) | RS-16 | A responder can hold two pending alerts; the menu shows only the newest. | PI sets the parallel-alert policy (R-6). |
+| F-78 | Medium | (c) | RS-16 | A responder can hold two pending alerts; the menu shows only the newest. | Fixed 2026-11-16 (ADR-0044, migration 0042): one alert per responder, for the nearest incident. |
 | F-79 | Medium | (c) | RR-21 | The breach runbook gives a 72-hour clock where the DPPA says immediately; the SMS provider's processing location is unassessed. | DPO (R-5). Uganda DPPA 2019 s.23, s.19. |
 | F-80 | Medium | (c) | RR-22 | Paper incident IDs for a two-site outage can collide with live references; no `manual_entry` path. | PI designs the paper form; the reserved block and entry command follow (R-7). Second routes are M7. |
 | F-81 | Medium | (d) | CV-16, RS-13 | The number Sauti calls from may not route back to the bridge. | P0 numbering (R-15); UX-7 adds a configuration check. |

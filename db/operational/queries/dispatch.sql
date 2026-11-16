@@ -92,6 +92,20 @@ GROUP BY responder_id;
 SELECT DISTINCT s.responder_id FROM op.assignments s JOIN op.incidents i ON i.id = s.incident_id
 WHERE s.released_at IS NULL AND i.state NOT IN ('closed', 'merged');
 
+-- One responder, one alert (0042): every pending alert on an incident still
+-- looking for help, with where that incident is, so the planner can tell
+-- whether a new incident is nearer to the responder holding it.
+-- name: HeldAlerts :many
+SELECT a.id, a.responder_id, a.incident_id, i.severity, i.zone_col, i.zone_row, i.ward, i.location_quality
+FROM op.alerts a JOIN op.incidents i ON i.id = a.incident_id
+WHERE a.outcome = 'pending' AND i.state IN ('dispatching', 'assigned', 'on_scene');
+
+-- name: MoveAlert :one
+SELECT op.move_alert(sqlc.arg(alert_id)::uuid)::boolean AS changed;
+
+-- name: WakeOpenDispatch :one
+SELECT op.wake_open_dispatch()::int AS woken;
+
 -- name: DatabaseNow :one
 SELECT clock_timestamp()::timestamptz AS now;
 
@@ -172,14 +186,15 @@ SELECT reference, severity, category, ward, landmark, language FROM op.incidents
 SELECT coalesce(facility_id, '')::text AS facility_id FROM op.caller_notices
 WHERE incident_id = sqlc.arg(incident_id)::uuid AND kind = sqlc.arg(kind)::text;
 
--- The alert a responder's menu session is about (pinned at its first screen).
+-- The alert a responder's menu session is about (pinned at its first screen);
+-- actionable: lapsed, and its role still open (0041).
 -- name: MenuAlert :many
 SELECT m.alert_id::uuid AS id, m.incident_id::uuid AS incident_id, m.role::text AS role, m.outcome::text AS outcome,
        m.reference::text AS reference, coalesce(m.severity, '')::text AS severity, coalesce(m.category, '')::text AS category,
        coalesce(m.ward, '')::text AS ward, coalesce(m.landmark, '')::text AS landmark, coalesce(m.language, '')::text AS language,
-       m.assigned::boolean AS assigned
+       m.assigned::boolean AS assigned, m.actionable::boolean AS actionable
 FROM op.responder_menu_alert(sqlc.arg(session_key)::bytea, sqlc.arg(responder_id)::uuid)
-     AS m(alert_id, incident_id, role, outcome, reference, severity, category, ward, landmark, language, assigned);
+     AS m(alert_id, incident_id, role, outcome, reference, severity, category, ward, landmark, language, assigned, actionable);
 
 -- name: AvailableUntil :many
 SELECT upper(period)::timestamptz AS until FROM op.availability

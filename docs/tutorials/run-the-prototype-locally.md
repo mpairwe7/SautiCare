@@ -5,9 +5,9 @@
 This tutorial is for anyone presenting or trying the prototype. By the end you will have:
 
 - started the whole system on your computer with one command;
-- reported an emergency from a simulated basic phone;
-- had a responder accept it on another simulated phone;
-- watched the dispatch board, the map and the activity feed follow the incident;
+- reported an emergency from a simulated basic phone, and from a simulated smartphone that fills in the place from its location;
+- had a VHT and a transporter accept it, and followed the transporter to the health facility;
+- watched the live queue, the map and the activity feed follow the incident;
 - let the page play scenarios on the phones, and let the responders answer by themselves;
 - verified the tamper-evident audit ledger.
 
@@ -23,11 +23,10 @@ One command, `bin/demo`, starts all of the following on your computer only:
 - the real Sauti services: `intake-gw` (USSD), `dispatch-worker` (alerts) and `outbox-relay` (the audit ledger);
 - a simulated SMS provider;
 - a web page at http://127.0.0.1:7860 with:
-  - two caller phones;
-  - seven responder phones;
-  - live figures, a map of the wards and an activity feed;
+  - three phones side by side: the caller, a VHT and a transporter, each one a basic phone or a smartphone at the press of a switch;
+  - live figures, an activity feed and a map of the wards;
   - buttons that play scenarios on the phones, and a responder autopilot;
-  - the dispatch board;
+  - the live queue of incidents, most urgent first, with the selected incident in full;
   - an audit-ledger check;
   - a Reset button.
 
@@ -111,18 +110,26 @@ time=... level=INFO msg="demo ready"
 
 ## 6. Open the page
 
-Open **http://127.0.0.1:7860** in a browser. Under the banner, **Verify audit ledger** and **Reset demo** sit at the top right. Then, from top to bottom:
+Open **http://127.0.0.1:7860** in a browser. **Verify audit ledger** and **Reset demo** sit at the top right. Then, from top to bottom:
 
 - **Five live figures:** open incidents by severity, the median time from call to acceptance (T1 to T4), alerts by outcome, escalations, and SMS sent. All read 0 for now.
 - **Play a scenario:** five buttons that play a whole scenario on the phones, and the **Responder autopilot** beside them. Step 8 uses both.
-- **1. Caller phone.** Tabs for **Caller A** and **Caller B**. Each phone has a screen, a **Dial** button for the emergency code, a keypad, a reply box with a green call or reply button, **End**, and an **SMS inbox**.
-- **2. Responder phones.** One tab per responder:
-  - **Test Ward 1:** VHT 1, VHT 2, VHT 3, Transporter 1, Transporter 2;
-  - **Test Ward 2:** VHT 4, Transporter 3;
-  - **Test Wards 3 and 4:** nobody.
-- **Activity.** Beside the phones on a wide screen. It lists every event and SMS, newest first, each tagged with the service that produced it: `intake-gw`, `dispatch-worker`, `outbox-relay` or `SMS`.
-- **Map of the wards.** The four placeholder wards fill the map. Each ward is the area nearer its centre than any other ward's. Landmarks are small dots. Each dot's name shows beside it where there is room, and when you point at the dot. Each ward's responders sit in a group under the ward's name, one square each (`V1` is VHT 1, `T2` is Transporter 2). Incidents at the same landmark fan out around it, each joined to it by a thin line. A key beside the map explains the marks.
-- **3. Dispatch board.** It reads "No incidents yet" until a call comes in.
+- **The phones**, side by side on a wide screen:
+  - **Caller**, with tabs for **Caller A** and **Caller B**;
+  - **VHT**, with tabs for VHT 1 to VHT 4;
+  - **Transporter**, with tabs for Transporters 1 to 3.
+
+  Test Ward 1 has VHTs 1 to 3 and Transporters 1 and 2. Test Ward 2 has VHT 4 and Transporter 3. Test Wards 3 and 4 have nobody. A tab says what that person has right now: **Alert 1:12** while an alert waits for them (the time left to answer), **Open alert** once that time has passed but nobody has taken the role, **On a job** after they accept, or **2 new** for unread SMS.
+
+  The switch at the top right of each phone, **Basic phone | Smartphone**, changes that phone:
+  - a **basic phone** has a screen, a **Dial** button for the service code, a keypad, a reply box with a green call or reply button, and **End**;
+  - a **smartphone** runs the Sauti app. The app sends the same keys to the same USSD service, so the system behind it is the same. Location, notifications and the steps after accepting are what a smartphone adds; see step 7.
+
+  Every phone has its **SMS inbox** under it. The page remembers each switch in this browser.
+- **Activity:** every event and SMS, newest first. Each line names the service that produced it: `intake-gw`, `dispatch-worker`, `outbox-relay`, `SMS`, or `responder app` for the steps recorded from a smartphone.
+- **Live queue:** every incident, most urgent first: red before yellow before green, then the longest wait. The buttons above it show **All**, **Waiting**, **Assigned**, **Escalated** or **Done**, each with its count. Each row shows the severity, the incident number, what happened and where, its state, who is coming for each role, and the time since the call, in red once nobody has accepted for 3 minutes. Select a row to see that incident in full beside the list: its timeline, the T1 to T7 times, every alert wave, the escalations and the event log. It reads "No incidents yet" until a call comes in.
+- **Analytics:** two charts of the protocol timestamps the study analyses. **Median time in each stage** shows, for each stage from the call (T1) to the facility (T7), the median over the incidents that completed it, with how many did. **Each incident, stage by stage** shows the latest calls on one axis from the call, one colour per stage; a faded stage is still running. Point at or Tab to a bar for its figures, or open **Show the figures as a table**.
+- **Map of the wards.** The four placeholder wards fill the map. Each ward is the area nearer its centre than any other ward's. Landmarks are small dots. Each ward's responders sit in a group under the ward's name, one square each (`V1` is VHT 1, `T2` is Transporter 2). Incidents at the same landmark fan out around it, each joined to it by a thin line. A key beside the map explains the marks.
 
 Phone numbers are always shown masked (`+256•••••••••`). That is deliberate: the system never reveals a caller's number.
 
@@ -168,8 +175,19 @@ Then:
 3. **The first acceptance wins, for each role.** A few seconds later, VHT 2 and VHT 3 get `PENDING-SMS Sauti 284 262 7491: no longer needed. Thank you.`, and their `*384*2#` menu shows `PENDING-RESPONDER Sauti: no active alert.` with only `3 Availability`. Caller A's inbox gets `PENDING-SMS Sauti 284 262 7491: help is on the way.` The transporters keep their alerts: a transporter accepts separately.
 4. **Transporter 1 accepts.** Open **Transporter 1**, dial `*384*2#` and press `1`. The menu is the same as VHT 1's, and the answer is:
    `PENDING-RESPONDER Accepted 284 262 7491. Go to Test Clinic 1, Test Ward 1. Caller: Sauti bridge line.`
-   Transporter 2 then gets `PENDING-SMS Sauti 284 262 7491: no longer needed. Thank you.` The board shows the incident as **Help assigned**, with VHT 1 and Transporter 1 accepted and the other three alerts stood down. On the map, the two acceptances are solid green lines and the stood-down alerts thin grey ones. In the card, **Wave 1** lists each alerted responder with their outcome and how long it took, and the timeline bar shows the intervals from the call to the acceptance. **Call to acceptance** at the top now shows that time.
-5. **Find the incident from the map.** Click the red pin, or press Tab until it has focus and press Enter. The page scrolls to the incident's card and outlines it. Pointing at a card lights its pin on the map.
+   Transporter 2 then gets `PENDING-SMS Sauti 284 262 7491: no longer needed. Thank you.` The live queue shows the incident as **Help assigned**, with VHT 1 and Transporter 1 accepted and the other three alerts stood down. On the map, the two acceptances are solid green lines and the stood-down alerts thin grey ones. In the incident's detail, **Wave 1** lists each alerted responder with their outcome and how long it took, and the timeline bar shows the intervals from the call to the acceptance. **Call to acceptance** at the top now shows that time.
+5. **Find the incident from the map.** Click the red pin, or press Tab until it has focus and press Enter. The queue selects the incident and shows it in full. Pointing at a row lights its pin on the map.
+
+### Scenario A on smartphones: location, notifications and the trip to the facility (about 3 minutes)
+
+Press **Reset demo**, then set all three phones to **Smartphone**.
+
+1. **The caller reports.** On **Caller A**, the home screen shows **Your location: Near Test Clinic 1, Test Ward 1**. That is the phone's GPS, simulated in the demo; **Move my location** moves it next to another place on the map. Tap **Report an emergency**, then answer each question with its button: English, Yes, Injury or accident, 18 to 59, No. At **Where is the emergency?** the app shows your location on a map: tap **Use this location**. The app answers the ward and the nearest place for you, through the same USSD screens. Tap **This number**. The app shows **Help is coming**, the incident number, and a tracker that follows the incident.
+2. **The VHT is notified.** On **VHT 1** a notification drops in, and the app shows the alert: the severity, what happened, where, the distance and an estimated time from the VHT's stage (their registered stage stands in for GPS), the time left to answer, and a map with the route. Tap **Accept**. The app shows **Go to the patient** with the route, the caller as "Sauti bridge line" (never their number), and whether a transporter is coming. Tap **I've arrived**: T5 is recorded.
+3. **The transporter answers late.** Wait until **Transporter 1**'s tab reads **Open alert**: the 90 seconds to answer have passed, but nobody has taken the transporter's role. The app says **You can still accept**. Tap **Accept**: the acceptance counts. (Before this change, a lapsed alert disappeared from the menu and nobody could accept it; see UX audit F-26.)
+4. **The trip.** On Transporter 1 tap **I've arrived**, then **Patient picked up, leaving now** (T6). The app lists the facilities by distance and shows the route to the nearest. Tap **Arrived at the facility** (T7). The incident closes, both responders are free for the next call, and the queue moves it to **Done**. The caller's tracker shows every step done.
+
+Arrival, departure and arrival at the facility are a preview of milestone M3: no service records them yet, so the demo writes them through the single write path, as the M0 demo does. A coordinator can also close an incident from its detail in the queue with **Close incident**, a stand-in for the M5 console. Alerts still waiting for an answer are stood down first, and those responders get the "no longer needed" SMS.
 
 ### Scenario B: a responder declines (about 1 minute)
 
@@ -213,7 +231,7 @@ To stop a scenario part way, click **Cancel scenario**. The five scenarios are:
 | **Red injury, accepted** | Scenario A: five alerts at once; VHT 1 and Transporter 1 accept | 20 s |
 | **A decline cascades** | Scenario B: VHT 4 declines and a VHT in Test Ward 1 is alerted in wave 2 | 15 s |
 | **Nobody nearby, escalated** | Scenario C: both roles escalate to a coordinator | 15 s |
-| **A surge of five calls** | Five red calls in a row from Test Ward 2 while VHT 4 accepts one; every call is dispatched | 45 s |
+| **A surge of five calls** | Five red calls in a row from Test Ward 2. Each responder holds one alert at a time, for the nearest call: VHT 4 takes the first, and the calls nobody is free for wait in the queue ("waiting for a free responder") | 45 s |
 | **Two calls, one emergency** | Callers A and B report the same emergency; the second call merges into the first | 20 s |
 
 Now let the responders answer by themselves:
@@ -226,7 +244,7 @@ The autopilot answers each alert at most once, and only alerts sent while it is 
 
 ## 9. Verify the audit ledger
 
-Press **Verify audit ledger**. The prototype:
+Press **Verify audit ledger**. Its result appears above the live queue. The prototype:
 
 1. signs a checkpoint;
 2. checks every ledger entry against the signed checkpoint and the witness;
@@ -287,6 +305,8 @@ Without the buildx plugin, Compose builds through Podman's Docker-compatible bui
 | The page says "The system did not start" | read the terminal output above it; the first error line names the part that failed |
 | A shared-memory error from PostgreSQL | the machine's `/dev/shm` is too small; see Mitigation in [the demo runbook](../runbooks/demo-hf-space.md) |
 | A `sauti-demo-*` directory left in `/tmp` after a crash or `kill -9` | the prototype was stopped before it could clean up. Delete that directory. Ctrl-C always cleans up. |
+| On Windows, `intake-gw` stops with `triage: bundle signature not valid` | Git converted the files to CRLF line endings, which changes the signed triage bundle. In the clone, run `git config core.autocrlf false`, then `git rm --cached -r .` and `git reset --hard`, and rebuild. |
+| A responder's menu says "no active alert" | the alert lapsed and its role was taken by someone else, or the responder already holds a job. The tabs say who holds a live alert. A job ends when the transporter records the arrival at the facility, or when a coordinator closes the incident. |
 
 ## Where to go next
 

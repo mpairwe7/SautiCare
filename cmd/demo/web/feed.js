@@ -12,8 +12,13 @@ const INTAKE = new Set(["session.started", "session.resumed", "screen.answered",
 const INTAKE_ESCALATIONS = new Set(["triage_rule_error", "dispatch_suspended", "out_of_area_after_danger", "abandoned_after_danger_yes",
   "abandoned_red_before_dispatch", "dispatch_stalled", "merged_call_escalated"]);
 
+// The steps after an acceptance and the coordinator's close are recorded by
+// the demo itself (/api/progress, a preview of M3 and of the M5 console).
+const DEMO_APP = new Set(["responder.arrived", "responder.departed", "responder.at_facility", "incident.closed"]);
+
 export function serviceOf(type, p) {
   if (INTAKE.has(type)) return "intake-gw";
+  if (DEMO_APP.has(type)) return "responder app";
   if (type === "incident.escalated" && INTAKE_ESCALATIONS.has(p.reason)) return "intake-gw";
   return "dispatch-worker";
 }
@@ -39,13 +44,17 @@ const SAY = {
   "incident.severity_raised": (p) => `Severity raised to ${String(p.severity).toUpperCase()}`,
   "incident.flagged": (p) => `Flagged: ${words(p.flag)}`,
   "caller.notified": (p) => `Caller sent the notice: ${words(p.kind)}`,
+  "responder.arrived": (p) => `${p.role === "transporter" ? "Transporter" : "VHT"} arrived on scene (T5)`,
+  "responder.departed": () => "Left for the facility with the patient (T6)",
+  "responder.at_facility": (p, c) => `Arrived at ${c.place(p.facility)} (T7)`,
+  "incident.closed": (p) => `Incident closed: ${words(p.reason)}`,
 };
 
 // feedItems lists the feed, newest first. map is /api/state's gazetteer map,
 // phones its phone list (for the SMS recipients' labels).
 export function feedItems(board, sms, phones, map) {
   const places = {};
-  for (const p of [...(map?.wards || []), ...(map?.landmarks || [])]) places[p.id] = p.name;
+  for (const p of [...(map?.wards || []), ...(map?.landmarks || []), ...(map?.facilities || [])]) places[p.id] = p.name;
   const refs = Object.fromEntries(board.incidents.map((inc) => [inc.id, inc.reference]));
   const byRef = Object.fromEntries(board.incidents.map((inc) => [inc.reference, inc.id]));
   const items = [];
