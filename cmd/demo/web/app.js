@@ -313,12 +313,11 @@ async function drive(phoneId, body, keys, signal, takeOver) {
   const w = widget(p.kind);
   const person = w.p && w.p.id !== phoneId && w.mode === "con" && !app.driven.has(w.p.id);
   const shown = takeOver || !person;
-  if (shown) {
-    if (!w.p || w.p.id !== phoneId) select(p.kind, phoneId);
-    await w.type(keys, signal);
-  }
+  if (shown && w.p?.id !== phoneId) select(p.kind, phoneId);
+  const gen = w.gen; // a reset or another phone bumps it, even if the widget is back on this phone
+  if (shown) await w.type(keys, signal);
   const res = await api("POST", "api/ussd", body);
-  if (shown && w.p && w.p.id === phoneId) w.show(res.status, res.data);
+  if (shown && gen === w.gen) w.show(res.status, res.data);
   return res;
 }
 
