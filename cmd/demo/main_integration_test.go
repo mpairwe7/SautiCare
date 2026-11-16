@@ -123,10 +123,13 @@ func (c client) dialAndWalk(phone, code string, inputs ...string) screen {
 type boardView struct {
 	Incidents []struct {
 		Reference, Severity, State string
-		Events                     []struct{ Type string }
-		Alerts                     []struct {
-			Responder, Outcome string
-			Attempts           []struct{ Channel, Status string }
+		Events                     []struct {
+			Type, Payload string
+			RelayedAt     *time.Time
+		}
+		Alerts []struct {
+			ID, Responder, Outcome string
+			Attempts               []struct{ Channel, Status string }
 		}
 	}
 }
@@ -374,6 +377,26 @@ func TestDemoScenario1OverHTTP(t *testing.T) {
 	})
 	if audit.WitnessesOK == 0 || audit.Drift != 0 {
 		t.Fatalf("audit %+v", audit)
+	}
+
+	// With the relay caught up, the board shows every event sealed into the
+	// ledger, and names each alert as the events' payloads do.
+	var sealed boardView
+	c.do(http.MethodGet, "/api/board", nil, &sealed)
+	issued := map[string]bool{}
+	for _, e := range sealed.Incidents[0].Events {
+		if e.RelayedAt == nil {
+			t.Fatalf("event %s not shown as relayed", e.Type)
+		}
+		var p struct{ Alert string }
+		if e.Type == "alert.issued" && json.Unmarshal([]byte(e.Payload), &p) == nil {
+			issued[p.Alert] = true
+		}
+	}
+	for _, a := range sealed.Incidents[0].Alerts {
+		if !issued[a.ID] {
+			t.Fatalf("alert %q of %s is not the one an alert.issued event names", a.ID, a.Responder)
+		}
 	}
 
 	// The caller's number appears nowhere the UI reads.

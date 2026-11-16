@@ -35,7 +35,9 @@ type boardIncident struct {
 	State       string            `json:"state"`
 	Category    string            `json:"category"`
 	Ward        string            `json:"ward"`
+	WardID      string            `json:"wardId"`
 	Landmark    string            `json:"landmark"`
+	LandmarkID  string            `json:"landmarkId"`
 	Location    string            `json:"location"`
 	Escalated   bool              `json:"escalated"`
 	Flags       []string          `json:"flags"`
@@ -47,14 +49,16 @@ type boardIncident struct {
 	Notices     []boardAttempt    `json:"notices"`
 	MergedInto  string            `json:"mergedInto,omitempty"`
 	byAlert     map[string]int    // alert ID → index in Alerts
+	byEvent     map[string]int    // event ID → index in Events
 }
 
 type boardEvent struct {
-	Seq     int64     `json:"seq"`
-	Type    string    `json:"type"`
-	At      time.Time `json:"at"`
-	Actor   string    `json:"actor"`
-	Payload string    `json:"payload"`
+	Seq       int64      `json:"seq"`
+	Type      string     `json:"type"`
+	At        time.Time  `json:"at"`
+	Actor     string     `json:"actor"`
+	Payload   string     `json:"payload"`
+	RelayedAt *time.Time `json:"relayedAt,omitempty"` // when outbox-relay appended its audit entry
 }
 
 type boardEscalation struct {
@@ -64,6 +68,7 @@ type boardEscalation struct {
 }
 
 type boardAlert struct {
+	ID          string         `json:"id"` // as event payloads name the alert
 	Responder   string         `json:"responder"`
 	Role        string         `json:"role"`
 	Ring        int            `json:"ring"`
@@ -131,10 +136,10 @@ func (st *stack) readBoard(ctx context.Context, cfg config.Bundle, gaz location.
 
 func project(p incident.Projection, events []incident.Event, cfg config.Bundle, gaz location.File) boardIncident {
 	in := boardIncident{ID: p.ID.String(), Reference: p.Reference.Spoken(), Severity: string(p.Severity), State: string(p.State),
-		Category: label(cfg.Tool1.Category.Options, p.Category), Ward: p.Ward, Landmark: p.Landmark,
+		Category: label(cfg.Tool1.Category.Options, p.Category), Ward: p.Ward, WardID: p.Ward, Landmark: p.Landmark, LandmarkID: p.Landmark,
 		Location: p.LocationQuality, Escalated: p.Escalated, Flags: p.Flags, T: map[string]string{},
 		Events: []boardEvent{}, Escalations: []boardEscalation{}, Alerts: []boardAlert{}, Notices: []boardAttempt{},
-		byAlert: map[string]int{}}
+		byAlert: map[string]int{}, byEvent: map[string]int{}}
 	for _, w := range gaz.Wards {
 		if w.ID == p.Ward {
 			in.Ward = w.Name.EN
@@ -154,6 +159,7 @@ func project(p incident.Projection, events []incident.Event, cfg config.Bundle, 
 		}
 	}
 	for _, e := range events {
+		in.byEvent[e.ID.String()] = len(in.Events)
 		in.Events = append(in.Events, boardEvent{Seq: e.Seq, Type: string(e.Type), At: e.RecordedAt.UTC(), Actor: e.ActorKind,
 			Payload: maskNumbers(string(e.Payload))})
 		if e.Type == incident.EvEscalated {
@@ -175,7 +181,8 @@ func label(opts []config.Option, value string) string {
 }
 
 // readDispatch adds each incident's alerts with their delivery attempts, its
-// caller notices and its dispatch timer (tables op_readonly may read).
+// caller notices, when outbox-relay sealed each event into the audit ledger,
+// and its dispatch timer (tables op_readonly may read).
 func (st *stack) readDispatch(ctx context.Context, ids []string, byID map[string]*boardIncident) error {
 	var id, inc, resp string
 	var a boardAlert
@@ -187,7 +194,7 @@ func (st *stack) readDispatch(ctx context.Context, ids []string, byID map[string
 	}
 	if _, err := pgx.ForEachRow(rows, []any{&id, &inc, &resp, &a.Role, &a.Ring, &a.Wave, &a.SentAt, &a.Outcome, &a.Reason, &a.RespondedAt}, func() error {
 		if in := byID[inc]; in != nil {
-			a.Responder, a.Attempts = st.labels[resp], []boardAttempt{}
+			a.ID, a.Responder, a.Attempts = id, st.labels[resp], []boardAttempt{}
 			in.byAlert[id] = len(in.Alerts)
 			in.Alerts = append(in.Alerts, a)
 		}
@@ -220,6 +227,23 @@ func (st *stack) readDispatch(ctx context.Context, ids []string, byID map[string
 	if _, err := pgx.ForEachRow(rows, []any{&inc, &t.Kind, &t.Channel, &t.Status, &t.Delivery}, func() error {
 		if in := byID[inc]; in != nil {
 			in.Notices = append(in.Notices, t)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	var relayed time.Time
+	rows, err = st.ro.Query(ctx, `SELECT payload->>'incident_id', payload->>'event_id', delivered_at FROM op.outbox
+	  WHERE topic = 'audit' AND delivered_at IS NOT NULL AND payload->>'incident_id' = ANY($1::text[])`, ids)
+	if err != nil {
+		return err
+	}
+	if _, err := pgx.ForEachRow(rows, []any{&inc, &id, &relayed}, func() error {
+		if in := byID[inc]; in != nil {
+			if i, ok := in.byEvent[id]; ok {
+				at := relayed.UTC()
+				in.Events[i].RelayedAt = &at
+			}
 		}
 		return nil
 	}); err != nil {

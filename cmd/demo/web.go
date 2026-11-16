@@ -43,6 +43,7 @@ type app struct {
 	log *slog.Logger
 	cfg config.Bundle
 	gaz location.File
+	geo mapView
 
 	mu    sync.Mutex
 	st    *stack
@@ -53,8 +54,8 @@ type app struct {
 	start func(context.Context, options, io.Writer) (*stack, error) // startStack; a seam for tests
 }
 
-func newApp(ctx context.Context, o options, log *slog.Logger, cfg config.Bundle, gaz location.File) *app {
-	return &app{ctx: ctx, o: o, log: log, cfg: cfg, gaz: gaz, phase: phaseStarting, start: startStack}
+func newApp(ctx context.Context, o options, log *slog.Logger, cfg config.Bundle, gaz location.File, geo mapView) *app {
+	return &app{ctx: ctx, o: o, log: log, cfg: cfg, gaz: gaz, geo: geo, phase: phaseStarting, start: startStack}
 }
 
 // boot starts a stack in the background (phase starting or resetting),
@@ -164,11 +165,13 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 	a.mu.Lock()
 	st, phase, run := a.st, a.phase, a.run
 	a.mu.Unlock()
-	out := map[string]any{"phase": phase, "run": run, "codes": map[string]string{"caller": callerCode, "responder": responderCode}}
+	out := map[string]any{"phase": phase, "run": run, "codes": map[string]string{"caller": callerCode, "responder": responderCode},
+		"map": a.geo}
 	if st != nil {
 		phones := make([]phone, len(st.phones))
 		for i, p := range st.phones {
 			phones[i] = p
+			phones[i].WardID = p.Ward
 			for _, wd := range a.gaz.Wards {
 				if wd.ID == p.Ward {
 					phones[i].Ward = wd.Name.EN
