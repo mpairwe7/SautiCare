@@ -208,16 +208,30 @@ After the scenarios above it reports **Audit ledger verified**, with counts such
 
 Seeded responders are marked available for 8 hours. After that, a responder switches back on through `*384*2#`, then `3`, then `1`, or you press **Reset demo**.
 
-## 10. Optional: run it in Docker instead
+## 10. Optional: run it in a container instead
 
-If Docker is installed, you can skip steps 3–5:
+If Docker with Docker Compose is installed, you can skip steps 3–5. From the `SautiCare` directory:
+
+```bash
+docker compose up --build
+```
+
+Then open http://127.0.0.1:7860. `compose.yaml` builds the image from your checkout and publishes the port on 127.0.0.1 only. The image contains PostgreSQL 18 and runs as an ordinary user. Building it needs internet access. Press **Ctrl-C** to stop, or run `docker compose down` if you started it in the background with `-d`. Either way, the data is deleted.
+
+Without Compose:
 
 ```bash
 docker build -t sauti-demo .
-docker run --rm -p 7860:7860 sauti-demo
+docker run --rm -p 127.0.0.1:7860:7860 sauti-demo
 ```
 
-Then open http://127.0.0.1:7860. The image contains PostgreSQL 18 and runs as an ordinary user. Building it needs internet access.
+With rootless Podman, if the build cannot download modules or the page never opens, and the output mentions `slirp4netns`, Podman cannot use its own network on that machine. Build and run on the host's network instead:
+
+```bash
+docker compose -f compose.yaml -f compose.host-network.yaml up --build
+```
+
+Podman 4.3 has no `docker compose` command of its own. Use the Docker Compose binary with Podman's API socket (`systemctl --user enable --now podman.socket`, then `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`). Without the buildx plugin, Compose builds through Podman's Docker-compatible build API.
 
 ## Troubleshooting
 

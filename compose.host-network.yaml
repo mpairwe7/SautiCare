@@ -1,0 +1,11 @@
+# For machines where rootless Podman cannot publish ports or reach the
+# network from a build (slirp4netns fails): build and run on the host's
+# network, and have the demo itself listen on loopback only.
+#   docker compose -f compose.yaml -f compose.host-network.yaml up --build
+services:
+  demo:
+    build:
+      network: host
+    network_mode: host
+    ports: !reset []
+    command: ["--addr", "127.0.0.1:7860"]

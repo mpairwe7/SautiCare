@@ -1,0 +1,16 @@
+# Run the Sauti Dispatch prototype with Docker Compose:
+#   docker compose up --build
+# then open http://127.0.0.1:7860. One container, built from this checkout by
+# ./Dockerfile, runs PostgreSQL 18, intake-gw, dispatch-worker and
+# outbox-relay behind the demo UI. Synthetic, throwaway data only (ADR-0039):
+# everything is erased when the container stops. This is the demo, not a
+# production deployment. Guide: docs/tutorials/run-the-prototype-locally.md.
+name: sauti-demo
+services:
+  demo:
+    build: .
+    image: sauti-demo:local
+    # Loopback only: the demo's reset endpoint erases everything.
+    ports:
+      - "127.0.0.1:7860:7860"
+    stop_grace_period: 30s
