@@ -1,84 +1,179 @@
-// The map's geometry: the gazetteer projected onto an SVG, incidents at
-// their landmark (or ward centre), responders in their ward, and one line
-// per alert. Pure: the view draws what layout returns.
+// The map's geometry: the gazetteer projected into a frame the size of the
+// panel, each ward the territory nearest its centre, incidents at their
+// landmark (or ward centre) and fanned out when they share one, each ward's
+// responders grouped by its centre, and one line per alert. Pure: the view
+// draws what layout returns.
 import { ended } from "./format.js";
 
-// projector maps WGS84 to SVG units, north up. Longitude is scaled by
-// cos(latitude) so a metre east is as long as a metre north.
-export function projector(points, width, pad) {
+export const PIN_R = 12; // an incident pin's radius
+export const SQUARE = 24; // a responder's square
+const GAP = 4;
+const FAN_MIN = 30; // a fan's least radius, so its leader lines show
+const ROW = 3; // responders per line in a ward's group
+const SIZE = { pin: 13, ward: 15, landmark: 11 }; // font sizes, px
+const CHAR = 0.62; // a character's width per px of font size: an estimate, for placing text
+
+// projector maps WGS84 into a width × height frame, north up, fitting the
+// points inside pad and centring them. Longitude is scaled by cos(latitude)
+// so a metre east is as long as a metre north.
+export function projector(points, width, height, pad) {
   const lats = points.map((p) => p.lat);
   const lons = points.map((p) => p.lon);
   const [minLat, maxLat, minLon, maxLon] = [Math.min(...lats), Math.max(...lats), Math.min(...lons), Math.max(...lons)];
   const k = Math.cos(((minLat + maxLat) / 2) * (Math.PI / 180));
-  const scale = (width - 2 * pad) / Math.max((maxLon - minLon) * k, 1e-9);
-  return {
-    width,
-    height: Math.round((maxLat - minLat) * scale + 2 * pad),
-    x: (lon) => pad + (lon - minLon) * k * scale,
-    y: (lat) => pad + (maxLat - lat) * scale,
-  };
+  const spanX = Math.max((maxLon - minLon) * k, 1e-9);
+  const spanY = Math.max(maxLat - minLat, 1e-9);
+  const scale = Math.min((width - 2 * pad) / spanX, (height - 2 * pad) / spanY);
+  const ox = (width - spanX * scale) / 2;
+  const oy = (height - spanY * scale) / 2;
+  return { x: (lon) => ox + (lon - minLon) * k * scale, y: (lat) => oy + (maxLat - lat) * scale };
 }
 
-// around places n marks on a circle of radius r centred on (x, y), the
-// first at the top; one mark sits on the centre.
-function around(x, y, n, r) {
-  if (n === 1) return [{ x, y }];
+// cells returns each site's Voronoi cell in the frame [x0, y0, x1, y1]: the
+// frame cut down to the points at least as near the site as any other site.
+export function cells(sites, [x0, y0, x1, y1]) {
+  const frame = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  return sites.map((s) => sites.reduce((poly, o) => (o === s ? poly : nearer(poly, s, o)), frame));
+}
+
+// nearer clips the convex polygon poly to the half-plane nearer s than o.
+function nearer(poly, s, o) {
+  const side = ([x, y]) => (x - (s.x + o.x) / 2) * (o.x - s.x) + (y - (s.y + o.y) / 2) * (o.y - s.y);
+  const out = [];
+  poly.forEach((p, i) => {
+    const q = poly[(i + 1) % poly.length];
+    const a = side(p);
+    const b = side(q);
+    if (a <= 0) out.push(p);
+    if (a * b < 0) out.push([p[0] + (a / (a - b)) * (q[0] - p[0]), p[1] + (a / (a - b)) * (q[1] - p[1])]);
+  });
+  return out;
+}
+
+// inside: (x, y) lies in a convex polygon wound as cells winds them.
+const inside = (poly, x, y) => poly.every((p, i) => {
+  const q = poly[(i + 1) % poly.length];
+  return (q[0] - p[0]) * (y - p[1]) - (q[1] - p[1]) * (x - p[0]) >= -1e-9;
+});
+
+const box = (x, y, w, h) => [x, y, x + w, y + h];
+const overlaps = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+
+// beside places text of size px next to a disc of radius r at (x, y), on
+// the side the unit vector (ux, uy) points to: its anchor point, its
+// text-anchor, and the box it is estimated to fill.
+function beside(x, y, r, ux, uy, text, size) {
+  const w = text.length * size * CHAR;
+  const ax = x + ux * (r + 3);
+  const ay = y + uy * (r + 3);
+  const anchor = ux > 0.38 ? "start" : ux < -0.38 ? "end" : "middle";
+  const left = anchor === "start" ? ax : anchor === "end" ? ax - w : ax - w / 2;
+  const top = uy > 0.38 ? ay : uy < -0.38 ? ay - size : ay - size / 2;
+  return { x: ax, y: top + size * 0.8, anchor, box: box(left, top, w, size) };
+}
+
+// fan places n pins at (x, y): one on the point, its label up and to the
+// right; more on a ring around it, a pin's width and a gap apart, the first
+// at the top and on clockwise, each label outward.
+function fan(x, y, n) {
+  if (n === 1) return [{ x, y, ux: Math.SQRT1_2, uy: -Math.SQRT1_2 }];
+  const r = Math.max(FAN_MIN, (2 * PIN_R + GAP) / (2 * Math.sin(Math.PI / n)));
   return Array.from({ length: n }, (_, i) => {
     const a = (2 * Math.PI * i) / n - Math.PI / 2;
-    return { x: x + r * Math.cos(a), y: y + r * Math.sin(a) };
+    return { x: x + r * Math.cos(a), y: y + r * Math.sin(a), ux: Math.cos(a), uy: Math.sin(a) };
   });
+}
+
+// spots lists the points of a grid through (x, y), step px apart, that
+// cover the polygon's bounding box, nearest (x, y) first.
+function spots(poly, x, y, step) {
+  const xs = poly.map((p) => p[0]);
+  const ys = poly.map((p) => p[1]);
+  const out = [];
+  for (let px = x - Math.floor((x - Math.min(...xs)) / step) * step; px <= Math.max(...xs); px += step) {
+    for (let py = y - Math.floor((y - Math.min(...ys)) / step) * step; py <= Math.max(...ys); py += step) out.push([px, py]);
+  }
+  return out.sort((a, b) => Math.hypot(a[0] - x, a[1] - y) - Math.hypot(b[0] - x, b[1] - y));
 }
 
 // short labels a responder's square: VHT 3 → V3, Transporter 2 → T2.
 export const short = (label) => label.replace(/^(\w)\w*\s*/, "$1");
 
-const WARD_PAD = 14;
-const LABEL_BAND = 16; // above a ward's landmarks: its name
-const DOCK = 26; // below them: its responders
+const t1 = (inc) => Date.parse(inc.t?.T1) || 0;
 
-export function layout(map, phones, board, { width = 360, pad = 40 } = {}) {
-  const P = projector([...map.wards, ...map.landmarks], width, pad);
-  const landmarks = map.landmarks.map((l) => ({ ...l, x: P.x(l.lon), y: P.y(l.lat) }));
-  const wards = map.wards.map((w) => {
-    const pts = [{ x: P.x(w.lon), y: P.y(w.lat) }, ...landmarks.filter((l) => l.ward === w.id)];
-    const xs = pts.map((p) => p.x);
-    const ys = pts.map((p) => p.y);
-    const x = Math.min(...xs) - WARD_PAD;
-    const y = Math.min(...ys) - WARD_PAD - LABEL_BAND;
-    return { id: w.id, name: w.name, cx: P.x(w.lon), cy: P.y(w.lat), x, y,
-      w: Math.max(...xs) + WARD_PAD - x, h: Math.max(...ys) + WARD_PAD + DOCK - y };
-  });
-  const wardOf = Object.fromEntries(wards.map((w) => [w.id, w]));
+export function layout(map, phones, board, { width = 640, height = 640, pad = 56 } = {}) {
+  const P = projector([...map.wards, ...map.landmarks], width, height, pad);
+  const at = (p) => ({ x: P.x(p.lon), y: P.y(p.lat) });
+  const centres = map.wards.map(at);
+  const territory = cells(centres, [0, 0, width, height]);
+  const landmarks = map.landmarks.map((l) => ({ ...l, ...at(l) }));
+  const wardOf = Object.fromEntries(map.wards.map((w, i) => [w.id, { ...w, ...centres[i] }]));
   const landmarkOf = Object.fromEntries(landmarks.map((l) => [l.id, l]));
 
-  const groups = new Map(); // anchor → incidents placed there
-  const unplaced = [];
+  const groups = new Map(); // place → the incidents there
+  let unplaced = 0;
   for (const inc of board.incidents) {
-    const at = landmarkOf[inc.landmarkId] || wardOf[inc.wardId];
-    if (!at) { unplaced.push(inc); continue; }
-    const key = at.id;
-    if (!groups.has(key)) groups.set(key, { at, list: [] });
-    groups.get(key).list.push(inc);
+    const place = landmarkOf[inc.landmarkId] || wardOf[inc.wardId];
+    if (!place) { unplaced++; continue; }
+    if (!groups.has(place.id)) groups.set(place.id, { place, list: [] });
+    groups.get(place.id).list.push(inc);
   }
   const incidents = [];
-  for (const { at, list } of groups.values()) {
-    const ax = at.cx ?? at.x;
-    const ay = at.cy ?? at.y;
-    around(ax, ay, list.length, Math.max(11, 3.6 * list.length)).forEach((pos, i) => {
+  const pins = [];
+  const marks = []; // the pins and their labels
+  for (const { place, list } of groups.values()) {
+    list.sort((a, b) => t1(a) - t1(b) || a.id.localeCompare(b.id));
+    fan(place.x, place.y, list.length).forEach((pos, i) => {
       const inc = list[i];
+      const label = beside(pos.x, pos.y, PIN_R, pos.ux, pos.uy, inc.reference.slice(-4), SIZE.pin);
       incidents.push({ id: inc.id, ref: inc.reference, severity: inc.severity || "none", state: inc.state, active: !ended(inc),
-        merged: inc.state === "merged", place: at.name, ...pos });
+        merged: inc.state === "merged", place: place.name, x: pos.x, y: pos.y, at: list.length > 1 ? { x: place.x, y: place.y } : null, label });
+      const pin = box(pos.x - PIN_R, pos.y - PIN_R, 2 * PIN_R, 2 * PIN_R);
+      pins.push(pin);
+      marks.push(pin, label.box);
     });
   }
+  const taken = [...landmarks.map((l) => box(l.x - 4, l.y - 4, 8, 8)), ...marks]; // what is placed, for placing what comes after
 
+  // Each ward's group, its name over its responders' squares, sits at the
+  // spot nearest its centre that keeps it inside the ward and clear of the
+  // pins, their labels and the landmarks.
   const responders = [];
-  for (const w of wards) {
+  const wards = map.wards.map((w, i) => {
     const mine = (phones || []).filter((p) => p.kind === "responder" && p.wardId === w.id);
-    const gap = Math.min(18, (w.w - 12) / Math.max(mine.length, 1));
-    const x0 = w.x + w.w / 2 - (gap * (mine.length - 1)) / 2;
-    mine.forEach((p, i) => responders.push({ id: p.id, label: p.label, short: short(p.label), role: p.role, ward: w.name,
-      x: x0 + gap * i, y: w.y + w.h - DOCK / 2 }));
-  }
+    const gw = Math.max(w.name.length * SIZE.ward * CHAR, Math.min(mine.length, ROW) * (SQUARE + GAP) - GAP);
+    const gh = SIZE.ward + Math.ceil(mine.length / ROW) * (SQUARE + GAP);
+    const c = centres[i];
+    const fits = (against) => ([x, y]) => {
+      const b = box(x - gw / 2 - 5, y - gh / 2 - 5, gw + 10, gh + 10);
+      return [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].every(([px, py]) => inside(territory[i], px, py))
+        && !against.some((t) => overlaps(b, t));
+    };
+    const near = spots(territory[i], c.x, c.y, 8);
+    // Crowded, a group covers a landmark before a pin's label, and a label before a pin.
+    const [gx, gy] = near.find(fits(taken)) || near.find(fits(marks)) || near.find(fits(pins)) || near.find(fits([])) || [c.x, c.y];
+    const top = gy - gh / 2;
+    taken.push(box(gx - gw / 2, top, gw, gh));
+    mine.forEach((p, j) => {
+      const row = Math.floor(j / ROW);
+      const cols = Math.min(ROW, mine.length - row * ROW);
+      responders.push({ id: p.id, label: p.label, short: short(p.label), role: p.role, ward: w.name,
+        x: gx - (cols * (SQUARE + GAP) - GAP) / 2 + SQUARE / 2 + (j % ROW) * (SQUARE + GAP),
+        y: top + SIZE.ward + GAP + row * (SQUARE + GAP) + SQUARE / 2 });
+    });
+    return { id: w.id, name: w.name, cx: c.x, cy: c.y, cell: territory[i], label: { x: gx, y: top + SIZE.ward * 0.8 } };
+  });
+
+  // A landmark's name shows where there is room for it: away from its ward's
+  // centre, else towards it, else not at all.
+  const named = landmarks.map((l) => {
+    const side = l.x >= wardOf[l.ward]?.x ? 1 : -1;
+    const label = [side, -side].map((s) => beside(l.x, l.y, 3, s, 0, l.name, SIZE.landmark))
+      .find((t) => t.box[0] >= 0 && t.box[1] >= 0 && t.box[2] <= width && t.box[3] <= height && !taken.some((b) => overlaps(t.box, b))) || null;
+    if (label) taken.push(label.box);
+    return { ...l, label };
+  });
+
   const responderOf = Object.fromEntries(responders.map((r) => [r.label, r]));
   const placedOf = Object.fromEntries(incidents.map((i) => [i.id, i]));
   const links = [];
@@ -89,7 +184,7 @@ export function layout(map, phones, board, { width = 360, pad = 40 } = {}) {
       if (from && to) links.push({ key: inc.id + ":" + a.id, incident: inc.id, responder: a.responder, outcome: a.outcome, from, to });
     }
   }
-  return { width: P.width, height: P.height, wards, landmarks, incidents, responders, links, unplaced: unplaced.length };
+  return { width, height, wards, landmarks: named, incidents, responders, links, unplaced };
 }
 
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;

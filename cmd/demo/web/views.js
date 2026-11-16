@@ -2,7 +2,7 @@
 // metrics.js, geo.js and feed.js derive from the snapshot.
 import { h, svg, clock } from "./dom.js";
 import { mmss } from "./format.js";
-import { summary } from "./geo.js";
+import { summary, PIN_R, SQUARE } from "./geo.js";
 
 const SEVERITY_NAMES = { red: "red", yellow: "yellow", green: "green", none: "not triaged" };
 export const OUTCOME_NAMES = { pending: "waiting", accepted: "accepted", declined: "declined", no_response: "no response", stood_down: "stood down" };
@@ -42,37 +42,41 @@ export function renderKpis(mount, m) {
 }
 
 const LETTER = { red: "R", yellow: "Y", green: "G", none: "?" };
+const fixed = (n) => n.toFixed(1);
 
-// renderMap draws the layout. Selecting a pin (click, Enter or Space) calls
-// onSelect with its incident; keyboard focus survives a redraw.
+// renderMap draws the layout: the wards' territories, the landmarks, then
+// the leader and alert lines under the responders and the pins. Selecting a
+// pin (click, Enter or Space) calls onSelect with its incident; keyboard
+// focus survives a redraw.
 export function renderMap(mount, lay, selected, onSelect) {
   const focused = mount.contains(document.activeElement) ? document.activeElement.dataset.inc : "";
   const pins = lay.incidents.map((p) => {
     const name = `Incident ${p.ref}, ${SEVERITY_NAMES[p.severity]}, ${p.merged ? "merged" : p.active ? "open" : "closed"}, at ${p.place}`;
-    const g = svg("g", { class: `pin sev-${p.severity}${p.active ? " active" : ""}${p.merged ? " merged" : ""}${p.id === selected ? " hl" : ""}`,
-      transform: `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`, tabindex: "0", role: "button", "aria-label": name, "data-inc": p.id,
+    return svg("g", { class: `pin sev-${p.severity}${p.active ? " active" : ""}${p.merged ? " merged" : ""}${p.id === selected ? " hl" : ""}`,
+      transform: `translate(${fixed(p.x)} ${fixed(p.y)})`, tabindex: "0", role: "button", "aria-label": name, "data-inc": p.id,
       onclick: () => onSelect(p.id),
       onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(p.id); } } },
     svg("title", { text: name }),
-    p.active ? svg("circle", { class: "pulse", r: "8" }) : null,
-    svg("circle", { class: "ring", r: "12" }),
-    svg("circle", { class: "dot", r: "8" }),
-    svg("text", { class: "letter", y: "3.5", text: LETTER[p.severity] }),
-    svg("text", { class: "pin-label", x: "11", y: "-8", text: p.ref.slice(-4) }));
-    return g;
+    p.active ? svg("circle", { class: "pulse", r: PIN_R }) : null,
+    svg("circle", { class: "ring", r: PIN_R + 4 }),
+    svg("circle", { class: "dot", r: PIN_R }),
+    svg("text", { class: "letter", y: "4.5", text: LETTER[p.severity] }),
+    svg("text", { class: "pin-label", x: fixed(p.label.x - p.x), y: fixed(p.label.y - p.y), "text-anchor": p.label.anchor, text: p.ref.slice(-4) }));
   });
   const el = svg("svg", { class: "map-svg", viewBox: `0 0 ${lay.width} ${lay.height}`, role: "group", "aria-labelledby": "map-h", "aria-describedby": "map-summary" },
-    svg("g", {}, lay.wards.map((w) => [
-      svg("rect", { class: "ward", x: w.x, y: w.y, width: w.w, height: w.h, rx: "12" }),
-      svg("text", { class: "ward-name", x: w.x + 8, y: w.y + 14, text: w.name }),
-    ])),
-    svg("g", {}, lay.landmarks.map((l) => svg("circle", { class: "landmark", cx: l.x, cy: l.y, r: "2.5" }, svg("title", { text: l.name })))),
+    svg("g", {}, lay.wards.map((w, i) => svg("polygon", { class: `ward t${i % 4}`, points: w.cell.map(([x, y]) => `${fixed(x)},${fixed(y)}`).join(" ") }))),
+    svg("g", {}, lay.landmarks.map((l) => svg("g", { class: "landmark" },
+      svg("title", { text: l.name }),
+      svg("circle", { cx: fixed(l.x), cy: fixed(l.y), r: "3.5" }),
+      l.label ? svg("text", { x: fixed(l.label.x), y: fixed(l.label.y), "text-anchor": l.label.anchor, text: l.name }) : null))),
+    svg("g", {}, lay.incidents.filter((p) => p.at).map((p) => svg("line", { class: "leader", x1: fixed(p.at.x), y1: fixed(p.at.y), x2: fixed(p.x), y2: fixed(p.y) }))),
     svg("g", {}, lay.links.map((l) => svg("line", { class: `link o-${l.outcome}${l.incident === selected ? " hl" : ""}`, "data-inc": l.incident,
-      x1: l.from.x, y1: l.from.y, x2: l.to.x, y2: l.to.y }))),
-    svg("g", {}, lay.responders.map((r) => svg("g", { class: "resp", transform: `translate(${r.x.toFixed(1)} ${r.y.toFixed(1)})` },
+      x1: fixed(l.from.x), y1: fixed(l.from.y), x2: fixed(l.to.x), y2: fixed(l.to.y) }))),
+    svg("g", {}, lay.wards.map((w) => svg("text", { class: "ward-name", x: fixed(w.label.x), y: fixed(w.label.y), text: w.name }))),
+    svg("g", {}, lay.responders.map((r) => svg("g", { class: "resp", transform: `translate(${fixed(r.x)} ${fixed(r.y)})` },
       svg("title", { text: `${r.label}, ${r.ward}` }),
-      svg("rect", { x: "-8", y: "-8", width: "16", height: "16", rx: "3" }),
-      svg("text", { y: "3.5", text: r.short })))),
+      svg("rect", { x: -SQUARE / 2, y: -SQUARE / 2, width: SQUARE, height: SQUARE, rx: "4" }),
+      svg("text", { y: "4", text: r.short })))),
     svg("g", {}, pins));
   mount.replaceChildren(el);
   document.getElementById("map-summary").textContent = summary(lay);

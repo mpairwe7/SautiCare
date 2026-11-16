@@ -25,8 +25,11 @@
   --tl-done: #2a78d6;
   --tl-open: #cde2fb;
   --map-bg: #f8faf9;
-  --ward: #eaf4f2;
-  --ward-line: #a6cfc8;
+  /* Ward territories: soft tints, so pins and lines read over them. */
+  --ward-0: #e2f0ed;
+  --ward-1: #e5edf8;
+  --ward-2: #f5eedf;
+  --ward-3: #eee9f6;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Ubuntu, sans-serif;
   color: var(--ink);
   background: var(--bg);
@@ -212,9 +215,15 @@ td.payload { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 1
 .map-mount { background: var(--map-bg); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .map-svg { display: block; width: 100%; height: auto; max-height: 700px; }
 .map-summary { font-size: 13px; color: var(--muted); margin-top: 8px; }
-.ward { fill: var(--ward); stroke: var(--ward-line); stroke-width: 1; }
-.ward-name { font-size: 11px; font-weight: 700; fill: var(--muted); }
-.landmark { fill: #98a2b3; }
+.ward { stroke: #fff; stroke-width: 3; stroke-linejoin: round; }
+.ward.t0 { fill: var(--ward-0); }
+.ward.t1 { fill: var(--ward-1); }
+.ward.t2 { fill: var(--ward-2); }
+.ward.t3 { fill: var(--ward-3); }
+.ward-name { font-size: 15px; font-weight: 750; text-anchor: middle; fill: #344054; paint-order: stroke; stroke: #fff; stroke-width: 4px; stroke-linejoin: round; }
+.landmark circle { fill: #667085; stroke: transparent; stroke-width: 10; }
+.landmark text { font-size: 11px; fill: var(--muted); paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+.leader { stroke: #475467; stroke-width: 1.25; }
 .link { fill: none; stroke-width: 2; stroke-linecap: round; }
 .link.o-pending { stroke: var(--o-pending); stroke-dasharray: 6 4; animation: march 0.9s linear infinite; }
 .link.o-accepted { stroke: var(--o-accepted); stroke-width: 3; }
@@ -224,15 +233,15 @@ td.payload { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 1
 .map-svg:has(.hl) .link:not(.hl) { opacity: 0.2; }
 .link.hl { stroke-width: 3.5; }
 @keyframes march { to { stroke-dashoffset: -10; } }
-.resp rect { fill: #fff; stroke: var(--ink); stroke-width: 1.25; }
-.resp text { font-size: 8px; font-weight: 800; text-anchor: middle; fill: var(--ink); }
+.resp rect { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
+.resp text { font-size: 11px; font-weight: 800; text-anchor: middle; fill: var(--ink); }
 .pin { cursor: pointer; }
 .pin:focus { outline: none; }
 .pin .dot { stroke: #fff; stroke-width: 2; }
 .pin .ring { fill: none; stroke: transparent; stroke-width: 3; }
 .pin:focus-visible .ring, .pin.hl .ring { stroke: var(--focus); }
-.pin .letter { font-size: 9px; font-weight: 800; text-anchor: middle; fill: #fff; pointer-events: none; }
-.pin-label { font-size: 9px; font-weight: 700; fill: var(--ink); paint-order: stroke; stroke: var(--map-bg); stroke-width: 3px; stroke-linejoin: round; }
+.pin .letter { font-size: 12px; font-weight: 800; text-anchor: middle; fill: #fff; pointer-events: none; }
+.pin-label { font-size: 13px; font-weight: 700; fill: var(--ink); paint-order: stroke; stroke: #fff; stroke-width: 4px; stroke-linejoin: round; }
 .pin.sev-red .dot { fill: var(--red); }
 .pin.sev-yellow .dot { fill: #fdb022; }
 .pin.sev-yellow .letter { fill: #4e1d09; }
