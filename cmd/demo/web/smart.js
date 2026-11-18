@@ -53,7 +53,7 @@ function miniMap(map, { me, dest, fac, vht, route, pick, onPick }, width = 264, 
     kids.push(svg("line", { class: "via", x1: a[0].toFixed(1), y1: a[1].toFixed(1), x2: b[0].toFixed(1), y2: b[1].toFixed(1) }));
   }
   if (vht) { const [x, y] = at(vht); kids.push(svg("circle", { class: "vhtpt", cx: x.toFixed(1), cy: y.toFixed(1), r: "6" })); }
-  if (fac) { const [x, y] = at(fac); kids.push(svg("rect", { class: "fac", x: (x - 6).toFixed(1), y: (y - 6).toFixed(1), width: "12", height: "12", rx: "2" })); }
+  if (fac) { const [x, y] = at(fac); kids.push(svg("rect", { class: "fac", x: (x - 6).toFixed(1), y: (y - 6).toFixed(1), width: "12", height: "12" })); }
   if (dest) { const [x, y] = at(dest); kids.push(svg("circle", { class: "dest", cx: x.toFixed(1), cy: y.toFixed(1), r: "7" })); }
   if (me) { const [x, y] = at(me); kids.push(svg("circle", { class: "me-halo", cx: x.toFixed(1), cy: y.toFixed(1), r: "14" }), svg("circle", { class: "me", cx: x.toFixed(1), cy: y.toFixed(1), r: "6" })); }
   for (const [p, text] of [[dest, dest?.label], [fac, fac?.label], [vht, vht?.label]]) {

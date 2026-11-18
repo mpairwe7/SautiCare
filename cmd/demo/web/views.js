@@ -71,7 +71,7 @@ export function renderMap(mount, lay, selected, onSelect) {
       l.label ? svg("text", { x: fixed(l.label.x), y: fixed(l.label.y), "text-anchor": l.label.anchor, text: l.name }) : null))),
     svg("g", {}, (lay.facilities || []).map((f) => svg("g", { class: "facility" },
       svg("title", { text: `${f.name}, registered health facility` }),
-      svg("rect", { x: fixed(f.x - FAC / 2), y: fixed(f.y - FAC / 2), width: FAC, height: FAC, rx: "3" }),
+      svg("rect", { x: fixed(f.x - FAC / 2), y: fixed(f.y - FAC / 2), width: FAC, height: FAC }),
       svg("path", { class: "cross", d: `M${fixed(f.x - 4.5)} ${fixed(f.y)}h9M${fixed(f.x)} ${fixed(f.y - 4.5)}v9` }),
       f.label ? svg("text", { x: fixed(f.label.x), y: fixed(f.label.y), "text-anchor": f.label.anchor, text: f.name }) : null))),
     svg("g", {}, lay.incidents.filter((p) => p.at).map((p) => svg("line", { class: "leader", x1: fixed(p.at.x), y1: fixed(p.at.y), x2: fixed(p.x), y2: fixed(p.y) }))),
@@ -80,7 +80,7 @@ export function renderMap(mount, lay, selected, onSelect) {
     svg("g", {}, lay.wards.map((w) => svg("text", { class: "ward-name", x: fixed(w.label.x), y: fixed(w.label.y), text: w.name }))),
     svg("g", {}, lay.responders.map((r) => svg("g", { class: "resp" + (r.located ? " located" : ""), transform: `translate(${fixed(r.x)} ${fixed(r.y)})` },
       svg("title", { text: r.located === "phone" ? `${r.label}, at their smartphone's location` : r.located === "shared" ? `${r.label}, near ${r.place}, as they sent on the menu` : `${r.label}, ${r.ward}` }),
-      svg("rect", { x: -SQUARE / 2, y: -SQUARE / 2, width: SQUARE, height: SQUARE, rx: "4" }),
+      svg("rect", { x: -SQUARE / 2, y: -SQUARE / 2, width: SQUARE, height: SQUARE }),
       svg("text", { y: "4", text: r.short })))),
     svg("g", {}, pins));
   mount.replaceChildren(el);

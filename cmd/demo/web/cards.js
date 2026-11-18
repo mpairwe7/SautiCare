@@ -47,7 +47,7 @@ export function timelineChart(inc, now, width) {
     const text = `${s.label} ${mmss(s.end - s.start)}`;
     return svg("g", { class: "tl-seg" + (s.open ? " open" : "") },
       svg("title", { text: `${s.label}: ${s.from} to ${s.open ? "now" : s.to}, ${mmss(s.end - s.start)}` }),
-      svg("rect", { x: x0.toFixed(1), y: "2", width: w.toFixed(1), height: "18", rx: "4" }),
+      svg("rect", { x: x0.toFixed(1), y: "2", width: w.toFixed(1), height: "18" }),
       text.length * TEXT_W + 12 <= w ? svg("text", { x: (x0 + 6).toFixed(1), y: "15", text }) : null);
   });
   const ticks = tl.ticks.map((t, i) => svg("text", { class: "tl-tick", x: x(t).toFixed(1), y: "36",

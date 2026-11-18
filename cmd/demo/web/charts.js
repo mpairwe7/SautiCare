@@ -47,7 +47,7 @@ export class Analytics {
     this.stacks = h("div", { class: "ch-mount" });
     this.legend = h("ul", { class: "ch-legend", "aria-label": "Stages" },
       PHASES.map((p, i) => h("li", {}, svg("svg", { viewBox: "0 0 12 12", width: "12", height: "12", "aria-hidden": "true" },
-        svg("rect", { width: "12", height: "12", rx: "2", fill: STAGE_COLOURS[i] })), p.label)));
+        svg("rect", { width: "12", height: "12", fill: STAGE_COLOURS[i] })), p.label)));
     this.table = h("div", { class: "ch-table" });
     mount.replaceChildren(
       h("div", { class: "charts" },
